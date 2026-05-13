@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.3 - 2026-05-13
+
+- Removed transient refresh timeout text from the visible Server Protection Job card when showing a last-known successful job.
+- Kept refresh failure details internally without cluttering the dashboard status text.
+
 ## v1.1.2 - 2026-05-13
 
 - Enhanced scheduled daily email reports with an embedded dashboard-style HTML summary.

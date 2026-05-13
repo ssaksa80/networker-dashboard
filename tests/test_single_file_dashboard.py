@@ -680,7 +680,7 @@ def test_server_health_session_refresh_returns_live_server_protection(monkeypatc
     assert body["serverProtectionJob"]["count"] == 1
 
 
-def test_server_protection_refresh_failure_does_not_repeat_last_known_text(monkeypatch):
+def test_server_protection_refresh_failure_keeps_card_detail_clean(monkeypatch):
     dashboard = load_single_file_dashboard()
     config = dashboard.ApiConfig(
         rest_api_host="192.0.2.10",
@@ -719,7 +719,8 @@ def test_server_protection_refresh_failure_does_not_repeat_last_known_text(monke
     second = dashboard.refresh_server_protection_job_nwui(config, CookieJar(), {"X-Test": "token"}, first)
 
     assert second["detail"].count("last known") == 1
-    assert second["detail"].count("refresh failed") == 1
+    assert "refresh failed" not in second["detail"]
+    assert second["_lastRefreshError"] == "REST API connection timed out."
     assert second["detail"].startswith("Server db backup on Server backup")
 
 

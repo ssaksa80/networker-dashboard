@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -4753,8 +4753,6 @@ def last_known_server_protection(
     refresh_error: str = "",
 ) -> dict[str, Any]:
     detail = f"{base_server_protection_detail(previous.get('detail'))} (last known)"
-    if refresh_error:
-        detail = f"{detail}; refresh failed: {refresh_error}"
     return {
         **previous,
         "detail": detail,
