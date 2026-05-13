@@ -1805,8 +1805,19 @@ HTML_PAGE = r"""<!doctype html>
             </select>
           </label>
           <label>
-            Schedule minutes
+            Email type
+            <select id="emailScheduleType">
+              <option value="alert" selected>Alert check</option>
+              <option value="daily_report">Daily backup/SLA report</option>
+            </select>
+          </label>
+          <label>
+            Alert interval minutes
             <input id="alertIntervalMinutes" value="60" inputmode="numeric" autocomplete="off">
+          </label>
+          <label>
+            Daily report time
+            <input id="dailyReportTime" value="08:00" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
           </label>
           <label>
             SMTP username
@@ -2685,6 +2696,8 @@ HTML_PAGE = r"""<!doctype html>
         smtpTo: document.getElementById("smtpTo").value.trim(),
         intervalMinutes: document.getElementById("alertIntervalMinutes").value.trim(),
         trigger: document.getElementById("alertTrigger").value,
+        scheduleType: document.getElementById("emailScheduleType").value,
+        reportTime: document.getElementById("dailyReportTime").value.trim(),
       };
     }
 
@@ -2978,6 +2991,8 @@ class AlertAutomation:
     smtp_security: str
     interval_minutes: int
     trigger: str
+    schedule_type: str
+    report_time: str
     created_at: float
     last_run: float = 0.0
     last_result: str = "Scheduled"
@@ -5150,6 +5165,14 @@ def parse_email_recipients(value: Any) -> list[str]:
     return clean
 
 
+def parse_report_time(value: Any) -> str:
+    raw = str(value or "08:00").strip()
+    match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", raw)
+    if not match:
+        raise BadRequest("Daily report time must use HH:MM in 24-hour format.")
+    return f"{int(match.group(1)):02d}:{match.group(2)}"
+
+
 def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
     host = str(payload.get("smtpHost") or "").strip()
     if not host:
@@ -5168,6 +5191,9 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
     trigger = str(payload.get("trigger") or "critical").strip().lower()
     if trigger not in ("critical", "warning", "all"):
         raise BadRequest("Alert trigger must be critical, warning, or all.")
+    schedule_type = str(payload.get("scheduleType") or "alert").strip().lower()
+    if schedule_type not in ("alert", "daily_report"):
+        raise BadRequest("Email type must be alert or daily_report.")
     return {
         "smtp_host": host,
         "smtp_port": port,
@@ -5178,6 +5204,8 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
         "recipients": parse_email_recipients(payload.get("smtpTo")),
         "interval_minutes": interval,
         "trigger": trigger,
+        "schedule_type": schedule_type,
+        "report_time": parse_report_time(payload.get("reportTime")),
     }
 
 
@@ -5205,6 +5233,53 @@ def dashboard_alert_lines(dashboard: dict[str, Any]) -> tuple[str, list[str]]:
     return severity, lines
 
 
+def dashboard_report_rows(dashboard: dict[str, Any]) -> list[tuple[str, str]]:
+    summary = dashboard.get("summary") or {}
+    protection = dashboard.get("serverProtectionJob") or {}
+    health = dashboard.get("serverHealth") or {}
+    return [
+        ("Report range", str(summary.get("rangeLabel") or summary.get("range") or "--")),
+        ("Total backup jobs", str(summary.get("totalJobs", 0))),
+        ("Successful jobs", str(summary.get("successfulJobs", 0))),
+        ("Failed jobs", str(summary.get("failedJobs", 0))),
+        ("Running/queued jobs", str(summary.get("activeJobs", 0))),
+        ("Recovery jobs", str(summary.get("recoveryJobs", 0))),
+        ("Clone jobs", str(summary.get("cloneJobs", 0))),
+        ("Alerts", str(summary.get("totalAlerts", 0))),
+        ("Backup SLA", f"{summary.get('slaPercent', 0)}% ({summary.get('slaMetJobs', 0)} met / {summary.get('slaTotalJobs', 0)} total)"),
+        ("SLA not met", str(summary.get("slaMissedJobs", 0))),
+        ("Server status", str(health.get("label") or "--")),
+        ("CPU usage", "--" if health.get("cpuUsagePercent") is None else f"{health.get('cpuUsagePercent')}%"),
+        ("Memory usage", "--" if health.get("ramUsagePercent") is None else f"{health.get('ramUsagePercent')}%"),
+        ("Server Protection Job", f"{protection.get('label') or 'Not found'} - {protection.get('detail') or ''}".strip()),
+        ("Generated", str(dashboard.get("generatedAt") or generated_at())),
+    ]
+
+
+def dashboard_report_email(dashboard: dict[str, Any]) -> tuple[str, str]:
+    rows = dashboard_report_rows(dashboard)
+    plain = "\n".join(f"{label}: {value}" for label, value in rows)
+    table_rows = "\n".join(
+        "<tr>"
+        f"<td style=\"padding:8px 10px;border:1px solid #d7e1e7;font-weight:700;\">{html_lib.escape(label)}</td>"
+        f"<td style=\"padding:8px 10px;border:1px solid #d7e1e7;\">{html_lib.escape(value)}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    html_body = f"""\
+<!doctype html>
+<html>
+  <body style="font-family:Segoe UI,Arial,sans-serif;color:#172026;">
+    <h2 style="margin:0 0 12px;">NetWorker Daily Backup Status and SLA Report</h2>
+    <table style="border-collapse:collapse;border:1px solid #d7e1e7;min-width:520px;">
+      {table_rows}
+    </table>
+  </body>
+</html>
+"""
+    return plain, html_body
+
+
 def should_send_alert(trigger: str, severity: str) -> bool:
     if trigger == "all":
         return True
@@ -5218,6 +5293,7 @@ def send_smtp_email(
     subject: str,
     body: str,
     smtp_password: str,
+    html_body: str = "",
 ) -> None:
     message = EmailMessage()
     message["Subject"] = subject
@@ -5225,6 +5301,8 @@ def send_smtp_email(
     message["To"] = ", ".join(settings.recipients)
     message["Date"] = email.utils.formatdate(localtime=True)
     message.set_content(body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
 
     if settings.smtp_security == "ssl":
         with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
@@ -5251,10 +5329,24 @@ def cancel_alert_automation(automation_id: str) -> bool:
     return True
 
 
+def seconds_until_daily_report(report_time: str, now: datetime | None = None) -> float:
+    now = now or datetime.now().astimezone()
+    hour, minute = (int(part) for part in report_time.split(":", 1))
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return max(1.0, (target - now).total_seconds())
+
+
 def schedule_alert_automation(automation: AlertAutomation) -> None:
     if automation.automation_id not in ALERT_AUTOMATIONS:
         return
-    timer = threading.Timer(automation.interval_minutes * 60, run_alert_automation, args=(automation.automation_id,))
+    delay = (
+        seconds_until_daily_report(automation.report_time)
+        if automation.schedule_type == "daily_report"
+        else automation.interval_minutes * 60
+    )
+    timer = threading.Timer(delay, run_alert_automation, args=(automation.automation_id,))
     timer.daemon = True
     automation.timer = timer
     timer.start()
@@ -5268,6 +5360,19 @@ def run_alert_automation(automation_id: str) -> None:
         status, dashboard = build_dashboard_from_session(automation.session_id)
         if status != HTTPStatus.OK:
             raise RuntimeError(dashboard.get("error") or "Dashboard session refresh failed.")
+        if automation.schedule_type == "daily_report":
+            plain, html_body = dashboard_report_email(dashboard)
+            send_smtp_email(
+                automation,
+                "NetWorker daily backup status and SLA report",
+                plain,
+                decrypt_process_secret(automation.encrypted_smtp_password),
+                html_body,
+            )
+            automation.last_signature = dashboard.get("generatedAt") or generated_at()
+            automation.last_result = f"Sent daily backup/SLA report at {generated_at()}"
+            automation.last_run = time.time()
+            return
         severity, lines = dashboard_alert_lines(dashboard)
         signature = "|".join(lines)
         if should_send_alert(automation.trigger, severity) and signature != automation.last_signature:
@@ -5307,23 +5412,39 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         smtp_security=settings["smtp_security"],
         interval_minutes=settings["interval_minutes"],
         trigger=settings["trigger"],
+        schedule_type=settings["schedule_type"],
+        report_time=settings["report_time"],
         created_at=time.time(),
     )
     if action == "test":
+        subject = "NetWorker dashboard test email"
+        plain_body = f"Test email from {APP_NAME} at {generated_at()}."
+        html_body = ""
+        if automation.schedule_type == "daily_report":
+            status, dashboard = build_dashboard_from_session(session_id)
+            if status == HTTPStatus.OK:
+                plain_body, html_body = dashboard_report_email(dashboard)
+                subject = "NetWorker daily backup status and SLA report - test"
         send_smtp_email(
             automation,
-            "NetWorker dashboard test email",
-            f"Test email from {APP_NAME} at {generated_at()}.",
+            subject,
+            plain_body,
             settings["smtp_password"],
+            html_body,
         )
         return HTTPStatus.OK, {"ok": True, "message": "Test email sent."}
 
     cancel_alert_automation(session_id)
     ALERT_AUTOMATIONS[session_id] = automation
     schedule_alert_automation(automation)
+    message = (
+        f"Daily backup/SLA report scheduled for {automation.report_time}."
+        if automation.schedule_type == "daily_report"
+        else f"Alert automation scheduled every {automation.interval_minutes} minute(s)."
+    )
     return HTTPStatus.OK, {
         "ok": True,
-        "message": f"Alert automation scheduled every {automation.interval_minutes} minute(s).",
+        "message": message,
     }
 
 

@@ -704,8 +704,8 @@ def test_alert_automation_test_email_uses_smtp_settings(monkeypatch):
     session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
     sent = []
 
-    def fake_send(settings, subject, body, smtp_password):
-        sent.append((settings.smtp_host, settings.smtp_port, settings.recipients, subject, smtp_password))
+    def fake_send(settings, subject, body, smtp_password, html_body=""):
+        sent.append((settings.smtp_host, settings.smtp_port, settings.recipients, subject, smtp_password, html_body))
 
     monkeypatch.setattr(dashboard, "send_smtp_email", fake_send)
 
@@ -722,6 +722,8 @@ def test_alert_automation_test_email_uses_smtp_settings(monkeypatch):
             "smtpTo": "ops@example.com;backup@example.com",
             "intervalMinutes": "15",
             "trigger": "warning",
+            "scheduleType": "alert",
+            "reportTime": "08:00",
         }
     )
 
@@ -734,8 +736,125 @@ def test_alert_automation_test_email_uses_smtp_settings(monkeypatch):
             ["ops@example.com", "backup@example.com"],
             "NetWorker dashboard test email",
             "p@ss;word",
+            "",
         )
     ]
+
+
+def test_daily_report_email_embeds_backup_status_and_sla():
+    dashboard = load_single_file_dashboard()
+    plain, html = dashboard.dashboard_report_email(
+        {
+            "generatedAt": "13-05-2026 09:00:00 Arabian Standard Time",
+            "summary": {
+                "rangeLabel": "Last 24 Hours",
+                "totalJobs": 36,
+                "successfulJobs": 35,
+                "failedJobs": 1,
+                "activeJobs": 0,
+                "recoveryJobs": 2,
+                "cloneJobs": 3,
+                "totalAlerts": 1,
+                "slaPercent": 97,
+                "slaMetJobs": 35,
+                "slaTotalJobs": 36,
+                "slaMissedJobs": 1,
+            },
+            "serverHealth": {"label": "Healthy", "cpuUsagePercent": 12, "ramUsagePercent": 44},
+            "serverProtectionJob": {"label": "Succeeded", "detail": "Server backup completed"},
+        }
+    )
+
+    assert "Total backup jobs: 36" in plain
+    assert "Backup SLA: 97% (35 met / 36 total)" in plain
+    assert "<table" in html
+    assert "Server backup completed" in html
+
+
+def test_daily_report_automation_sends_embedded_report(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
+    sent = []
+
+    monkeypatch.setattr(
+        dashboard,
+        "build_dashboard_from_session",
+        lambda session_id: (
+            200,
+            {
+                "generatedAt": "13-05-2026 09:00:00 Arabian Standard Time",
+                "summary": {
+                    "rangeLabel": "Last 24 Hours",
+                    "totalJobs": 10,
+                    "successfulJobs": 10,
+                    "failedJobs": 0,
+                    "activeJobs": 0,
+                    "recoveryJobs": 0,
+                    "cloneJobs": 0,
+                    "totalAlerts": 0,
+                    "slaPercent": 100,
+                    "slaMetJobs": 10,
+                    "slaTotalJobs": 10,
+                    "slaMissedJobs": 0,
+                },
+                "serverHealth": {"label": "Healthy"},
+                "serverProtectionJob": {"label": "Succeeded", "detail": "Server backup completed"},
+            },
+        ),
+    )
+
+    def fake_send(settings, subject, body, smtp_password, html_body=""):
+        sent.append((subject, body, smtp_password, html_body))
+
+    monkeypatch.setattr(dashboard, "send_smtp_email", fake_send)
+    monkeypatch.setattr(dashboard, "schedule_alert_automation", lambda automation: None)
+
+    status, body = dashboard.handle_alert_automation(
+        {
+            "action": "start",
+            "sessionId": session_id,
+            "smtpHost": "smtp.example.com",
+            "smtpPort": "587",
+            "smtpSecurity": "starttls",
+            "smtpUsername": "svc",
+            "smtpPassword": "daily-secret",
+            "smtpFrom": "networker@example.com",
+            "smtpTo": "ops@example.com",
+            "intervalMinutes": "60",
+            "trigger": "all",
+            "scheduleType": "daily_report",
+            "reportTime": "07:30",
+        }
+    )
+    assert status == 200
+    assert "07:30" in body["message"]
+
+    dashboard.run_alert_automation(session_id)
+
+    assert sent
+    assert sent[0][0] == "NetWorker daily backup status and SLA report"
+    assert "Backup SLA: 100% (10 met / 10 total)" in sent[0][1]
+    assert sent[0][2] == "daily-secret"
+    assert "<table" in sent[0][3]
 
 
 def test_server_health_session_refresh_uses_wmi_without_nwui_fallback(monkeypatch):

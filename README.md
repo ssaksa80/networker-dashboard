@@ -15,9 +15,9 @@ Open the `https://...` URL printed in the console. The dashboard tries port `844
 
 ## Email Alerts
 
-After connecting to NetWorker, use **Email Alert Automation** to configure SMTP delivery. The dashboard can send a test email or schedule recurring alert checks from the current logged-in session. SMTP passwords are accepted over the local HTTPS page, encrypted in process memory, and are not written to disk.
+After connecting to NetWorker, use **Email Alert Automation** to configure SMTP delivery. The dashboard can send a test email, schedule recurring alert checks, or schedule a daily backup/SLA status report from the current logged-in session. SMTP passwords are accepted over the local HTTPS page, encrypted in process memory, and are not written to disk.
 
-The alert scheduler can trigger on critical issues only, warnings plus critical issues, or every scheduled check. It includes backup failure counts, alert counts, SLA status, active jobs, and the latest Server Protection Job state.
+The alert scheduler can trigger on critical issues only, warnings plus critical issues, or every scheduled check. Daily reports are embedded directly in the email body with backup job totals, success/failure counts, active jobs, alerts, SLA percentage, server health, and the latest Server Protection Job state.
 
 ## Configuration
 
