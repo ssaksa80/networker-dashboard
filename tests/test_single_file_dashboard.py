@@ -909,6 +909,92 @@ def test_daily_report_automation_sends_embedded_report(monkeypatch):
     assert "Backup SLA" in sent[0][3]
 
 
+def test_daily_report_test_reuses_scheduled_smtp_password_and_snapshot(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
+    sent = []
+
+    monkeypatch.setattr(dashboard, "schedule_alert_automation", lambda automation: None)
+    monkeypatch.setattr(
+        dashboard,
+        "build_dashboard_from_session",
+        lambda session_id: (_ for _ in ()).throw(AssertionError("test should use supplied dashboard snapshot")),
+    )
+
+    def fake_send(settings, subject, body, smtp_password, html_body=""):
+        sent.append((subject, smtp_password, html_body))
+
+    monkeypatch.setattr(dashboard, "send_smtp_email", fake_send)
+
+    base_payload = {
+        "sessionId": session_id,
+        "smtpHost": "smtp.example.com",
+        "smtpPort": "587",
+        "smtpSecurity": "starttls",
+        "smtpUsername": "svc",
+        "smtpFrom": "networker@example.com",
+        "smtpTo": "ops@example.com",
+        "intervalMinutes": "60",
+        "trigger": "all",
+        "scheduleType": "daily_report",
+        "reportTime": "07:30",
+    }
+    status, _ = dashboard.handle_alert_automation({**base_payload, "action": "start", "smtpPassword": "saved-secret"})
+    assert status == 200
+
+    status, body = dashboard.handle_alert_automation(
+        {
+            **base_payload,
+            "action": "test",
+            "smtpPassword": "",
+            "dashboard": {
+                "generatedAt": "13-05-2026 09:00:00 Arabian Standard Time",
+                "summary": {
+                    "rangeLabel": "Last 24 Hours",
+                    "totalJobs": 5,
+                    "successfulJobs": 5,
+                    "failedJobs": 0,
+                    "activeJobs": 0,
+                    "recoveryJobs": 0,
+                    "cloneJobs": 0,
+                    "totalAlerts": 0,
+                    "slaPercent": 100,
+                    "slaMetJobs": 5,
+                    "slaTotalJobs": 5,
+                    "slaMissedJobs": 0,
+                },
+                "serverHealth": {"label": "Healthy"},
+                "serverProtectionJob": {"label": "Succeeded", "detail": "Server backup completed"},
+            },
+        }
+    )
+
+    assert status == 200
+    assert body["message"] == "Test email sent."
+    assert sent[-1][0] == "NetWorker daily backup status and SLA report - test"
+    assert sent[-1][1] == "saved-secret"
+    assert "Activity Mix" in sent[-1][2]
+
+
 def test_server_health_session_refresh_uses_wmi_without_nwui_fallback(monkeypatch):
     dashboard = load_single_file_dashboard()
     config = dashboard.ApiConfig(

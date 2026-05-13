@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.4 - 2026-05-13
+
+- Fixed daily scheduled report test emails after the SMTP password field is cleared by reusing the encrypted in-memory scheduled SMTP password.
+- Daily report test emails now use the current dashboard snapshot when available, avoiding unnecessary live NetWorker refresh failures during SMTP testing.
+
 ## v1.1.3 - 2026-05-13
 
 - Removed transient refresh timeout text from the visible Server Protection Job card when showing a last-known successful job.

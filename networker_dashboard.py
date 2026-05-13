@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -2684,7 +2684,7 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     function alertAutomationPayload(action) {
-      return {
+      const payload = {
         action,
         sessionId,
         smtpHost: document.getElementById("smtpHost").value.trim(),
@@ -2699,6 +2699,16 @@ HTML_PAGE = r"""<!doctype html>
         scheduleType: document.getElementById("emailScheduleType").value,
         reportTime: document.getElementById("dailyReportTime").value.trim(),
       };
+      if (action === "test" && payload.scheduleType === "daily_report" && latestDashboard) {
+        payload.dashboard = {
+          generatedAt: latestDashboard.generatedAt,
+          target: latestDashboard.target || {},
+          summary: latestDashboard.summary || {},
+          serverHealth: latestDashboard.serverHealth || {},
+          serverProtectionJob: latestDashboard.serverProtectionJob || latestDashboard.maintenanceBackup || {},
+        };
+      }
+      return payload;
     }
 
     async function submitAlertAutomation(action) {
@@ -5652,13 +5662,17 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
     if not session_id or session_id not in DASHBOARD_SESSIONS:
         raise BadRequest("A live dashboard session is required before scheduling email alerts.")
     settings = parse_smtp_settings(payload)
+    existing = ALERT_AUTOMATIONS.get(session_id)
+    smtp_password = settings["smtp_password"] or (
+        decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
+    )
     automation = AlertAutomation(
         automation_id=session_id,
         session_id=session_id,
         smtp_host=settings["smtp_host"],
         smtp_port=settings["smtp_port"],
         smtp_username=settings["smtp_username"],
-        encrypted_smtp_password=encrypt_process_secret(settings["smtp_password"]),
+        encrypted_smtp_password=encrypt_process_secret(smtp_password),
         smtp_from=settings["smtp_from"],
         recipients=settings["recipients"],
         smtp_security=settings["smtp_security"],
@@ -5673,15 +5687,20 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         plain_body = f"Test email from {APP_NAME} at {generated_at()}."
         html_body = ""
         if automation.schedule_type == "daily_report":
-            status, dashboard = build_dashboard_from_session(session_id)
-            if status == HTTPStatus.OK:
+            dashboard = payload.get("dashboard") if isinstance(payload.get("dashboard"), dict) else None
+            if dashboard:
                 plain_body, html_body = dashboard_report_email(dashboard)
                 subject = "NetWorker daily backup status and SLA report - test"
+            else:
+                status, dashboard = build_dashboard_from_session(session_id)
+                if status == HTTPStatus.OK:
+                    plain_body, html_body = dashboard_report_email(dashboard)
+                    subject = "NetWorker daily backup status and SLA report - test"
         send_smtp_email(
             automation,
             subject,
             plain_body,
-            settings["smtp_password"],
+            smtp_password,
             html_body,
         )
         return HTTPStatus.OK, {"ok": True, "message": "Test email sent."}
