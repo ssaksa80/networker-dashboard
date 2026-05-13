@@ -1,0 +1,10 @@
+.env
+.venv/
+.certs/
+.run/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+instance/
+cert.pem
+key.pem
