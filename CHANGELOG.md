@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.6 - 2026-05-13
+
+- Fixed WMI health collection for local backup server targets by omitting explicit credentials on local WMI calls.
+- Remote WMI targets still use the provided WMI username/password.
+
 ## v1.1.5 - 2026-05-13
 
 - Updated SMTP security UI behavior so selecting `None` forces port `25`.

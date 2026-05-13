@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -3400,6 +3400,29 @@ def wmi_target_host(config: ApiConfig) -> str:
     return config.backup_server_host or config.rest_api_host
 
 
+def is_local_wmi_target(target: str) -> bool:
+    host = str(target or "").strip().strip("[]").lower()
+    if host in ("", ".", "localhost", "127.0.0.1", "::1"):
+        return True
+    local_names = {
+        socket.gethostname().lower(),
+        socket.getfqdn().lower(),
+    }
+    if host in local_names:
+        return True
+    try:
+        target_ips = {info[4][0] for info in socket.getaddrinfo(host, None)}
+        local_ips = {"127.0.0.1", "::1"}
+        for name in local_names:
+            try:
+                local_ips.update(info[4][0] for info in socket.getaddrinfo(name, None))
+            except socket.gaierror:
+                continue
+        return bool(target_ips & local_ips)
+    except socket.gaierror:
+        return False
+
+
 def wmi_connectivity_hint(target: str) -> str:
     return (
         f"Check WMI/DCOM access to {target}: Windows Firewall WMI rules, RPC port 135 "
@@ -3442,7 +3465,9 @@ def clean_powershell_error(value: Any) -> str:
 def load_server_health_wmi(config: ApiConfig) -> dict[str, Any] | None:
     if not config.use_wmi_health:
         return None
-    if not config.wmi_username or not config.wmi_password:
+    target = wmi_target_host(config)
+    is_local_target = is_local_wmi_target(target)
+    if not is_local_target and (not config.wmi_username or not config.wmi_password):
         return unavailable_server_health("WMI credentials were not provided.")
 
     powershell = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
@@ -3455,14 +3480,22 @@ $DebugPreference = "SilentlyContinue"
 $InformationPreference = "SilentlyContinue"
 $inputJson = [Console]::In.ReadToEnd()
 $payload = $inputJson | ConvertFrom-Json
-$securePassword = ConvertTo-SecureString -String $payload.password -AsPlainText -Force
-$credential = New-Object System.Management.Automation.PSCredential($payload.username, $securePassword)
 $target = $payload.host
-$wmi = @{
-  ComputerName = $target
-  Credential = $credential
-  Authentication = "PacketPrivacy"
-  Impersonation = "Impersonate"
+if ($payload.isLocal) {
+  $wmi = @{}
+} elseif ($payload.useCredential) {
+  $securePassword = ConvertTo-SecureString -String $payload.password -AsPlainText -Force
+  $credential = New-Object System.Management.Automation.PSCredential($payload.username, $securePassword)
+  $wmi = @{
+    ComputerName = $target
+    Credential = $credential
+    Authentication = "PacketPrivacy"
+    Impersonation = "Impersonate"
+  }
+} else {
+  $wmi = @{
+    ComputerName = $target
+  }
 }
 $cpuSampleSeconds = 1
 $processorStart = Get-WmiObject -Class Win32_PerfRawData_PerfOS_Processor @wmi -Filter "Name='_Total'"
@@ -3495,13 +3528,14 @@ $ramPercent = if ($totalKb -gt 0) { [math]::Round((($totalKb - $freeKb) / $total
     encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     payload = json.dumps(
         {
-            "host": wmi_target_host(config),
+            "host": target,
             "username": config.wmi_username,
             "password": config.wmi_password,
+            "isLocal": is_local_target,
+            "useCredential": bool(config.wmi_username and config.wmi_password and not is_local_target),
         },
         ensure_ascii=True,
     )
-    target = wmi_target_host(config)
     wmi_timeout = max(10, min(config.timeout_seconds, 120))
     try:
         completed = subprocess.run(

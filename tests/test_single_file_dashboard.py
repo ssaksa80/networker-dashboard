@@ -582,6 +582,61 @@ def test_wmi_health_reports_memory_in_gb(monkeypatch):
     assert "GB used" in health["ramDetail"]
 
 
+def test_wmi_local_target_omits_explicit_credentials(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    captured = {}
+
+    def completed_run(*args, **kwargs):
+        encoded_index = args[0].index("-EncodedCommand") + 1
+        script = dashboard.base64.b64decode(args[0][encoded_index]).decode("utf-16le")
+        captured["script"] = script
+        captured["payload"] = json.loads(kwargs["input"])
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "host": "localhost",
+                    "cpuUsagePercent": 7,
+                    "cpuSampleSeconds": 1,
+                    "ramUsagePercent": 25,
+                    "totalMemoryMb": 64 * 1024,
+                    "freeMemoryMb": 48 * 1024,
+                    "osCaption": "Windows Server 2019",
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(dashboard.subprocess, "run", completed_run)
+
+    config = dashboard.ApiConfig(
+        rest_api_host="localhost",
+        rest_api_port=9090,
+        backup_server_host="localhost",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=True,
+        wmi_username=r"DOMAIN\svc_networker_health",
+        wmi_password="wmi-password",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    health = dashboard.load_server_health_wmi(config)
+
+    assert health["cpuUsagePercent"] == 7
+    assert captured["payload"]["isLocal"] is True
+    assert captured["payload"]["useCredential"] is False
+    assert "if ($payload.isLocal)" in captured["script"]
+
+
 def test_server_health_session_refresh_reuses_session(monkeypatch):
     dashboard = load_single_file_dashboard()
     config = dashboard.ApiConfig(
