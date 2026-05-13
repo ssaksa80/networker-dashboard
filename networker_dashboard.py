@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -1896,6 +1896,9 @@ HTML_PAGE = r"""<!doctype html>
     const alertTestBtn = document.getElementById("alertTestBtn");
     const alertStopBtn = document.getElementById("alertStopBtn");
     const alertAutomationStatus = document.getElementById("alertAutomationStatus");
+    const smtpSecurity = document.getElementById("smtpSecurity");
+    const smtpPort = document.getElementById("smtpPort");
+    const smtpUsername = document.getElementById("smtpUsername");
     const smtpPassword = document.getElementById("smtpPassword");
     const notice = document.getElementById("notice");
     const healthGrid = document.getElementById("healthGrid");
@@ -2683,15 +2686,30 @@ HTML_PAGE = r"""<!doctype html>
       } catch (error) {}
     }
 
+    function syncSmtpSecurityFields() {
+      const isPlainSmtp = smtpSecurity.value === "none";
+      if (isPlainSmtp) {
+        smtpPort.value = "25";
+        smtpUsername.value = "";
+        smtpPassword.value = "";
+      } else if (!smtpPort.value || smtpPort.value === "25") {
+        smtpPort.value = smtpSecurity.value === "ssl" ? "465" : "587";
+      }
+      smtpUsername.disabled = isPlainSmtp;
+      smtpPassword.disabled = isPlainSmtp;
+      smtpUsername.placeholder = isPlainSmtp ? "Disabled for SMTP without authentication" : "";
+      smtpPassword.placeholder = isPlainSmtp ? "Disabled for SMTP without authentication" : "";
+    }
+
     function alertAutomationPayload(action) {
       const payload = {
         action,
         sessionId,
         smtpHost: document.getElementById("smtpHost").value.trim(),
-        smtpPort: document.getElementById("smtpPort").value.trim(),
-        smtpSecurity: document.getElementById("smtpSecurity").value,
-        smtpUsername: document.getElementById("smtpUsername").value.trim(),
-        smtpPassword: smtpPassword.value,
+        smtpPort: smtpPort.value.trim(),
+        smtpSecurity: smtpSecurity.value,
+        smtpUsername: smtpSecurity.value === "none" ? "" : smtpUsername.value.trim(),
+        smtpPassword: smtpSecurity.value === "none" ? "" : smtpPassword.value,
         smtpFrom: document.getElementById("smtpFrom").value.trim(),
         smtpTo: document.getElementById("smtpTo").value.trim(),
         intervalMinutes: document.getElementById("alertIntervalMinutes").value.trim(),
@@ -2894,6 +2912,7 @@ HTML_PAGE = r"""<!doctype html>
     autoRefreshMode.addEventListener("change", scheduleAutoRefresh);
     refreshMinutes.addEventListener("change", scheduleAutoRefresh);
     themeSelect.addEventListener("change", () => applyTheme(themeSelect.value));
+    smtpSecurity.addEventListener("change", syncSmtpSecurityFields);
 
     clearBtn.addEventListener("click", () => {
       form.reset();
@@ -2910,6 +2929,7 @@ HTML_PAGE = r"""<!doctype html>
       form.useAuthcHeader.checked = true;
       form.verifyTls.checked = true;
       smtpPassword.value = "";
+      syncSmtpSecurityFields();
       alertAutomationStatus.textContent = "Not scheduled";
       clearPassword();
       resetDashboard();
@@ -2928,6 +2948,7 @@ HTML_PAGE = r"""<!doctype html>
       try { return localStorage.getItem("nw_dashboard_theme") || "default"; }
       catch (error) { return "default"; }
     })());
+    syncSmtpSecurityFields();
     exportBtn.disabled = true;
   </script>
 </body>

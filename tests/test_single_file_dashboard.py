@@ -237,6 +237,9 @@ def test_dashboard_html_embeds_networker_logo_data_uri():
     assert "/api/alert-automation" in html
     assert "value=\"arctic\"" in html
     assert "value=\"ember\"" in html
+    assert "function syncSmtpSecurityFields()" in html
+    assert 'smtpPort.value = "25"' in html
+    assert "smtpUsername.disabled = isPlainSmtp" in html
 
 
 def test_server_health_payload_and_maintenance_status():

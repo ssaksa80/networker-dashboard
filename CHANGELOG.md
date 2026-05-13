@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.5 - 2026-05-13
+
+- Updated SMTP security UI behavior so selecting `None` forces port `25`.
+- SMTP username and password fields are disabled and cleared when SMTP security is set to `None`.
+
 ## v1.1.4 - 2026-05-13
 
 - Fixed daily scheduled report test emails after the SMTP password field is cleared by reusing the encrypted in-memory scheduled SMTP password.
