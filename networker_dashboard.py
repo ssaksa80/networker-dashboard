@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -695,6 +695,7 @@ HTML_PAGE = r"""<!doctype html>
       font-size: 12px;
       color: var(--muted);
       font-weight: 720;
+      white-space: pre-wrap;
     }
 
     .management-grid {
@@ -2729,6 +2730,19 @@ HTML_PAGE = r"""<!doctype html>
       return payload;
     }
 
+    function smtpDebugSummary(debug) {
+      if (!debug || typeof debug !== "object") return "";
+      const lines = [
+        `SMTP stage: ${debug.stage || "unknown"}`,
+        `SMTP host: ${debug.host || "--"}:${debug.port || "--"}`,
+        `SMTP security: ${debug.security || "none"}`,
+        `SMTP auth: ${debug.usernameProvided ? "enabled" : "disabled"}`,
+        `Recipients: ${debug.recipientCount || 0}`,
+      ];
+      if (debug.detail) lines.unshift(debug.detail);
+      return lines.join("\\n");
+    }
+
     async function submitAlertAutomation(action) {
       if (!sessionId && action !== "stop") {
         alertAutomationStatus.textContent = "Connect before scheduling alerts";
@@ -2746,8 +2760,15 @@ HTML_PAGE = r"""<!doctype html>
           cache: "no-store",
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || `Alert automation failed with HTTP ${response.status}`);
-        alertAutomationStatus.textContent = data.message || "Alert automation updated";
+        if (!response.ok) {
+          const debugText = smtpDebugSummary(data.smtpDebug);
+          const message = data.error || `Alert automation failed with HTTP ${response.status}`;
+          throw new Error(debugText ? `${message}\\n${debugText}` : message);
+        }
+        const successDebug = action === "test" ? smtpDebugSummary(data.smtpDebug) : "";
+        alertAutomationStatus.textContent = successDebug
+          ? `${data.message || "Alert automation updated"}\\n${successDebug}`
+          : data.message || "Alert automation updated";
         if (action === "test") setStatus("Test email sent", "ok");
         if (action === "start") setStatus("Alerts scheduled", "ok");
         if (action === "stop") setStatus("Alerts stopped", "neutral");
@@ -3044,6 +3065,16 @@ class RestApiError(RuntimeError):
         self.status_code = status_code
         self.message = message
         self.body = body
+
+
+class SmtpDeliveryError(RuntimeError):
+    def __init__(self, stage: str, detail: str, diagnostics: dict[str, Any]) -> None:
+        self.stage = stage
+        self.detail = safe_log_text(detail, 900)
+        self.diagnostics = dict(diagnostics)
+        self.diagnostics["stage"] = stage
+        self.diagnostics["detail"] = self.detail
+        super().__init__(f"SMTP {stage} failed: {self.detail}")
 
 
 def parse_port(value: Any, default: int, field_name: str) -> int:
@@ -5605,36 +5636,107 @@ def should_send_alert(trigger: str, severity: str) -> bool:
     return severity == "critical"
 
 
+def smtp_debug_snapshot(settings: AlertAutomation, smtp_password: str, stage: str = "prepare") -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "host": settings.smtp_host,
+        "port": settings.smtp_port,
+        "security": settings.smtp_security,
+        "usernameProvided": bool(settings.smtp_username),
+        "passwordProvided": bool(smtp_password),
+        "recipientCount": len(settings.recipients),
+    }
+
+
+def smtp_exception_detail(exc: BaseException) -> str:
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        smtp_error = exc.smtp_error.decode("utf-8", errors="replace") if isinstance(exc.smtp_error, bytes) else exc.smtp_error
+        return f"authentication rejected by SMTP server: code={exc.smtp_code} response={smtp_error}"
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        return f"all recipients were refused by SMTP server: {exc.recipients}"
+    if isinstance(exc, smtplib.SMTPSenderRefused):
+        return f"sender was refused by SMTP server: code={exc.smtp_code} sender={exc.sender} response={exc.smtp_error}"
+    if isinstance(exc, smtplib.SMTPDataError):
+        smtp_error = exc.smtp_error.decode("utf-8", errors="replace") if isinstance(exc.smtp_error, bytes) else exc.smtp_error
+        return f"SMTP data command failed: code={exc.smtp_code} response={smtp_error}"
+    if isinstance(exc, smtplib.SMTPConnectError):
+        smtp_error = exc.smtp_error.decode("utf-8", errors="replace") if isinstance(exc.smtp_error, bytes) else exc.smtp_error
+        return f"SMTP connection rejected: code={exc.smtp_code} response={smtp_error}"
+    if isinstance(exc, smtplib.SMTPServerDisconnected):
+        return f"SMTP server disconnected: {exc}"
+    if isinstance(exc, TimeoutError) or isinstance(exc, socket.timeout):
+        return "SMTP connection timed out."
+    if isinstance(exc, ssl.SSLError):
+        return f"TLS/SSL error: {exc}"
+    if isinstance(exc, OSError):
+        return f"network error: {exc}"
+    return str(exc) or exc.__class__.__name__
+
+
 def send_smtp_email(
     settings: AlertAutomation,
     subject: str,
     body: str,
     smtp_password: str,
     html_body: str = "",
-) -> None:
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = settings.smtp_from
-    message["To"] = ", ".join(settings.recipients)
-    message["Date"] = email.utils.formatdate(localtime=True)
-    message.set_content(body)
-    if html_body:
-        message.add_alternative(html_body, subtype="html")
+) -> dict[str, Any]:
+    stage = "prepare_message"
+    diagnostics = smtp_debug_snapshot(settings, smtp_password, stage)
+    try:
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = settings.smtp_from
+        message["To"] = ", ".join(settings.recipients)
+        message["Date"] = email.utils.formatdate(localtime=True)
+        message.set_content(body)
+        if html_body:
+            message.add_alternative(html_body, subtype="html")
 
-    if settings.smtp_security == "ssl":
-        with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
-            if settings.smtp_username:
-                smtp.login(settings.smtp_username, smtp_password)
-            smtp.send_message(message)
-    else:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
-            smtp.ehlo()
-            if settings.smtp_security == "starttls":
-                smtp.starttls()
+        if settings.smtp_security == "ssl":
+            stage = "connect_ssl"
+            diagnostics["stage"] = stage
+            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
+                if settings.smtp_username:
+                    stage = "login"
+                    diagnostics["stage"] = stage
+                    smtp.login(settings.smtp_username, smtp_password)
+                stage = "send_message"
+                diagnostics["stage"] = stage
+                smtp.send_message(message)
+        else:
+            stage = "connect"
+            diagnostics["stage"] = stage
+            with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
+                stage = "ehlo"
+                diagnostics["stage"] = stage
                 smtp.ehlo()
-            if settings.smtp_username:
-                smtp.login(settings.smtp_username, smtp_password)
-            smtp.send_message(message)
+                if settings.smtp_security == "starttls":
+                    stage = "starttls"
+                    diagnostics["stage"] = stage
+                    smtp.starttls()
+                    stage = "ehlo_after_starttls"
+                    diagnostics["stage"] = stage
+                    smtp.ehlo()
+                if settings.smtp_username:
+                    stage = "login"
+                    diagnostics["stage"] = stage
+                    smtp.login(settings.smtp_username, smtp_password)
+                stage = "send_message"
+                diagnostics["stage"] = stage
+                smtp.send_message(message)
+        diagnostics["stage"] = "sent"
+        diagnostics["detail"] = "Email accepted by SMTP server."
+        return diagnostics
+    except (
+        smtplib.SMTPException,
+        TimeoutError,
+        socket.timeout,
+        OSError,
+        ssl.SSLError,
+    ) as exc:
+        detail = smtp_exception_detail(exc)
+        debug_log(f"SMTP delivery failed at {stage}: {detail}")
+        raise SmtpDeliveryError(stage, detail, diagnostics) from exc
 
 
 def cancel_alert_automation(automation_id: str) -> bool:
@@ -5679,27 +5781,42 @@ def run_alert_automation(automation_id: str) -> None:
             raise RuntimeError(dashboard.get("error") or "Dashboard session refresh failed.")
         if automation.schedule_type == "daily_report":
             plain, html_body = dashboard_report_email(dashboard)
-            send_smtp_email(
+            report_password = decrypt_process_secret(automation.encrypted_smtp_password)
+            smtp_debug = send_smtp_email(
                 automation,
                 "NetWorker daily backup status and SLA report",
                 plain,
-                decrypt_process_secret(automation.encrypted_smtp_password),
+                report_password,
                 html_body,
-            )
+            ) or smtp_debug_snapshot(automation, report_password, "sent")
             automation.last_signature = dashboard.get("generatedAt") or generated_at()
-            automation.last_result = f"Sent daily backup/SLA report at {generated_at()}"
+            automation.last_result = (
+                f"Sent daily backup/SLA report at {generated_at()} "
+                f"via {smtp_debug.get('host')}:{smtp_debug.get('port')}"
+            )
             automation.last_run = time.time()
             return
         severity, lines = dashboard_alert_lines(dashboard)
         signature = "|".join(lines)
         if should_send_alert(automation.trigger, severity) and signature != automation.last_signature:
             subject = f"NetWorker dashboard alert: {severity.title()}"
-            send_smtp_email(automation, subject, "\n".join(lines), decrypt_process_secret(automation.encrypted_smtp_password))
+            alert_password = decrypt_process_secret(automation.encrypted_smtp_password)
+            smtp_debug = send_smtp_email(
+                automation,
+                subject,
+                "\n".join(lines),
+                alert_password,
+            ) or smtp_debug_snapshot(automation, alert_password, "sent")
             automation.last_signature = signature
-            automation.last_result = f"Sent {severity} alert at {generated_at()}"
+            automation.last_result = (
+                f"Sent {severity} alert at {generated_at()} "
+                f"via {smtp_debug.get('host')}:{smtp_debug.get('port')}"
+            )
         else:
             automation.last_result = f"No matching alert at {generated_at()}"
         automation.last_run = time.time()
+    except SmtpDeliveryError as exc:
+        automation.last_result = f"SMTP failed at {exc.stage}: {exc.detail}"
     except Exception as exc:
         automation.last_result = f"Alert automation failed: {exc}"
     finally:
@@ -5751,14 +5868,22 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 if status == HTTPStatus.OK:
                     plain_body, html_body = dashboard_report_email(dashboard)
                     subject = "NetWorker daily backup status and SLA report - test"
-        send_smtp_email(
-            automation,
-            subject,
-            plain_body,
-            smtp_password,
-            html_body,
-        )
-        return HTTPStatus.OK, {"ok": True, "message": "Test email sent."}
+        try:
+            smtp_debug = send_smtp_email(
+                automation,
+                subject,
+                plain_body,
+                smtp_password,
+                html_body,
+            ) or smtp_debug_snapshot(automation, smtp_password, "sent")
+        except SmtpDeliveryError as exc:
+            return HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": str(exc),
+                "message": str(exc),
+                "smtpDebug": exc.diagnostics,
+            }
+        return HTTPStatus.OK, {"ok": True, "message": "Test email sent.", "smtpDebug": smtp_debug}
 
     cancel_alert_automation(session_id)
     ALERT_AUTOMATIONS[session_id] = automation

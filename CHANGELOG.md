@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.7 - 2026-05-13
+
+- Added SMTP delivery diagnostics for test email failures, including connect, EHLO, STARTTLS, login, and send stages.
+- Surfaced SMTP host, port, security mode, auth state, recipient count, and sanitized provider error details in the dashboard.
+- Preserved scheduled automation failure details without exposing SMTP passwords.
+
 ## v1.1.6 - 2026-05-13
 
 - Fixed WMI health collection for local backup server targets by omitting explicit credentials on local WMI calls.

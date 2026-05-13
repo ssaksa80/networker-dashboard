@@ -843,6 +843,123 @@ def test_alert_automation_test_email_uses_smtp_settings(monkeypatch):
     ]
 
 
+def test_smtp_sender_reports_exact_login_failure_without_password(monkeypatch):
+    dashboard = load_single_file_dashboard()
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=30):
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def ehlo(self):
+            return 250, b"ok"
+
+        def starttls(self):
+            return 220, b"ready"
+
+        def login(self, username, password):
+            raise dashboard.smtplib.SMTPAuthenticationError(535, b"5.7.8 Authentication failed")
+
+        def send_message(self, message):
+            raise AssertionError("send_message should not run after failed login")
+
+    monkeypatch.setattr(dashboard.smtplib, "SMTP", FakeSMTP)
+    automation = dashboard.AlertAutomation(
+        automation_id="smtp-test",
+        session_id="smtp-test",
+        smtp_host="smtp.example.com",
+        smtp_port=587,
+        smtp_username="svc",
+        encrypted_smtp_password="",
+        smtp_from="networker@example.com",
+        recipients=["ops@example.com"],
+        smtp_security="starttls",
+        interval_minutes=15,
+        trigger="warning",
+        schedule_type="alert",
+        report_time="08:00",
+        created_at=0,
+    )
+
+    try:
+        dashboard.send_smtp_email(automation, "Subject", "Body", "secret-password")
+        assert False, "Expected SmtpDeliveryError"
+    except dashboard.SmtpDeliveryError as exc:
+        assert exc.stage == "login"
+        assert exc.diagnostics["host"] == "smtp.example.com"
+        assert exc.diagnostics["port"] == 587
+        assert exc.diagnostics["security"] == "starttls"
+        assert exc.diagnostics["usernameProvided"] is True
+        assert exc.diagnostics["passwordProvided"] is True
+        assert "Authentication failed" in exc.detail
+        assert "secret-password" not in str(exc)
+        assert "secret-password" not in str(exc.diagnostics)
+
+
+def test_alert_automation_test_email_returns_smtp_debug_on_failure(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
+
+    def fake_send(settings, subject, body, smtp_password, html_body=""):
+        diagnostics = dashboard.smtp_debug_snapshot(settings, smtp_password, "login")
+        raise dashboard.SmtpDeliveryError("login", "535 Authentication failed", diagnostics)
+
+    monkeypatch.setattr(dashboard, "send_smtp_email", fake_send)
+
+    status, body = dashboard.handle_alert_automation(
+        {
+            "action": "test",
+            "sessionId": session_id,
+            "smtpHost": "smtp.example.com",
+            "smtpPort": "587",
+            "smtpSecurity": "starttls",
+            "smtpUsername": "svc",
+            "smtpPassword": "special;password!",
+            "smtpFrom": "networker@example.com",
+            "smtpTo": "ops@example.com",
+            "intervalMinutes": "15",
+            "trigger": "warning",
+            "scheduleType": "alert",
+            "reportTime": "08:00",
+        }
+    )
+
+    assert status == 502
+    assert body["ok"] is False
+    assert body["smtpDebug"]["stage"] == "login"
+    assert body["smtpDebug"]["host"] == "smtp.example.com"
+    assert body["smtpDebug"]["port"] == 587
+    assert body["smtpDebug"]["passwordProvided"] is True
+    assert "535 Authentication failed" in body["error"]
+    assert "special;password!" not in json.dumps(body)
+
+
 def test_daily_report_email_embeds_backup_status_and_sla():
     dashboard = load_single_file_dashboard()
     plain, html = dashboard.dashboard_report_email(
