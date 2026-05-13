@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -5275,9 +5275,131 @@ def dashboard_report_rows(dashboard: dict[str, Any]) -> list[tuple[str, str]]:
     ]
 
 
+def report_int(value: Any) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def report_percent(part: int, total: int) -> int:
+    return round((part / total) * 100) if total else 0
+
+
+def report_bar(label: str, value: int, max_value: int, color: str) -> str:
+    width = max(2, min(100, round((value / max(1, max_value)) * 100)))
+    return (
+        '<tr>'
+        f'<td style="padding:7px 10px 7px 0;width:92px;font-size:12px;color:#1d3440;">{html_lib.escape(label)}</td>'
+        '<td style="padding:7px 8px;width:150px;">'
+        '<div style="height:9px;background:#edf2f4;border:1px solid #cbd7dd;border-radius:6px;overflow:hidden;">'
+        f'<div style="height:9px;width:{width}%;background:{color};border-radius:6px;"></div>'
+        '</div>'
+        '</td>'
+        f'<td style="padding:7px 0 7px 6px;width:42px;text-align:right;font-size:12px;font-weight:700;color:#0b1d26;">{value:,}</td>'
+        '</tr>'
+    )
+
+
+def report_metric_card(label: str, value: int, color: str) -> str:
+    return (
+        '<td style="padding:0 8px 8px 0;width:16.66%;">'
+        '<div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px 14px 12px;">'
+        f'<div style="font-size:12px;color:#1d3440;font-weight:700;margin-bottom:20px;">{html_lib.escape(label)}</div>'
+        f'<div style="font-size:28px;line-height:1;font-weight:800;color:{color};">{value:,}</div>'
+        '</div>'
+        '</td>'
+    )
+
+
+def report_donut_card(
+    title: str,
+    center_value: str,
+    center_label: str,
+    legend: list[tuple[str, int, str]],
+    meta: str,
+) -> str:
+    total = sum(max(0, value) for _, value, _ in legend)
+    cursor = 0.0
+    segments = []
+    for _, value, color in legend:
+        if not value or total <= 0:
+            continue
+        end = cursor + ((value / total) * 360)
+        segments.append(f"{color} {cursor:.2f}deg {end:.2f}deg")
+        cursor = end
+    gradient = ", ".join(segments) if segments else "#d8e3e8 0deg 360deg"
+    legend_rows = "".join(
+        '<tr>'
+        f'<td style="padding:4px 6px 4px 0;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{color};"></span></td>'
+        f'<td style="padding:4px 8px 4px 0;font-size:12px;font-weight:700;color:#0b1d26;">{html_lib.escape(label)}</td>'
+        f'<td style="padding:4px 0;text-align:right;font-size:12px;font-weight:800;color:#0b1d26;">{value:,} ({report_percent(value, total)}%)</td>'
+        '</tr>'
+        for label, value, color in legend
+    )
+    return f"""
+      <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
+        <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;min-height:252px;">
+          <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:10px;">
+            <tr>
+              <td style="font-size:14px;font-weight:800;color:#0b1d26;">{html_lib.escape(title)}</td>
+              <td style="font-size:12px;color:#2a3e4a;text-align:right;">{html_lib.escape(meta)}</td>
+            </tr>
+          </table>
+          <table role="presentation" style="width:100%;border-collapse:collapse;">
+            <tr>
+              <td style="width:150px;vertical-align:middle;">
+                <div style="width:150px;height:150px;border-radius:50%;background:conic-gradient({gradient});display:table;text-align:center;">
+                  <div style="display:table-cell;vertical-align:middle;">
+                    <div style="width:88px;height:88px;margin:0 auto;border-radius:50%;background:#ffffff;border:1px solid #d4dee4;display:table;">
+                      <div style="display:table-cell;vertical-align:middle;text-align:center;">
+                        <div style="font-size:26px;font-weight:850;color:#0b1d26;line-height:1;">{html_lib.escape(center_value)}</div>
+                        <div style="font-size:10px;text-transform:uppercase;color:#40545f;font-weight:800;margin-top:5px;">{html_lib.escape(center_label)}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td style="vertical-align:middle;padding-left:14px;">
+                <table role="presentation" style="width:100%;border-collapse:collapse;">{legend_rows}</table>
+              </td>
+            </tr>
+          </table>
+        </div>
+      </td>
+    """
+
+
 def dashboard_report_email(dashboard: dict[str, Any]) -> tuple[str, str]:
+    summary = dashboard.get("summary") or {}
+    target = dashboard.get("target") or {}
     rows = dashboard_report_rows(dashboard)
     plain = "\n".join(f"{label}: {value}" for label, value in rows)
+    total_jobs = report_int(summary.get("totalJobs"))
+    successful = report_int(summary.get("successfulJobs"))
+    failed = report_int(summary.get("failedJobs"))
+    active = report_int(summary.get("activeJobs"))
+    recovery = report_int(summary.get("recoveryJobs"))
+    clones = report_int(summary.get("cloneJobs"))
+    alerts = report_int(summary.get("totalAlerts"))
+    clients = report_int(summary.get("totalClients"))
+    sla_percent = report_int(summary.get("slaPercent"))
+    sla_met = report_int(summary.get("slaMetJobs"))
+    sla_missed = report_int(summary.get("slaMissedJobs"))
+    range_label = str(summary.get("rangeLabel") or summary.get("range") or "Selected range")
+    generated = str(dashboard.get("generatedAt") or generated_at())
+    backup_server = str((target.get("backupServer") or "--"))
+    api_mode = str((target.get("apiMode") or "--")).upper()
+    overview = [
+        ("Clients", clients, "#4f8f9e"),
+        ("Successful", successful, "#18764a"),
+        ("Failed", failed, "#bd2b3a"),
+        ("Running", active, "#2457a6"),
+        ("Restores", recovery, "#a96800"),
+        ("Clones", clones, "#8a6fb0"),
+        ("Alerts", alerts, "#65747c"),
+    ]
+    max_overview = max([value for _, value, _ in overview] + [1])
     table_rows = "\n".join(
         "<tr>"
         f"<td style=\"padding:8px 10px;border:1px solid #d7e1e7;font-weight:700;\">{html_lib.escape(label)}</td>"
@@ -5285,14 +5407,127 @@ def dashboard_report_email(dashboard: dict[str, Any]) -> tuple[str, str]:
         "</tr>"
         for label, value in rows
     )
+    metric_rows = (
+        "<tr>"
+        + report_metric_card("Clients", clients, "#2457a6")
+        + report_metric_card("Successful Jobs", successful, "#18764a")
+        + report_metric_card("Failed Jobs", failed, "#bd2b3a")
+        + report_metric_card("Active Jobs", active, "#2457a6")
+        + report_metric_card("Recovery Jobs", recovery, "#a96800")
+        + report_metric_card("Alerts", alerts, "#a96800")
+        + "</tr>"
+    )
+    overview_rows = "".join(report_bar(label, value, max_overview, color) for label, value, color in overview)
     html_body = f"""\
 <!doctype html>
 <html>
-  <body style="font-family:Segoe UI,Arial,sans-serif;color:#172026;">
-    <h2 style="margin:0 0 12px;">NetWorker Daily Backup Status and SLA Report</h2>
-    <table style="border-collapse:collapse;border:1px solid #d7e1e7;min-width:520px;">
-      {table_rows}
-    </table>
+  <body style="margin:0;padding:0;background:#eef3f6;font-family:Segoe UI,Arial,sans-serif;color:#172026;">
+    <div style="padding:18px;background:#eef3f6;">
+      <h2 style="margin:0 0 14px;color:#102832;">NetWorker Daily Backup Status and SLA Report</h2>
+      <table role="presentation" style="width:100%;border-collapse:collapse;">
+        <tr>
+          <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
+            <div style="background:#115360;border-radius:8px;padding:16px;color:#ffffff;min-height:252px;">
+              <table role="presentation" style="width:100%;border-collapse:collapse;">
+                <tr>
+                  <td style="width:68px;vertical-align:top;">
+                    <img alt="NetWorker" src="{networker_logo_src()}" style="width:60px;height:60px;object-fit:contain;background:#ffffff;border-radius:6px;padding:4px;">
+                  </td>
+                  <td style="vertical-align:top;padding-left:10px;">
+                    <div style="font-size:16px;font-weight:850;">DELL EMC NetWorker</div>
+                    <div style="font-size:12px;font-weight:700;margin-top:3px;">Backup &amp; Recovery Status</div>
+                  </td>
+                </tr>
+              </table>
+              <div style="margin-top:14px;background:rgba(255,255,255,0.14);border-radius:7px;padding:10px;font-size:13px;font-weight:800;">Connection established</div>
+              <table role="presentation" style="width:100%;border-collapse:collapse;margin-top:18px;color:#ffffff;">
+                <tr><td style="padding:6px 0;font-size:12px;">API source</td><td style="padding:6px 0;text-align:right;font-size:12px;font-weight:800;">{html_lib.escape(api_mode)}</td></tr>
+                <tr><td style="padding:6px 0;font-size:12px;">Backup server</td><td style="padding:6px 0;text-align:right;font-size:12px;font-weight:800;">{html_lib.escape(backup_server)}</td></tr>
+                <tr><td style="padding:6px 0;font-size:12px;">Updated</td><td style="padding:6px 0;text-align:right;font-size:12px;font-weight:800;">{html_lib.escape(generated)}</td></tr>
+              </table>
+              <div style="margin-top:12px;border-top:1px solid rgba(255,255,255,0.22);padding-top:10px;font-size:11px;line-height:1.35;">
+                <div>Maintained &amp; developed by</div>
+                <div style="font-weight:850;">SHAIKH SHOAIB</div>
+                <div>Sr. Advisor Delivery Specialist</div>
+                <div>DELL Technologies</div>
+              </div>
+            </div>
+          </td>
+          {report_donut_card(
+              "Activity Mix",
+              f"{successful + failed + active + recovery:,}",
+              "Activity",
+              [
+                  ("Successful", successful, "#18764a"),
+                  ("Failed", failed, "#bd2b3a"),
+                  ("Running", active, "#2457a6"),
+                  ("Restores", recovery, "#a96800"),
+              ],
+              range_label,
+          )}
+          {report_donut_card(
+              "Backup SLA",
+              f"{sla_percent}%",
+              "SLA",
+              [
+                  ("SLA met", sla_met, "#18764a"),
+                  ("Not met", sla_missed, "#bd2b3a"),
+              ],
+              f"{total_jobs:,} jobs",
+          )}
+        </tr>
+      </table>
+
+      <table role="presentation" style="width:100%;border-collapse:collapse;">
+        <tr>
+          <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
+            <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;min-height:198px;">
+              <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:12px;">
+                <tr><td style="font-size:14px;font-weight:800;color:#0b1d26;">Management Overview</td><td style="font-size:12px;text-align:right;color:#2a3e4a;">Live API</td></tr>
+              </table>
+              <table role="presentation" style="width:100%;border-collapse:collapse;">{overview_rows}</table>
+            </div>
+          </td>
+          <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
+            <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;min-height:198px;">
+              <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:18px;">
+                <tr><td style="font-size:14px;font-weight:800;color:#0b1d26;">Recovery Health</td><td style="font-size:12px;text-align:right;color:#2a3e4a;">Restores</td></tr>
+              </table>
+              <div style="background:#f1f5f7;border:1px solid #d4dee4;border-radius:7px;padding:12px;margin-bottom:13px;">
+                <div style="font-size:24px;font-weight:850;color:#0b1d26;">{recovery:,}</div>
+                <div style="font-size:12px;font-weight:700;color:#40545f;">Restore jobs in {html_lib.escape(range_label)}</div>
+              </div>
+              <div style="font-size:12px;padding:6px 0;">Failed restores <strong style="float:right;">{report_int(summary.get('recoveryFailed')):,}</strong></div>
+              <div style="font-size:12px;padding:6px 0;">Running restores <strong style="float:right;">{report_int(summary.get('recoveryRunning')):,}</strong></div>
+              <div style="font-size:12px;padding:6px 0;">Clone jobs excluded <strong style="float:right;">{clones:,}</strong></div>
+            </div>
+          </td>
+          <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
+            <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;min-height:198px;">
+              <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:18px;">
+                <tr><td style="font-size:14px;font-weight:800;color:#0b1d26;">Clone Jobs</td><td style="font-size:12px;text-align:right;color:#2a3e4a;">Actions</td></tr>
+              </table>
+              <div style="background:#f1f5f7;border:1px solid #d4dee4;border-radius:7px;padding:12px;margin-bottom:13px;">
+                <div style="font-size:24px;font-weight:850;color:#0b1d26;">{clones:,}</div>
+                <div style="font-size:12px;font-weight:700;color:#40545f;">Clone jobs in {html_lib.escape(range_label)}</div>
+              </div>
+              <div style="font-size:12px;padding:6px 0;">Failed clone jobs <strong style="float:right;">{report_int(summary.get('cloneFailed')):,}</strong></div>
+              <div style="font-size:12px;padding:6px 0;">Running clone jobs <strong style="float:right;">{report_int(summary.get('cloneRunning')):,}</strong></div>
+              <div style="font-size:12px;padding:6px 0;">Clone sessions <strong style="float:right;">{report_int(summary.get('cloneSessionTotal')):,}</strong></div>
+            </div>
+          </td>
+        </tr>
+      </table>
+
+      <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:12px;">{metric_rows}</table>
+
+      <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;">
+        <h3 style="margin:0 0 12px;font-size:14px;color:#0b1d26;">Report Details</h3>
+        <table style="border-collapse:collapse;border:1px solid #d7e1e7;min-width:520px;width:100%;">
+          {table_rows}
+        </table>
+      </div>
+    </div>
   </body>
 </html>
 """

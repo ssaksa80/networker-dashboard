@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.2 - 2026-05-13
+
+- Enhanced scheduled daily email reports with an embedded dashboard-style HTML summary.
+- Added branded status, Activity Mix, Backup SLA, Management Overview, Recovery Health, Clone Jobs, and metric cards to the report email body.
+
 ## v1.1.1 - 2026-05-13
 
 - Fixed repeated Server Protection Job fallback text when intermittent REST/NWUI refresh timeouts occur.

@@ -811,6 +811,12 @@ def test_daily_report_email_embeds_backup_status_and_sla():
     assert "Total backup jobs: 36" in plain
     assert "Backup SLA: 97% (35 met / 36 total)" in plain
     assert "<table" in html
+    assert "DELL EMC NetWorker" in html
+    assert "Activity Mix" in html
+    assert "Management Overview" in html
+    assert "Recovery Health" in html
+    assert "Clone Jobs" in html
+    assert "Successful Jobs" in html
     assert "Server backup completed" in html
 
 
@@ -898,6 +904,8 @@ def test_daily_report_automation_sends_embedded_report(monkeypatch):
     assert "Backup SLA: 100% (10 met / 10 total)" in sent[0][1]
     assert sent[0][2] == "daily-secret"
     assert "<table" in sent[0][3]
+    assert "Activity Mix" in sent[0][3]
+    assert "Backup SLA" in sent[0][3]
 
 
 def test_server_health_session_refresh_uses_wmi_without_nwui_fallback(monkeypatch):
