@@ -233,6 +233,10 @@ def test_dashboard_html_embeds_networker_logo_data_uri():
     assert html.count("data:image/png;base64,") >= 4
     assert "/networker-logo.png" not in html
     assert "SHAIKH SHOAIB" in html
+    assert "Email Alert Automation" in html
+    assert "/api/alert-automation" in html
+    assert "value=\"arctic\"" in html
+    assert "value=\"ember\"" in html
 
 
 def test_server_health_payload_and_maintenance_status():
@@ -622,6 +626,116 @@ def test_server_health_session_refresh_reuses_session(monkeypatch):
     assert body["ok"] is True
     assert body["serverHealth"]["cpuUsagePercent"] == 12
     assert body["serverHealth"]["ramUsedGb"] == 16
+    assert body["serverProtectionJob"]["label"] == "Not found"
+
+
+def test_server_health_session_refresh_returns_live_server_protection(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
+
+    monkeypatch.setattr(
+        dashboard,
+        "load_server_health_nwui",
+        lambda *args, **kwargs: dashboard.unavailable_server_health("health skipped"),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "nwui_monitoring_all_pages",
+        lambda *args, **kwargs: [
+            {
+                "startTime": 1778400000000,
+                "duration": 120000,
+                "status": "completed",
+                "workflowName": "Server Protection",
+                "actionName": "Server backup",
+                "policyName": "Server Protection",
+                "jobData": {"successfulInputCount": 1},
+            }
+        ],
+    )
+
+    status, body = dashboard.build_server_health_from_session(session_id)
+
+    assert status == 200
+    assert body["serverProtectionJob"]["status"] == "succeeded"
+    assert body["serverProtectionJob"]["count"] == 1
+
+
+def test_alert_automation_test_email_uses_smtp_settings(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
+    sent = []
+
+    def fake_send(settings, subject, body, smtp_password):
+        sent.append((settings.smtp_host, settings.smtp_port, settings.recipients, subject, smtp_password))
+
+    monkeypatch.setattr(dashboard, "send_smtp_email", fake_send)
+
+    status, body = dashboard.handle_alert_automation(
+        {
+            "action": "test",
+            "sessionId": session_id,
+            "smtpHost": "smtp.example.com",
+            "smtpPort": "587",
+            "smtpSecurity": "starttls",
+            "smtpUsername": "svc",
+            "smtpPassword": "p@ss;word",
+            "smtpFrom": "networker@example.com",
+            "smtpTo": "ops@example.com;backup@example.com",
+            "intervalMinutes": "15",
+            "trigger": "warning",
+        }
+    )
+
+    assert status == 200
+    assert body["message"] == "Test email sent."
+    assert sent == [
+        (
+            "smtp.example.com",
+            587,
+            ["ops@example.com", "backup@example.com"],
+            "NetWorker dashboard test email",
+            "p@ss;word",
+        )
+    ]
 
 
 def test_server_health_session_refresh_uses_wmi_without_nwui_fallback(monkeypatch):
@@ -647,6 +761,11 @@ def test_server_health_session_refresh_uses_wmi_without_nwui_fallback(monkeypatc
     )
     session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
 
+    monkeypatch.setattr(
+        dashboard,
+        "refresh_server_protection_job_nwui",
+        lambda *args, **kwargs: dashboard.maintenance_backup_status([]),
+    )
     monkeypatch.setattr(
         dashboard,
         "load_server_health_wmi",
@@ -700,6 +819,11 @@ def test_auto_mode_session_refresh_uses_nwui_health(monkeypatch):
     )
     session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
     calls = []
+    monkeypatch.setattr(
+        dashboard,
+        "refresh_server_protection_job_nwui",
+        lambda *args, **kwargs: dashboard.maintenance_backup_status([]),
+    )
 
     def health(config, cookie_jar, auth_headers):
         calls.append((config.api_mode, auth_headers))

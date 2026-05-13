@@ -16,17 +16,20 @@ import email.utils
 import html as html_lib
 import json
 import re
+import smtplib
 import subprocess
 import socket
 import ssl
 import sys
+import threading
 import time
 import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 from http.cookiejar import CookieJar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -64,6 +67,8 @@ REPORT_RANGES = {
 CUSTOM_REPORT_RANGE = "custom"
 DEFAULT_REPORT_RANGE = "24h"
 SESSION_TTL_SECONDS = 8 * 60 * 60
+ALERT_AUTOMATION_MIN_INTERVAL_MINUTES = 1
+ALERT_AUTOMATION_MAX_INTERVAL_MINUTES = 1440
 WMI_CREDENTIAL_KEY = Fernet.generate_key() if Fernet else b""
 WMI_CIPHER = Fernet(WMI_CREDENTIAL_KEY) if Fernet else None
 NETWORKER_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "networker-logo.png"
@@ -268,6 +273,70 @@ HTML_PAGE = r"""<!doctype html>
       --shadow: 0 12px 28px rgba(47, 67, 91, 0.11);
     }
 
+    body[data-theme="arctic"] {
+      --bg: #edf7f8;
+      --surface: #ffffff;
+      --surface-2: #f4fbfb;
+      --ink: #10272d;
+      --muted: #5a737a;
+      --line: #c8dee3;
+      --brand: #0d7891;
+      --brand-ink: #ffffff;
+      --green: #168059;
+      --red: #b83245;
+      --amber: #9e7207;
+      --blue: #2d68a7;
+      --shadow: 0 12px 28px rgba(31, 91, 103, 0.11);
+    }
+
+    body[data-theme="citrus"] {
+      --bg: #f5f7ec;
+      --surface: #ffffff;
+      --surface-2: #fbfcf3;
+      --ink: #202817;
+      --muted: #68705b;
+      --line: #dde5ca;
+      --brand: #617d18;
+      --brand-ink: #ffffff;
+      --green: #23733f;
+      --red: #b43a47;
+      --amber: #a16d00;
+      --blue: #3f6fa5;
+      --shadow: 0 12px 28px rgba(76, 96, 31, 0.12);
+    }
+
+    body[data-theme="harbor"] {
+      --bg: #eef3f4;
+      --surface: #ffffff;
+      --surface-2: #f5f8f9;
+      --ink: #17242a;
+      --muted: #5e7077;
+      --line: #d0dce0;
+      --brand: #235f73;
+      --brand-ink: #ffffff;
+      --green: #24764f;
+      --red: #b63548;
+      --amber: #9d6e08;
+      --blue: #335fa3;
+      --shadow: 0 12px 28px rgba(35, 78, 93, 0.11);
+    }
+
+    body[data-theme="ember"] {
+      --bg: #f6f1ee;
+      --surface: #ffffff;
+      --surface-2: #fbf7f4;
+      --ink: #2a1f1a;
+      --muted: #75665f;
+      --line: #e2d4cd;
+      --brand: #8d4a36;
+      --brand-ink: #ffffff;
+      --green: #26734a;
+      --red: #b23545;
+      --amber: #9b6a10;
+      --blue: #3c67a2;
+      --shadow: 0 12px 28px rgba(96, 59, 43, 0.12);
+    }
+
     * {
       box-sizing: border-box;
     }
@@ -364,6 +433,26 @@ HTML_PAGE = r"""<!doctype html>
     body[data-theme="steel"] .topbar {
       background: #2f4054;
       border-bottom-color: #91a5b8;
+    }
+
+    body[data-theme="arctic"] .topbar {
+      background: #0b5e72;
+      border-bottom-color: #8fd3dc;
+    }
+
+    body[data-theme="citrus"] .topbar {
+      background: #536d14;
+      border-bottom-color: #cedb68;
+    }
+
+    body[data-theme="harbor"] .topbar {
+      background: #204f61;
+      border-bottom-color: #83c0cc;
+    }
+
+    body[data-theme="ember"] .topbar {
+      background: #7a3e2d;
+      border-bottom-color: #d99a78;
     }
 
     .title-group {
@@ -582,6 +671,30 @@ HTML_PAGE = r"""<!doctype html>
 
     .toolbar-actions button {
       white-space: nowrap;
+    }
+
+    .automation-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 12px;
+      padding: 14px;
+    }
+
+    .automation-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 0 14px 14px;
+    }
+
+    .automation-actions button {
+      min-width: 120px;
+    }
+
+    .automation-status {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 720;
     }
 
     .management-grid {
@@ -1319,7 +1432,8 @@ HTML_PAGE = r"""<!doctype html>
       .actions,
       .metric-grid,
       .donut-layout,
-      .toolbar-controls {
+      .toolbar-controls,
+      .automation-grid {
         grid-template-columns: 1fr;
       }
 
@@ -1506,6 +1620,10 @@ HTML_PAGE = r"""<!doctype html>
               <option value="forest">Forest</option>
               <option value="ruby">Ruby</option>
               <option value="steel">Steel</option>
+              <option value="arctic">Arctic</option>
+              <option value="citrus">Citrus</option>
+              <option value="harbor">Harbor</option>
+              <option value="ember">Ember</option>
             </select>
           </label>
           <label>
@@ -1664,6 +1782,64 @@ HTML_PAGE = r"""<!doctype html>
         </div>
       </section>
 
+      <section class="section" aria-label="Email alert automation">
+        <div class="section-head">
+          <h2>Email Alert Automation</h2>
+          <span id="alertAutomationStatus" class="automation-status">Not scheduled</span>
+        </div>
+        <div class="automation-grid">
+          <label>
+            SMTP host
+            <input id="smtpHost" placeholder="smtp.company.com" autocomplete="off" spellcheck="false">
+          </label>
+          <label>
+            SMTP port
+            <input id="smtpPort" value="587" inputmode="numeric" autocomplete="off">
+          </label>
+          <label>
+            Security
+            <select id="smtpSecurity">
+              <option value="starttls" selected>STARTTLS</option>
+              <option value="ssl">SSL/TLS</option>
+              <option value="none">None</option>
+            </select>
+          </label>
+          <label>
+            Schedule minutes
+            <input id="alertIntervalMinutes" value="60" inputmode="numeric" autocomplete="off">
+          </label>
+          <label>
+            SMTP username
+            <input id="smtpUsername" autocomplete="off" spellcheck="false">
+          </label>
+          <label>
+            SMTP password
+            <input id="smtpPassword" type="password" autocomplete="new-password">
+          </label>
+          <label>
+            From address
+            <input id="smtpFrom" placeholder="networker-dashboard@company.com" autocomplete="off" spellcheck="false">
+          </label>
+          <label>
+            To recipients
+            <input id="smtpTo" placeholder="ops@company.com; backup@company.com" autocomplete="off" spellcheck="false">
+          </label>
+          <label>
+            Trigger
+            <select id="alertTrigger">
+              <option value="critical" selected>Critical only</option>
+              <option value="warning">Warnings and critical</option>
+              <option value="all">Every scheduled check</option>
+            </select>
+          </label>
+        </div>
+        <div class="automation-actions">
+          <button id="alertScheduleBtn" class="primary" type="button">Schedule alerts</button>
+          <button id="alertTestBtn" class="ghost" type="button">Send test</button>
+          <button id="alertStopBtn" class="ghost" type="button">Stop alerts</button>
+        </div>
+      </section>
+
       <section class="section">
         <div class="section-head">
           <h2 id="tableTitle">Recent Jobs</h2>
@@ -1705,6 +1881,11 @@ HTML_PAGE = r"""<!doctype html>
     const refreshMinutes = document.getElementById("refreshMinutes");
     const themeSelect = document.getElementById("themeSelect");
     const clearBtn = document.getElementById("clearBtn");
+    const alertScheduleBtn = document.getElementById("alertScheduleBtn");
+    const alertTestBtn = document.getElementById("alertTestBtn");
+    const alertStopBtn = document.getElementById("alertStopBtn");
+    const alertAutomationStatus = document.getElementById("alertAutomationStatus");
+    const smtpPassword = document.getElementById("smtpPassword");
     const notice = document.getElementById("notice");
     const healthGrid = document.getElementById("healthGrid");
     const generatedAt = document.getElementById("generatedAt");
@@ -2458,7 +2639,13 @@ HTML_PAGE = r"""<!doctype html>
         if (response.ok && data.serverHealth) {
           latestDashboard = latestDashboard || {};
           latestDashboard.serverHealth = data.serverHealth;
+          if (data.serverProtectionJob) {
+            latestDashboard.serverProtectionJob = data.serverProtectionJob;
+            latestDashboard.maintenanceBackup = data.serverProtectionJob;
+          }
           renderServerHealth(data);
+          const rangeLabel = latestDashboard.summary?.rangeLabel ? ` - ${latestDashboard.summary.rangeLabel}` : "";
+          generatedAt.textContent = data.generatedAt ? `Updated ${data.generatedAt}${rangeLabel}` : generatedAt.textContent;
         }
       } catch (error) {
         if (window.console) console.warn("Server health refresh failed", error);
@@ -2483,6 +2670,55 @@ HTML_PAGE = r"""<!doctype html>
       try {
         localStorage.setItem("nw_dashboard_theme", value);
       } catch (error) {}
+    }
+
+    function alertAutomationPayload(action) {
+      return {
+        action,
+        sessionId,
+        smtpHost: document.getElementById("smtpHost").value.trim(),
+        smtpPort: document.getElementById("smtpPort").value.trim(),
+        smtpSecurity: document.getElementById("smtpSecurity").value,
+        smtpUsername: document.getElementById("smtpUsername").value.trim(),
+        smtpPassword: smtpPassword.value,
+        smtpFrom: document.getElementById("smtpFrom").value.trim(),
+        smtpTo: document.getElementById("smtpTo").value.trim(),
+        intervalMinutes: document.getElementById("alertIntervalMinutes").value.trim(),
+        trigger: document.getElementById("alertTrigger").value,
+      };
+    }
+
+    async function submitAlertAutomation(action) {
+      if (!sessionId && action !== "stop") {
+        alertAutomationStatus.textContent = "Connect before scheduling alerts";
+        setStatus("Connect first", "warn");
+        return;
+      }
+      alertScheduleBtn.disabled = true;
+      alertTestBtn.disabled = true;
+      alertStopBtn.disabled = true;
+      try {
+        const response = await fetch("/api/alert-automation", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(alertAutomationPayload(action)),
+          cache: "no-store",
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Alert automation failed with HTTP ${response.status}`);
+        alertAutomationStatus.textContent = data.message || "Alert automation updated";
+        if (action === "test") setStatus("Test email sent", "ok");
+        if (action === "start") setStatus("Alerts scheduled", "ok");
+        if (action === "stop") setStatus("Alerts stopped", "neutral");
+      } catch (error) {
+        alertAutomationStatus.textContent = error.message || "Alert automation failed";
+        setStatus("Email alert failed", "bad");
+      } finally {
+        smtpPassword.value = "";
+        alertScheduleBtn.disabled = false;
+        alertTestBtn.disabled = false;
+        alertStopBtn.disabled = false;
+      }
     }
 
     async function loadDashboard(options = {}) {
@@ -2594,6 +2830,18 @@ HTML_PAGE = r"""<!doctype html>
       exportReport();
     });
 
+    alertScheduleBtn.addEventListener("click", () => {
+      submitAlertAutomation("start");
+    });
+
+    alertTestBtn.addEventListener("click", () => {
+      submitAlertAutomation("test");
+    });
+
+    alertStopBtn.addEventListener("click", () => {
+      submitAlertAutomation("stop");
+    });
+
     showConnectionBtn.addEventListener("click", () => {
       document.body.classList.remove("connected");
     });
@@ -2638,6 +2886,8 @@ HTML_PAGE = r"""<!doctype html>
       form.useWmiHealth.checked = true;
       form.useAuthcHeader.checked = true;
       form.verifyTls.checked = true;
+      smtpPassword.value = "";
+      alertAutomationStatus.textContent = "Not scheduled";
       clearPassword();
       resetDashboard();
     });
@@ -2709,9 +2959,33 @@ class DashboardSession:
     encrypted_wmi_password: str
     created_at: float
     last_used: float
+    server_protection_job: dict[str, Any] = field(default_factory=dict)
 
 
 DASHBOARD_SESSIONS: dict[str, DashboardSession] = {}
+
+
+@dataclass
+class AlertAutomation:
+    automation_id: str
+    session_id: str
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    encrypted_smtp_password: str
+    smtp_from: str
+    recipients: list[str]
+    smtp_security: str
+    interval_minutes: int
+    trigger: str
+    created_at: float
+    last_run: float = 0.0
+    last_result: str = "Scheduled"
+    last_signature: str = ""
+    timer: threading.Timer | None = None
+
+
+ALERT_AUTOMATIONS: dict[str, AlertAutomation] = {}
 
 
 class BadRequest(ValueError):
@@ -3053,19 +3327,27 @@ def server_health_from_payload(data: Any, source: str) -> dict[str, Any] | None:
     }
 
 
-def encrypt_wmi_password(password: str) -> str:
-    if not password or not WMI_CIPHER:
+def encrypt_process_secret(secret: str) -> str:
+    if not secret or not WMI_CIPHER:
         return ""
-    return WMI_CIPHER.encrypt(password.encode("utf-8")).decode("ascii")
+    return WMI_CIPHER.encrypt(secret.encode("utf-8")).decode("ascii")
+
+
+def decrypt_process_secret(encrypted_secret: str) -> str:
+    if not encrypted_secret or not WMI_CIPHER:
+        return ""
+    try:
+        return WMI_CIPHER.decrypt(encrypted_secret.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return ""
+
+
+def encrypt_wmi_password(password: str) -> str:
+    return encrypt_process_secret(password)
 
 
 def decrypt_wmi_password(encrypted_password: str) -> str:
-    if not encrypted_password or not WMI_CIPHER:
-        return ""
-    try:
-        return WMI_CIPHER.decrypt(encrypted_password.encode("ascii")).decode("utf-8")
-    except (InvalidToken, ValueError):
-        return ""
+    return decrypt_process_secret(encrypted_password)
 
 
 def wmi_target_host(config: ApiConfig) -> str:
@@ -4443,7 +4725,61 @@ def build_nwui_policies(policy_items: list[Any], jobs: list[dict[str, Any]]) -> 
     return sorted(output, key=lambda item: item["resource"])
 
 
-def create_dashboard_session(config: ApiConfig, cookie_jar: CookieJar, auth_headers: dict[str, str]) -> str:
+def refresh_server_protection_job_nwui(
+    config: ApiConfig,
+    cookie_jar: CookieJar,
+    auth_headers: dict[str, str],
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = ssl_context_for_api(config.verify_tls)
+    import urllib.request as _urllib_request
+
+    opener = _urllib_request.build_opener(
+        _urllib_request.HTTPCookieProcessor(cookie_jar),
+        _urllib_request.HTTPSHandler(context=context),
+    )
+    now = time.time()
+    lookback_start = now - (7 * 24 * 60 * 60)
+    try:
+        items = nwui_monitoring_all_pages(
+            replace(config, api_mode="nwui"),
+            opener,
+            auth_headers,
+            "monitoringactions",
+            start_ts=lookback_start,
+            end_ts=now,
+        )
+        jobs = [job for job in (project_nwui_job(item) for item in items) if job]
+        jobs = sorted(jobs, key=lambda item: item.get("started") or "", reverse=True)
+        status = maintenance_backup_status(jobs)
+        if status.get("count"):
+            return status
+        if previous and previous.get("count"):
+            return {
+                **previous,
+                "detail": f"{previous.get('detail', 'Last known Server Protection job')} (last known)",
+            }
+        return status
+    except RestApiError as exc:
+        if previous and previous.get("count"):
+            return {
+                **previous,
+                "detail": f"{previous.get('detail', 'Last known Server Protection job')} (last known; refresh failed: {exc.message})",
+            }
+        return {
+            "status": "unknown",
+            "label": "Unavailable",
+            "detail": f"Server Protection refresh failed: {exc.message}",
+            "count": 0,
+        }
+
+
+def create_dashboard_session(
+    config: ApiConfig,
+    cookie_jar: CookieJar,
+    auth_headers: dict[str, str],
+    server_protection_job: dict[str, Any] | None = None,
+) -> str:
     cleanup_dashboard_sessions()
     session_id = uuid.uuid4().hex
     DASHBOARD_SESSIONS[session_id] = DashboardSession(
@@ -4453,6 +4789,7 @@ def create_dashboard_session(config: ApiConfig, cookie_jar: CookieJar, auth_head
         encrypted_wmi_password=encrypt_wmi_password(config.wmi_password),
         created_at=time.time(),
         last_used=time.time(),
+        server_protection_job=server_protection_job or maintenance_backup_status([]),
     )
     return session_id
 
@@ -4466,6 +4803,7 @@ def cleanup_dashboard_sessions() -> None:
     ]
     for session_id in stale:
         DASHBOARD_SESSIONS.pop(session_id, None)
+        cancel_alert_automation(session_id)
 
 
 def build_dashboard_from_session(
@@ -4547,11 +4885,23 @@ def build_server_health_from_session(session_id: str) -> tuple[int, dict[str, An
     else:
         health = unavailable_server_health("Real-time server health refresh requires a dashboard session with stored authentication.")
 
+    if session.auth_headers or any(True for _ in session.cookie_jar):
+        server_protection = refresh_server_protection_job_nwui(
+            config,
+            session.cookie_jar,
+            session.auth_headers,
+            session.server_protection_job,
+        )
+    else:
+        server_protection = session.server_protection_job or maintenance_backup_status([])
+    session.server_protection_job = server_protection
     session.config = replace(config, wmi_password="")
     return HTTPStatus.OK, {
         "ok": True,
         "generatedAt": generated_at(),
         "serverHealth": health,
+        "serverProtectionJob": server_protection,
+        "maintenanceBackup": server_protection,
     }
 
 
@@ -4783,8 +5133,198 @@ def build_dashboard_nwui(
         body["error"] = first_error or "NWUI login worked, but no monitoring endpoints returned data."
         return 502, body
     if create_session:
-        body["sessionId"] = create_dashboard_session(config, cookie_jar, auth_headers)
+        body["sessionId"] = create_dashboard_session(config, cookie_jar, auth_headers, maintenance_backup)
     return 200, body
+
+
+def parse_email_recipients(value: Any) -> list[str]:
+    raw = str(value or "").replace(";", ",")
+    recipients = [address.strip() for _, address in email.utils.getaddresses([raw]) if address.strip()]
+    clean = []
+    for address in recipients:
+        if "\r" in address or "\n" in address or "@" not in address:
+            raise BadRequest("Email recipients must be valid email addresses.")
+        clean.append(address)
+    if not clean:
+        raise BadRequest("At least one email recipient is required.")
+    return clean
+
+
+def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    host = str(payload.get("smtpHost") or "").strip()
+    if not host:
+        raise BadRequest("SMTP host is required.")
+    if not HOST_PATTERN.match(host):
+        raise BadRequest("SMTP host contains unsupported characters.")
+    port = parse_port(payload.get("smtpPort"), 587, "SMTP port")
+    security = str(payload.get("smtpSecurity") or "starttls").strip().lower()
+    if security not in ("starttls", "ssl", "none"):
+        raise BadRequest("SMTP security must be starttls, ssl, or none.")
+    mail_from = str(payload.get("smtpFrom") or "").strip()
+    if "\r" in mail_from or "\n" in mail_from or "@" not in mail_from:
+        raise BadRequest("From address must be a valid email address.")
+    interval = parse_port(payload.get("intervalMinutes"), 60, "Schedule minutes")
+    interval = max(ALERT_AUTOMATION_MIN_INTERVAL_MINUTES, min(ALERT_AUTOMATION_MAX_INTERVAL_MINUTES, interval))
+    trigger = str(payload.get("trigger") or "critical").strip().lower()
+    if trigger not in ("critical", "warning", "all"):
+        raise BadRequest("Alert trigger must be critical, warning, or all.")
+    return {
+        "smtp_host": host,
+        "smtp_port": port,
+        "smtp_security": security,
+        "smtp_username": str(payload.get("smtpUsername") or "").strip(),
+        "smtp_password": str(payload.get("smtpPassword") or ""),
+        "smtp_from": mail_from,
+        "recipients": parse_email_recipients(payload.get("smtpTo")),
+        "interval_minutes": interval,
+        "trigger": trigger,
+    }
+
+
+def dashboard_alert_lines(dashboard: dict[str, Any]) -> tuple[str, list[str]]:
+    summary = dashboard.get("summary") or {}
+    protection = dashboard.get("serverProtectionJob") or {}
+    lines: list[str] = []
+    failed = int(summary.get("failedJobs") or 0)
+    critical = int(summary.get("criticalAlerts") or 0)
+    warnings = int(summary.get("warningAlerts") or 0)
+    active = int(summary.get("activeJobs") or 0)
+    protection_status = str(protection.get("status") or "unknown").lower()
+    if failed:
+        lines.append(f"Failed backup jobs: {failed}")
+    if critical:
+        lines.append(f"Critical alerts: {critical}")
+    if warnings:
+        lines.append(f"Warning alerts: {warnings}")
+    if protection_status and protection_status not in ("succeeded", "success", "completed", "ok"):
+        lines.append(f"Server Protection Job: {protection.get('label') or protection_status} - {protection.get('detail') or ''}")
+    lines.append(f"Active jobs: {active}")
+    lines.append(f"SLA: {summary.get('slaPercent', 0)}% ({summary.get('slaMetJobs', 0)} met / {summary.get('slaTotalJobs', 0)} total)")
+    lines.append(f"Generated: {dashboard.get('generatedAt') or generated_at()}")
+    severity = "critical" if failed or critical or protection_status in ("failed", "critical") else ("warning" if warnings or protection_status in ("running", "queued", "warning", "unknown") else "ok")
+    return severity, lines
+
+
+def should_send_alert(trigger: str, severity: str) -> bool:
+    if trigger == "all":
+        return True
+    if trigger == "warning":
+        return severity in ("warning", "critical")
+    return severity == "critical"
+
+
+def send_smtp_email(
+    settings: AlertAutomation,
+    subject: str,
+    body: str,
+    smtp_password: str,
+) -> None:
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = settings.smtp_from
+    message["To"] = ", ".join(settings.recipients)
+    message["Date"] = email.utils.formatdate(localtime=True)
+    message.set_content(body)
+
+    if settings.smtp_security == "ssl":
+        with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
+            if settings.smtp_username:
+                smtp.login(settings.smtp_username, smtp_password)
+            smtp.send_message(message)
+    else:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
+            smtp.ehlo()
+            if settings.smtp_security == "starttls":
+                smtp.starttls()
+                smtp.ehlo()
+            if settings.smtp_username:
+                smtp.login(settings.smtp_username, smtp_password)
+            smtp.send_message(message)
+
+
+def cancel_alert_automation(automation_id: str) -> bool:
+    automation = ALERT_AUTOMATIONS.pop(automation_id, None)
+    if not automation:
+        return False
+    if automation.timer:
+        automation.timer.cancel()
+    return True
+
+
+def schedule_alert_automation(automation: AlertAutomation) -> None:
+    if automation.automation_id not in ALERT_AUTOMATIONS:
+        return
+    timer = threading.Timer(automation.interval_minutes * 60, run_alert_automation, args=(automation.automation_id,))
+    timer.daemon = True
+    automation.timer = timer
+    timer.start()
+
+
+def run_alert_automation(automation_id: str) -> None:
+    automation = ALERT_AUTOMATIONS.get(automation_id)
+    if not automation:
+        return
+    try:
+        status, dashboard = build_dashboard_from_session(automation.session_id)
+        if status != HTTPStatus.OK:
+            raise RuntimeError(dashboard.get("error") or "Dashboard session refresh failed.")
+        severity, lines = dashboard_alert_lines(dashboard)
+        signature = "|".join(lines)
+        if should_send_alert(automation.trigger, severity) and signature != automation.last_signature:
+            subject = f"NetWorker dashboard alert: {severity.title()}"
+            send_smtp_email(automation, subject, "\n".join(lines), decrypt_process_secret(automation.encrypted_smtp_password))
+            automation.last_signature = signature
+            automation.last_result = f"Sent {severity} alert at {generated_at()}"
+        else:
+            automation.last_result = f"No matching alert at {generated_at()}"
+        automation.last_run = time.time()
+    except Exception as exc:
+        automation.last_result = f"Alert automation failed: {exc}"
+    finally:
+        schedule_alert_automation(automation)
+
+
+def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    action = str(payload.get("action") or "").strip().lower()
+    session_id = str(payload.get("sessionId") or "").strip()
+    if action == "stop":
+        stopped = cancel_alert_automation(session_id)
+        return HTTPStatus.OK, {"ok": True, "message": "Alert automation stopped." if stopped else "No alert automation was scheduled."}
+    if action not in ("start", "test"):
+        raise BadRequest("Alert automation action must be start, test, or stop.")
+    if not session_id or session_id not in DASHBOARD_SESSIONS:
+        raise BadRequest("A live dashboard session is required before scheduling email alerts.")
+    settings = parse_smtp_settings(payload)
+    automation = AlertAutomation(
+        automation_id=session_id,
+        session_id=session_id,
+        smtp_host=settings["smtp_host"],
+        smtp_port=settings["smtp_port"],
+        smtp_username=settings["smtp_username"],
+        encrypted_smtp_password=encrypt_process_secret(settings["smtp_password"]),
+        smtp_from=settings["smtp_from"],
+        recipients=settings["recipients"],
+        smtp_security=settings["smtp_security"],
+        interval_minutes=settings["interval_minutes"],
+        trigger=settings["trigger"],
+        created_at=time.time(),
+    )
+    if action == "test":
+        send_smtp_email(
+            automation,
+            "NetWorker dashboard test email",
+            f"Test email from {APP_NAME} at {generated_at()}.",
+            settings["smtp_password"],
+        )
+        return HTTPStatus.OK, {"ok": True, "message": "Test email sent."}
+
+    cancel_alert_automation(session_id)
+    ALERT_AUTOMATIONS[session_id] = automation
+    schedule_alert_automation(automation)
+    return HTTPStatus.OK, {
+        "ok": True,
+        "message": f"Alert automation scheduled every {automation.interval_minutes} minute(s).",
+    }
 
 
 def build_dashboard_rest_auto(config: ApiConfig) -> tuple[int, dict[str, Any]]:
@@ -5282,12 +5822,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._require_https():
             return
         path = urlparse(self.path).path
-        if path not in ("/api/dashboard", "/api/export", "/api/server-health"):
+        if path not in ("/api/dashboard", "/api/export", "/api/server-health", "/api/alert-automation"):
             self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
             return
 
         try:
             payload = self._read_json_body()
+            if path == "/api/alert-automation":
+                status, body = handle_alert_automation(payload)
+                self._send_json(status, body)
+                return
+
             if path == "/api/server-health":
                 session_id = str(payload.get("sessionId") or "").strip()
                 if not session_id:
@@ -5444,6 +5989,8 @@ def run(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nStopping dashboard.")
     finally:
+        for automation_id in list(ALERT_AUTOMATIONS):
+            cancel_alert_automation(automation_id)
         server.server_close()
     return 0
 
