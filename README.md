@@ -1,5 +1,7 @@
 # NetWorker Backup Dashboard
 
+Version: `1.1.0`
+
 Local HTTPS dashboard for Dell NetWorker backup monitoring. This recreates the May 6 prototype as a single-file project with the same login flow and the `/nwui/api/monitoringactions` polling behavior.
 
 ## Run Locally

@@ -1,0 +1,14 @@
+# Changelog
+
+## v1.1.0 - 2026-05-13
+
+- Added live Server Protection Job refresh with the server health refresh cycle.
+- Added SMTP email alert automation with STARTTLS, SSL/TLS, and plain SMTP options.
+- Added scheduled daily backup/SLA email reports embedded in the email body.
+- Added additional UI themes.
+- Kept HTTPS-only local serving, encrypted in-memory WMI/SMTP password handling, and automated test coverage.
+
+## v1.0.0 - 2026-05-13
+
+- Initial single-file Dell NetWorker Backup & Recovery Dashboard release.
+- Added NWUI/REST dashboard views, SLA charting, WMI server health, clone job separation, Excel export, and local HTTPS startup.
