@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -4740,6 +4740,29 @@ def build_nwui_policies(policy_items: list[Any], jobs: list[dict[str, Any]]) -> 
     return sorted(output, key=lambda item: item["resource"])
 
 
+def base_server_protection_detail(detail: Any) -> str:
+    text = str(detail or "Last known Server Protection job")
+    marker = " (last known"
+    if marker in text:
+        text = text.split(marker, 1)[0]
+    return text.strip() or "Last known Server Protection job"
+
+
+def last_known_server_protection(
+    previous: dict[str, Any],
+    refresh_error: str = "",
+) -> dict[str, Any]:
+    detail = f"{base_server_protection_detail(previous.get('detail'))} (last known)"
+    if refresh_error:
+        detail = f"{detail}; refresh failed: {refresh_error}"
+    return {
+        **previous,
+        "detail": detail,
+        "_baseDetail": base_server_protection_detail(previous.get("detail") or previous.get("_baseDetail")),
+        "_lastRefreshError": refresh_error,
+    }
+
+
 def refresh_server_protection_job_nwui(
     config: ApiConfig,
     cookie_jar: CookieJar,
@@ -4768,19 +4791,15 @@ def refresh_server_protection_job_nwui(
         jobs = sorted(jobs, key=lambda item: item.get("started") or "", reverse=True)
         status = maintenance_backup_status(jobs)
         if status.get("count"):
+            status["_baseDetail"] = base_server_protection_detail(status.get("detail"))
+            status["_lastRefreshError"] = ""
             return status
         if previous and previous.get("count"):
-            return {
-                **previous,
-                "detail": f"{previous.get('detail', 'Last known Server Protection job')} (last known)",
-            }
+            return last_known_server_protection(previous)
         return status
     except RestApiError as exc:
         if previous and previous.get("count"):
-            return {
-                **previous,
-                "detail": f"{previous.get('detail', 'Last known Server Protection job')} (last known; refresh failed: {exc.message})",
-            }
+            return last_known_server_protection(previous, exc.message)
         return {
             "status": "unknown",
             "label": "Unavailable",

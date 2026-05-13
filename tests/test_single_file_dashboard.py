@@ -680,6 +680,49 @@ def test_server_health_session_refresh_returns_live_server_protection(monkeypatc
     assert body["serverProtectionJob"]["count"] == 1
 
 
+def test_server_protection_refresh_failure_does_not_repeat_last_known_text(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    previous = {
+        "status": "succeeded",
+        "label": "Succeeded",
+        "detail": "Server db backup on Server backup at 13-05-2026 10:00:01 Arabian Standard Time",
+        "count": 1,
+    }
+    monkeypatch.setattr(
+        dashboard,
+        "nwui_monitoring_all_pages",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            dashboard.RestApiError(502, "REST API connection timed out.")
+        ),
+    )
+
+    first = dashboard.refresh_server_protection_job_nwui(config, CookieJar(), {"X-Test": "token"}, previous)
+    second = dashboard.refresh_server_protection_job_nwui(config, CookieJar(), {"X-Test": "token"}, first)
+
+    assert second["detail"].count("last known") == 1
+    assert second["detail"].count("refresh failed") == 1
+    assert second["detail"].startswith("Server db backup on Server backup")
+
+
 def test_alert_automation_test_email_uses_smtp_settings(monkeypatch):
     dashboard = load_single_file_dashboard()
     config = dashboard.ApiConfig(
