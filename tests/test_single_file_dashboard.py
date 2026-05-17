@@ -78,6 +78,85 @@ def test_reused_cookie_session_does_not_login_with_blank_password(monkeypatch):
     assert body["sources"]["nwuiLogin"]["path"] == "volatile-session"
 
 
+def test_nwui_login_tries_backup_server_payload_after_initial_401(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    attempts = []
+
+    def fake_status_request(opener, url, method, headers, timeout, payload):
+        attempts.append(payload)
+        if payload.get("server"):
+            return 200, {"token": "abc123"}, '{"token":"abc123"}'
+        return 401, {"errorMessage": "Unauthorized access"}, '{"errorMessage":"Unauthorized access"}'
+
+    monkeypatch.setattr(dashboard, "json_status_request", fake_status_request)
+
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="networker-password",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=5,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    auth_headers, info = dashboard.nwui_login(config, opener=None)
+
+    assert auth_headers["Authorization"] == "Bearer abc123"
+    assert info["status"] == 200
+    assert len(attempts) == 2
+    assert attempts[0]["server"] is None
+    assert attempts[1]["server"] == "198.51.100.11"
+
+
+def test_nwui_login_reports_all_401_payload_attempts(monkeypatch):
+    dashboard = load_single_file_dashboard()
+
+    def fake_status_request(opener, url, method, headers, timeout, payload):
+        return 401, {"errorMessage": "Unauthorized access"}, '{"errorMessage":"Unauthorized access"}'
+
+    monkeypatch.setattr(dashboard, "json_status_request", fake_status_request)
+
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="wrong-password",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=5,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    try:
+        dashboard.nwui_login(config, opener=None)
+        assert False, "Expected RestApiError"
+    except dashboard.RestApiError as exc:
+        assert exc.status_code == 401
+        assert "Tried 3 NWUI login payload variant" in exc.message
+        assert "username,pwd,server,port" in exc.message
+        assert "wrong-password" not in exc.message
+
+
 def test_optional_nwui_endpoint_failure_keeps_backup_rows(monkeypatch):
     dashboard = load_single_file_dashboard()
 
@@ -179,6 +258,102 @@ def test_custom_report_range_builds_expected_nwui_payload():
     assert payload["pageNumber"] == 1
 
 
+def test_nwui_monitoring_retries_smaller_page_after_http_500(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    attempts = []
+
+    def fake_post(config, opener, auth_headers, endpoint_name, payload):
+        attempts.append((payload.get("pageLimit"), "startTime" in payload))
+        if payload.get("pageLimit") == 200:
+            raise dashboard.RestApiError(500, "HTTP 500 NWUI POST failed")
+        return {"actions": [{"startTime": 1778400000000, "status": "completed"}], "totalCount": 1}
+
+    monkeypatch.setattr(dashboard, "nwui_post_json", fake_post)
+
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="192.0.2.10",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=5,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    items = dashboard.nwui_monitoring_all_pages(
+        config,
+        opener=None,
+        auth_headers={},
+        endpoint_name="monitoringactions",
+        start_ts=1778390000,
+        end_ts=1778410000,
+    )
+
+    assert items == [{"startTime": 1778400000000, "status": "completed"}]
+    assert attempts == [(200, True), (100, True)]
+
+
+def test_nwui_monitoring_unfiltered_fallback_preserves_report_window(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    attempts = []
+
+    def fake_post(config, opener, auth_headers, endpoint_name, payload):
+        attempts.append((payload.get("pageLimit"), "startTime" in payload))
+        if "startTime" in payload:
+            raise dashboard.RestApiError(500, "HTTP 500 NWUI POST failed")
+        return {
+            "actions": [
+                {"startTime": 1778400000000, "status": "completed"},
+                {"startTime": 1777000000000, "status": "completed"},
+            ],
+            "totalCount": 2,
+        }
+
+    monkeypatch.setattr(dashboard, "nwui_post_json", fake_post)
+
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="192.0.2.10",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="custom",
+        custom_start_date="10-05-2026",
+        custom_end_date="10-05-2026",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=5,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    items = dashboard.nwui_monitoring_all_pages(
+        config,
+        opener=None,
+        auth_headers={},
+        endpoint_name="monitoringactions",
+        start_ts=1778390000,
+        end_ts=1778410000,
+    )
+
+    assert items == [{"startTime": 1778400000000, "status": "completed"}]
+    assert attempts == [(200, True), (100, True), (50, True), (100, False)]
+
+
 def test_dashboard_dates_and_sla_summary_are_formatted():
     dashboard = load_single_file_dashboard()
 
@@ -221,6 +396,7 @@ def test_management_bar_fill_is_block_level():
     assert "SHAIKH SHOAIB" in dashboard.HTML_PAGE
     assert "/api/server-health" in dashboard.HTML_PAGE
     assert "SERVER_HEALTH_REFRESH_MS = 60000" in dashboard.HTML_PAGE
+    assert "Dashboard auto-refresh failed; keeping last successful data" in dashboard.HTML_PAGE
 
 
 def test_dashboard_html_embeds_networker_logo_data_uri():
@@ -520,6 +696,8 @@ def test_wmi_clixml_progress_is_hidden_from_error(monkeypatch):
     health = dashboard.load_server_health_wmi(config)
 
     assert "Access is denied." in health["detail"]
+    assert "Windows denied the account" in health["detail"]
+    assert "root\\cimv2 Remote Enable" in health["detail"]
     assert "CLIXML" not in health["detail"]
     assert "Preparing modules" not in health["detail"]
 
@@ -806,7 +984,7 @@ def test_alert_automation_test_email_uses_smtp_settings(monkeypatch):
     session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
     sent = []
 
-    def fake_send(settings, subject, body, smtp_password, html_body=""):
+    def fake_send(settings, subject, body, smtp_password, html_body="", inline_images=None, attachments=None):
         sent.append((settings.smtp_host, settings.smtp_port, settings.recipients, subject, smtp_password, html_body))
 
     monkeypatch.setattr(dashboard, "send_smtp_email", fake_send)
@@ -903,6 +1081,64 @@ def test_smtp_sender_reports_exact_login_failure_without_password(monkeypatch):
         assert "secret-password" not in str(exc.diagnostics)
 
 
+def test_smtp_sender_attaches_dashboard_snapshot_file(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    sent_messages = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=30):
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def ehlo(self):
+            return 250, b"ok"
+
+        def send_message(self, message):
+            sent_messages.append(message)
+
+    monkeypatch.setattr(dashboard.smtplib, "SMTP", FakeSMTP)
+    automation = dashboard.AlertAutomation(
+        automation_id="smtp-inline-test",
+        session_id="smtp-inline-test",
+        smtp_host="smtp.example.com",
+        smtp_port=25,
+        smtp_username="",
+        encrypted_smtp_password="",
+        smtp_from="networker@example.com",
+        recipients=["ops@example.com"],
+        smtp_security="none",
+        interval_minutes=15,
+        trigger="warning",
+        schedule_type="daily_report",
+        report_time="08:00",
+        created_at=0,
+    )
+
+    result = dashboard.send_smtp_email(
+        automation,
+        "Subject",
+        "Plain",
+        "",
+        "<html><body>Dashboard report</body></html>",
+        attachments={"dashboard.png": (b"png-bytes", "image/png", "dashboard.png")},
+    )
+
+    assert result["stage"] == "sent"
+    assert sent_messages
+    message_text = sent_messages[0].as_string()
+    assert "Content-ID:" not in message_text
+    assert "Content-Disposition: attachment" in message_text
+    assert "image/png" in message_text
+    assert "dashboard.png" in message_text
+
+
 def test_alert_automation_test_email_returns_smtp_debug_on_failure(monkeypatch):
     dashboard = load_single_file_dashboard()
     config = dashboard.ApiConfig(
@@ -926,7 +1162,7 @@ def test_alert_automation_test_email_returns_smtp_debug_on_failure(monkeypatch):
     )
     session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
 
-    def fake_send(settings, subject, body, smtp_password, html_body=""):
+    def fake_send(settings, subject, body, smtp_password, html_body="", inline_images=None, attachments=None):
         diagnostics = dashboard.smtp_debug_snapshot(settings, smtp_password, "login")
         raise dashboard.SmtpDeliveryError("login", "535 Authentication failed", diagnostics)
 
@@ -965,35 +1201,97 @@ def test_daily_report_email_embeds_backup_status_and_sla():
     plain, html = dashboard.dashboard_report_email(
         {
             "generatedAt": "13-05-2026 09:00:00 Arabian Standard Time",
+            "target": {"apiMode": "nwui", "backupServer": "198.51.100.11:9090"},
             "summary": {
                 "rangeLabel": "Last 24 Hours",
-                "totalJobs": 36,
-                "successfulJobs": 35,
+                "totalJobs": 32,
+                "successfulJobs": 31,
                 "failedJobs": 1,
-                "activeJobs": 0,
-                "recoveryJobs": 2,
-                "cloneJobs": 3,
+                "activeJobs": 1,
+                "recoveryJobs": 0,
+                "recoveryFailed": 0,
+                "recoveryRunning": 0,
+                "cloneJobs": 7,
+                "cloneFailed": 0,
+                "cloneRunning": 3,
+                "cloneSessionTotal": 3032,
                 "totalAlerts": 1,
                 "slaPercent": 97,
-                "slaMetJobs": 35,
-                "slaTotalJobs": 36,
+                "slaMetJobs": 31,
+                "slaTotalJobs": 32,
                 "slaMissedJobs": 1,
+                "health": "critical",
             },
-            "serverHealth": {"label": "Healthy", "cpuUsagePercent": 12, "ramUsagePercent": 44},
-            "serverProtectionJob": {"label": "Succeeded", "detail": "Server backup completed"},
+            "serverHealth": {
+                "status": "ok",
+                "label": "Healthy",
+                "detail": "Microsoft Windows Server 2019 Standard via WMI.",
+                "cpuUsagePercent": 0,
+                "cpuDetail": "Real-time WMI sample from 198.51.100.11 over 1s",
+                "ramUsagePercent": 27,
+                "ramUsedGb": 17.3,
+                "ramFreeGb": 46.7,
+                "ramTotalGb": 64,
+            },
+            "serverProtectionJob": {
+                "status": "succeeded",
+                "label": "Succeeded",
+                "detail": "Server db backup on Server backup at 13-05-2026 10:00:01 Arabian Standard Time",
+            },
+            "theme": "midnight",
         }
     )
 
-    assert "Total backup jobs: 36" in plain
-    assert "Backup SLA: 97% (35 met / 36 total)" in plain
+    assert "Total backup jobs: 32" in plain
+    assert "Backup SLA: 97% (31 met / 32 total)" in plain
+    assert "Memory usage: 17.3 / 64 GB" in plain
     assert "<table" in html
     assert "DELL EMC NetWorker" in html
+    assert "Connected - action required" in html
     assert "Activity Mix" in html
     assert "Management Overview" in html
     assert "Recovery Health" in html
     assert "Clone Jobs" in html
+    assert "NetWorker Server Health" in html
+    assert "17.3 / 64 GB" in html
+    assert "Server db backup on Server backup" in html
     assert "Successful Jobs" in html
-    assert "Server backup completed" in html
+    assert "background:#101719" in html
+    assert "background:#172124" in html
+    assert "#6fcf97" in html
+    assert html.index("Activity Mix") < html.index("Backup SLA") < html.index("Management Overview")
+    assert html.index("Clone Jobs") < html.index("Successful Jobs") < html.index("NetWorker Server Health")
+
+
+def test_scheduled_snapshot_keeps_selected_theme_not_report_green():
+    dashboard = load_single_file_dashboard()
+    html = dashboard.dashboard_snapshot_html(
+        {
+            "generatedAt": "13-05-2026 09:00:00 Arabian Standard Time",
+            "target": {"apiMode": "nwui", "backupServer": "198.51.100.11:9090"},
+            "summary": {
+                "rangeLabel": "Last 24 Hours",
+                "totalJobs": 5,
+                "successfulJobs": 5,
+                "failedJobs": 0,
+                "activeJobs": 0,
+                "recoveryJobs": 0,
+                "cloneJobs": 0,
+                "totalAlerts": 0,
+                "slaPercent": 100,
+                "slaMetJobs": 5,
+                "slaTotalJobs": 5,
+                "slaMissedJobs": 0,
+            },
+            "serverHealth": {"status": "ok", "label": "Healthy"},
+            "serverProtectionJob": {"status": "succeeded", "label": "Succeeded", "detail": "Server backup completed"},
+            "theme": "ruby",
+            "scheduledReport": True,
+        }
+    )
+
+    assert "#9f2d55" in html
+    assert "#003b24" not in html
 
 
 def test_daily_report_automation_sends_embedded_report(monkeypatch):
@@ -1046,9 +1344,10 @@ def test_daily_report_automation_sends_embedded_report(monkeypatch):
             },
         ),
     )
+    monkeypatch.setattr(dashboard, "render_dashboard_snapshot_png", lambda dashboard_payload: b"png-bytes")
 
-    def fake_send(settings, subject, body, smtp_password, html_body=""):
-        sent.append((subject, body, smtp_password, html_body))
+    def fake_send(settings, subject, body, smtp_password, html_body="", inline_images=None, attachments=None):
+        sent.append((subject, body, smtp_password, html_body, attachments or {}))
 
     monkeypatch.setattr(dashboard, "send_smtp_email", fake_send)
     monkeypatch.setattr(dashboard, "schedule_alert_automation", lambda automation: None)
@@ -1068,12 +1367,13 @@ def test_daily_report_automation_sends_embedded_report(monkeypatch):
             "trigger": "all",
             "scheduleType": "daily_report",
             "reportTime": "07:30",
+            "theme": "forest",
         }
     )
     assert status == 200
     assert "07:30" in body["message"]
 
-    dashboard.run_alert_automation(session_id)
+    dashboard.run_alert_automation(dashboard.automation_key(session_id, "daily_report"))
 
     assert sent
     assert sent[0][0] == "NetWorker daily backup status and SLA report"
@@ -1082,6 +1382,79 @@ def test_daily_report_automation_sends_embedded_report(monkeypatch):
     assert "<table" in sent[0][3]
     assert "Activity Mix" in sent[0][3]
     assert "Backup SLA" in sent[0][3]
+    assert "background:#003b24" in sent[0][3]
+    assert 'bgcolor="#003b24"' in sent[0][3]
+    assert "max-width:60px" in sent[0][3]
+    assert "background:#eef5ef" in sent[0][3]
+    assert "#1f7a45" in sent[0][3]
+    assert "cid:networker-dashboard-snapshot" not in sent[0][3]
+    assert sent[0][4]["networker-dashboard.png"][0] == b"png-bytes"
+
+
+def test_alert_and_daily_report_can_be_scheduled_together(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
+    monkeypatch.setattr(dashboard, "schedule_alert_automation", lambda automation: None)
+
+    common = {
+        "sessionId": session_id,
+        "smtpHost": "smtp.example.com",
+        "smtpPort": "587",
+        "smtpSecurity": "starttls",
+        "smtpUsername": "svc",
+        "smtpFrom": "networker@example.com",
+        "smtpTo": "ops@example.com",
+        "intervalMinutes": "15",
+        "trigger": "warning",
+        "reportTime": "07:30",
+        "theme": "forest",
+    }
+
+    alert_status, alert_body = dashboard.handle_alert_automation(
+        {**common, "action": "start", "scheduleType": "alert", "smtpPassword": "shared-secret"}
+    )
+    report_status, report_body = dashboard.handle_alert_automation(
+        {**common, "action": "start", "scheduleType": "daily_report", "smtpPassword": ""}
+    )
+
+    alert_key = dashboard.automation_key(session_id, "alert")
+    report_key = dashboard.automation_key(session_id, "daily_report")
+    assert alert_status == 200
+    assert report_status == 200
+    assert alert_key in dashboard.ALERT_AUTOMATIONS
+    assert report_key in dashboard.ALERT_AUTOMATIONS
+    assert "Alerts every 15 minute" in report_body["activeAutomations"]
+    assert "Daily dashboard report at 07:30" in report_body["activeAutomations"]
+    assert dashboard.decrypt_process_secret(dashboard.ALERT_AUTOMATIONS[report_key].encrypted_smtp_password) == "shared-secret"
+    assert "Alert automation scheduled" in alert_body["message"]
+
+    stop_status, stop_body = dashboard.handle_alert_automation(
+        {"action": "stop", "sessionId": session_id, "scheduleType": "daily_report"}
+    )
+
+    assert stop_status == 200
+    assert report_key not in dashboard.ALERT_AUTOMATIONS
+    assert alert_key in dashboard.ALERT_AUTOMATIONS
+    assert "Alerts every 15 minute" in stop_body["activeAutomations"]
 
 
 def test_daily_report_test_reuses_scheduled_smtp_password_and_snapshot(monkeypatch):
@@ -1114,9 +1487,10 @@ def test_daily_report_test_reuses_scheduled_smtp_password_and_snapshot(monkeypat
         "build_dashboard_from_session",
         lambda session_id: (_ for _ in ()).throw(AssertionError("test should use supplied dashboard snapshot")),
     )
+    monkeypatch.setattr(dashboard, "render_dashboard_snapshot_png", lambda dashboard_payload: b"test-png")
 
-    def fake_send(settings, subject, body, smtp_password, html_body=""):
-        sent.append((subject, smtp_password, html_body))
+    def fake_send(settings, subject, body, smtp_password, html_body="", inline_images=None, attachments=None):
+        sent.append((subject, smtp_password, html_body, attachments or {}))
 
     monkeypatch.setattr(dashboard, "send_smtp_email", fake_send)
 
@@ -1132,6 +1506,7 @@ def test_daily_report_test_reuses_scheduled_smtp_password_and_snapshot(monkeypat
         "trigger": "all",
         "scheduleType": "daily_report",
         "reportTime": "07:30",
+        "theme": "ruby",
     }
     status, _ = dashboard.handle_alert_automation({**base_payload, "action": "start", "smtpPassword": "saved-secret"})
     assert status == 200
@@ -1168,6 +1543,12 @@ def test_daily_report_test_reuses_scheduled_smtp_password_and_snapshot(monkeypat
     assert sent[-1][0] == "NetWorker daily backup status and SLA report - test"
     assert sent[-1][1] == "saved-secret"
     assert "Activity Mix" in sent[-1][2]
+    assert "background:#003b24" in sent[-1][2]
+    assert 'bgcolor="#003b24"' in sent[-1][2]
+    assert "max-width:60px" in sent[-1][2]
+    assert "background:#f8eef1" in sent[-1][2]
+    assert "cid:networker-dashboard-snapshot" not in sent[-1][2]
+    assert sent[-1][3]["networker-dashboard.png"][0] == b"test-png"
 
 
 def test_server_health_session_refresh_uses_wmi_without_nwui_fallback(monkeypatch):

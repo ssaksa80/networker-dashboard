@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.1.8 - 2026-05-17
+
+- Updated the scheduled backup/SLA email report to mirror the dashboard output order.
+- Added the same six top cards, six metric cards, and NetWorker Server Health section to the embedded report.
+- Matched Server Protection Job, CPU, and memory display with the live dashboard snapshot.
+- Added NWUI monitoring retries for intermittent HTTP 500 failures, including smaller page sizes and a locally-filtered no-date fallback.
+- Scheduled backup/SLA email reports now use the dashboard theme selected when the email automation is scheduled or tested.
+- Scheduled backup/SLA HTML report emails now use a dark green background only on the branded NetWorker status card.
+- Alert emails and daily dashboard report emails can now be scheduled at the same time for the same dashboard session.
+- Scheduled backup/SLA emails now keep the dashboard-style HTML body and attach the generated dashboard PNG snapshot as `networker-dashboard.png`.
+- Hardened the scheduled report brand card so email clients render the full NetWorker status block with a solid dark green background and fixed logo size.
+
 ## v1.1.7 - 2026-05-13
 
 - Added SMTP delivery diagnostics for test email failures, including connect, EHLO, STARTTLS, login, and send stages.

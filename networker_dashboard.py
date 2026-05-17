@@ -16,11 +16,13 @@ import email.utils
 import html as html_lib
 import json
 import re
+import shutil
 import smtplib
 import subprocess
 import socket
 import ssl
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -47,7 +49,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -64,6 +66,47 @@ REPORT_RANGES = {
     "7d": ("Last Week", 7),
     "30d": ("Last Month", 30),
 }
+THEME_PALETTES: dict[str, dict[str, str]] = {
+    "default": {
+        "bg": "#eef3f6",
+        "surface": "#ffffff",
+        "surface2": "#f7fafb",
+        "ink": "#172026",
+        "muted": "#5f6d76",
+        "line": "#d7e1e7",
+        "brand": "#126e82",
+        "brandInk": "#ffffff",
+        "green": "#18764a",
+        "red": "#bd2b3a",
+        "amber": "#a96800",
+        "blue": "#2457a6",
+    },
+    "midnight": {
+        "bg": "#101719",
+        "surface": "#172124",
+        "surface2": "#1e2b2f",
+        "ink": "#edf6f8",
+        "muted": "#9db1b8",
+        "line": "#314249",
+        "brand": "#2aa6b8",
+        "brandInk": "#071113",
+        "green": "#6fcf97",
+        "red": "#ff6b78",
+        "amber": "#f2c14e",
+        "blue": "#7db7ff",
+    },
+    "graphite": {"bg": "#f1f2f3", "surface": "#ffffff", "surface2": "#eff1f2", "ink": "#1f2326", "muted": "#666f75", "line": "#d1d6da", "brand": "#3d5a5f", "brandInk": "#ffffff", "green": "#1d7c55", "red": "#b93246", "amber": "#ad7300", "blue": "#3d64a8"},
+    "contrast": {"bg": "#ffffff", "surface": "#ffffff", "surface2": "#f2f2f2", "ink": "#0b0b0b", "muted": "#3d3d3d", "line": "#202020", "brand": "#005fcc", "brandInk": "#ffffff", "green": "#006b3c", "red": "#b00020", "amber": "#8a5a00", "blue": "#004fb8"},
+    "ocean": {"bg": "#e8f4f6", "surface": "#ffffff", "surface2": "#edf8fa", "ink": "#102a31", "muted": "#527179", "line": "#bfd8de", "brand": "#087f8c", "brandInk": "#ffffff", "green": "#11845b", "red": "#c03546", "amber": "#b27900", "blue": "#1c6eb8"},
+    "forest": {"bg": "#eef5ef", "surface": "#ffffff", "surface2": "#f2f8f1", "ink": "#17251b", "muted": "#5f7565", "line": "#cfddcf", "brand": "#2f6f45", "brandInk": "#ffffff", "green": "#1f7a45", "red": "#b83b4b", "amber": "#a06c00", "blue": "#3867a8"},
+    "ruby": {"bg": "#f8eef1", "surface": "#ffffff", "surface2": "#fff4f6", "ink": "#2d1720", "muted": "#7a5d66", "line": "#e6cbd3", "brand": "#9f2d55", "brandInk": "#ffffff", "green": "#17794e", "red": "#b92345", "amber": "#aa7200", "blue": "#445ca8"},
+    "steel": {"bg": "#edf1f5", "surface": "#ffffff", "surface2": "#f3f6f9", "ink": "#17202b", "muted": "#5d6a78", "line": "#ccd6e1", "brand": "#425c78", "brandInk": "#ffffff", "green": "#26724a", "red": "#aa3d45", "amber": "#9a6b12", "blue": "#376da9"},
+    "arctic": {"bg": "#edf7f8", "surface": "#ffffff", "surface2": "#f4fbfb", "ink": "#10272d", "muted": "#5a737a", "line": "#c8dee3", "brand": "#0d7891", "brandInk": "#ffffff", "green": "#168059", "red": "#b83245", "amber": "#9e7207", "blue": "#2d68a7"},
+    "citrus": {"bg": "#f5f7ec", "surface": "#ffffff", "surface2": "#fbfcf3", "ink": "#202817", "muted": "#68705b", "line": "#dde5ca", "brand": "#617d18", "brandInk": "#ffffff", "green": "#23733f", "red": "#b43a47", "amber": "#a16d00", "blue": "#3f6fa5"},
+    "harbor": {"bg": "#eef3f4", "surface": "#ffffff", "surface2": "#f5f8f9", "ink": "#17242a", "muted": "#5e7077", "line": "#d0dce0", "brand": "#235f73", "brandInk": "#ffffff", "green": "#24764f", "red": "#b63548", "amber": "#9d6e08", "blue": "#335fa3"},
+    "ember": {"bg": "#f6f1ee", "surface": "#ffffff", "surface2": "#fbf7f4", "ink": "#2a1f1a", "muted": "#75665f", "line": "#e2d4cd", "brand": "#8d4a36", "brandInk": "#ffffff", "green": "#26734a", "red": "#b23545", "amber": "#9b6a10", "blue": "#3c67a2"},
+}
+SCHEDULED_REPORT_DARK_GREEN = "#003b24"
 CUSTOM_REPORT_RANGE = "custom"
 DEFAULT_REPORT_RANGE = "24h"
 SESSION_TTL_SECONDS = 8 * 60 * 60
@@ -2717,6 +2760,7 @@ HTML_PAGE = r"""<!doctype html>
         trigger: document.getElementById("alertTrigger").value,
         scheduleType: document.getElementById("emailScheduleType").value,
         reportTime: document.getElementById("dailyReportTime").value.trim(),
+        theme: themeSelect.value || "default",
       };
       if (action === "test" && payload.scheduleType === "daily_report" && latestDashboard) {
         payload.dashboard = {
@@ -2725,6 +2769,7 @@ HTML_PAGE = r"""<!doctype html>
           summary: latestDashboard.summary || {},
           serverHealth: latestDashboard.serverHealth || {},
           serverProtectionJob: latestDashboard.serverProtectionJob || latestDashboard.maintenanceBackup || {},
+          theme: payload.theme,
         };
       }
       return payload;
@@ -2745,10 +2790,11 @@ HTML_PAGE = r"""<!doctype html>
 
     async function submitAlertAutomation(action) {
       if (!sessionId && action !== "stop") {
-        alertAutomationStatus.textContent = "Connect before scheduling alerts";
+        alertAutomationStatus.textContent = "Connect before scheduling email automations";
         setStatus("Connect first", "warn");
         return;
       }
+      const payload = alertAutomationPayload(action);
       alertScheduleBtn.disabled = true;
       alertTestBtn.disabled = true;
       alertStopBtn.disabled = true;
@@ -2756,7 +2802,7 @@ HTML_PAGE = r"""<!doctype html>
         const response = await fetch("/api/alert-automation", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(alertAutomationPayload(action)),
+          body: JSON.stringify(payload),
           cache: "no-store",
         });
         const data = await response.json();
@@ -2770,11 +2816,11 @@ HTML_PAGE = r"""<!doctype html>
           ? `${data.message || "Alert automation updated"}\\n${successDebug}`
           : data.message || "Alert automation updated";
         if (action === "test") setStatus("Test email sent", "ok");
-        if (action === "start") setStatus("Alerts scheduled", "ok");
-        if (action === "stop") setStatus("Alerts stopped", "neutral");
+        if (action === "start") setStatus(payload.scheduleType === "daily_report" ? "Report scheduled" : "Alerts scheduled", "ok");
+        if (action === "stop") setStatus("Schedule stopped", "neutral");
       } catch (error) {
         alertAutomationStatus.textContent = error.message || "Alert automation failed";
-        setStatus("Email alert failed", "bad");
+        setStatus("Email automation failed", "bad");
       } finally {
         smtpPassword.value = "";
         alertScheduleBtn.disabled = false;
@@ -2812,6 +2858,11 @@ HTML_PAGE = r"""<!doctype html>
         }
         renderDashboard(data);
       } catch (error) {
+        if (options.silent && latestDashboard) {
+          if (window.console) console.warn("Dashboard auto-refresh failed; keeping last successful data", error);
+          scheduleAutoRefresh();
+          return;
+        }
         setStatus("Connection failed", "bad");
         notice.textContent = error.message || "Unable to load dashboard.";
         notice.classList.add("show");
@@ -3046,6 +3097,7 @@ class AlertAutomation:
     schedule_type: str
     report_time: str
     created_at: float
+    theme: str = "default"
     last_run: float = 0.0
     last_result: str = "Scheduled"
     last_signature: str = ""
@@ -3053,6 +3105,43 @@ class AlertAutomation:
 
 
 ALERT_AUTOMATIONS: dict[str, AlertAutomation] = {}
+
+
+def automation_key(session_id: str, schedule_type: str) -> str:
+    return f"{session_id}:{schedule_type}"
+
+
+def session_automation_keys(session_id: str) -> list[str]:
+    prefix = f"{session_id}:"
+    return [
+        key
+        for key, automation in ALERT_AUTOMATIONS.items()
+        if key == session_id or key.startswith(prefix) or automation.session_id == session_id
+    ]
+
+
+def active_automation_summary(session_id: str) -> str:
+    labels: list[str] = []
+    for key in session_automation_keys(session_id):
+        automation = ALERT_AUTOMATIONS.get(key)
+        if not automation:
+            continue
+        if automation.schedule_type == "daily_report":
+            labels.append(f"Daily dashboard report at {automation.report_time}")
+        else:
+            labels.append(f"Alerts every {automation.interval_minutes} minute(s)")
+    return "; ".join(labels)
+
+
+def existing_smtp_automation(session_id: str, schedule_type: str) -> AlertAutomation | None:
+    same_type = ALERT_AUTOMATIONS.get(automation_key(session_id, schedule_type))
+    if same_type:
+        return same_type
+    for key in session_automation_keys(session_id):
+        automation = ALERT_AUTOMATIONS.get(key)
+        if automation and automation.encrypted_smtp_password:
+            return automation
+    return None
 
 
 class BadRequest(ValueError):
@@ -3461,6 +3550,25 @@ def wmi_connectivity_hint(target: str) -> str:
     )
 
 
+def wmi_failure_hint(target: str, detail: str = "") -> str:
+    lowered = str(detail or "").lower()
+    if "access is denied" in lowered or "0x80070005" in lowered or "unauthorizedaccess" in lowered:
+        return (
+            f"WMI reached {target}, but Windows denied the account. Use DOMAIN\\user or {target}\\localadmin, "
+            f"add the account to local Administrators on {target}, or grant DCOM Remote Launch/Activation and "
+            r"WMI root\cimv2 Remote Enable, Execute Methods, and Enable Account permissions. "
+            "For non-domain local accounts, Remote UAC filtering may also block WMI; use a domain service account "
+            "or configure LocalAccountTokenFilterPolicy on the backup server."
+        )
+    if "user credentials cannot be used for local connections" in lowered:
+        return (
+            "Windows rejected explicit credentials for a local WMI target. Use localhost/the server hostname from "
+            "the dashboard host and leave WMI username/password blank, or run the dashboard under the account that "
+            "has local WMI access."
+        )
+    return wmi_connectivity_hint(target)
+
+
 def clean_powershell_error(value: Any) -> str:
     text = str(value if value is not None else "").strip()
     if not text:
@@ -3587,14 +3695,14 @@ $ramPercent = if ($totalKb -gt 0) { [math]::Round((($totalKb - $freeKb) / $total
         )
     except subprocess.TimeoutExpired:
         return unavailable_server_health(
-            f"WMI query timed out after {wmi_timeout}s. {wmi_connectivity_hint(target)}"
+            f"WMI query timed out after {wmi_timeout}s. {wmi_failure_hint(target)}"
         )
     except OSError as exc:
         return unavailable_server_health(f"WMI query could not start PowerShell: {safe_log_text(exc)}")
 
     if completed.returncode != 0:
         detail = clean_powershell_error(completed.stderr) or clean_powershell_error(completed.stdout) or "PowerShell WMI command failed."
-        return unavailable_server_health(f"WMI query failed: {detail} {wmi_connectivity_hint(target)}")
+        return unavailable_server_health(f"WMI query failed: {detail} {wmi_failure_hint(target, detail)}")
 
     try:
         data = json.loads(completed.stdout)
@@ -4461,6 +4569,8 @@ def nwui_login(config: ApiConfig, opener: Any) -> tuple[dict[str, str], dict[str
         {"username": config.username, "pwd": config.password},
     ]
     last_error = "NWUI login did not return a successful response."
+    last_auth_status = 0
+    auth_failures: list[str] = []
     for payload in payloads:
         keys = ",".join(payload.keys())
         debug_log(f"NWUI login try url={login_url} payloadKeys={keys}")
@@ -4487,7 +4597,12 @@ def nwui_login(config: ApiConfig, opener: Any) -> tuple[dict[str, str], dict[str
             last_error = stringify(data_obj.get("errorMessage") or data_obj.get("errorCode") or body, 260)
         elif status in (401, 403):
             detail = data.get("errorMessage") if isinstance(data, dict) else ""
-            raise RestApiError(status, detail or "NWUI login failed. Check username/password and account access.")
+            last_auth_status = status
+            auth_failures.append(
+                f"{keys}: {stringify(detail or 'NWUI login rejected this payload shape.', 180)}"
+            )
+            last_error = detail or "NWUI login failed. Check username/password and account access."
+            continue
         elif status == 404:
             last_error = (
                 "NWUI login endpoint /nwui/api/login was not found. Check that REST API server IP/port "
@@ -4495,6 +4610,12 @@ def nwui_login(config: ApiConfig, opener: Any) -> tuple[dict[str, str], dict[str
             )
         else:
             last_error = describe_http_error(status, "NWUI login failed", body, login_url)
+    if last_auth_status:
+        detail = (
+            f"{last_error} Tried {len(auth_failures)} NWUI login payload variant(s): "
+            + " | ".join(auth_failures)
+        )
+        raise RestApiError(last_auth_status, safe_log_text(detail, 700))
     raise RestApiError(502, last_error)
 
 
@@ -4532,38 +4653,62 @@ def monitoring_payload(
     page_limit: int = 200,
     start_ts: float | None = None,
     end_ts: float | None = None,
+    include_window: bool = True,
 ) -> dict[str, Any]:
     now = datetime.now().timestamp()
     start = start_ts if start_ts is not None else now - (30 * 24 * 60 * 60)
     end = end_ts if end_ts is not None else now
-    return {
-        "startTime": int(start * 1000),
-        "endTime": int(end * 1000),
+    payload = {
         "lastRun": False,
         "noRun": False,
         "pageNumber": page,
         "pageLimit": page_limit,
     }
+    if include_window:
+        payload["startTime"] = int(start * 1000)
+        payload["endTime"] = int(end * 1000)
+    return payload
 
 
-def nwui_monitoring_all_pages(
+def item_in_report_window(item: Any, start_ts: float | None, end_ts: float | None) -> bool:
+    if start_ts is None and end_ts is None:
+        return True
+    if not isinstance(item, dict):
+        return True
+    value = first_value(item, "startTime", "started", "start", "timestamp", "time", "createdTime", "lastRunTime")
+    item_ts = timestamp(value)
+    if not item_ts:
+        return True
+    if start_ts is not None and item_ts < start_ts:
+        return False
+    if end_ts is not None and item_ts > end_ts:
+        return False
+    return True
+
+
+def filter_items_to_report_window(items: list[Any], start_ts: float | None, end_ts: float | None) -> list[Any]:
+    return [item for item in items if item_in_report_window(item, start_ts, end_ts)]
+
+
+def nwui_monitoring_pages_with_strategy(
     config: ApiConfig,
     opener: Any,
     auth_headers: dict[str, str],
     endpoint_name: str,
     start_ts: float | None = None,
     end_ts: float | None = None,
+    page_limit: int = 200,
+    include_window: bool = True,
 ) -> list[Any]:
     all_items: list[Any] = []
     page = 1
-    page_limit = 200
     while page <= 50:
         data = nwui_post_json(
             config,
             opener,
             auth_headers,
             endpoint_name,
-            monitoring_payload(page, page_limit, start_ts, end_ts),
+            monitoring_payload(page, page_limit, start_ts, end_ts, include_window=include_window),
         )
         items = extract_nwui_list(
             data,
@@ -4591,6 +4736,57 @@ def nwui_monitoring_all_pages(
             break
         page += 1
     return all_items
+
+
+def nwui_monitoring_all_pages(
+    config: ApiConfig,
+    opener: Any,
+    auth_headers: dict[str, str],
+    endpoint_name: str,
+    start_ts: float | None = None,
+    end_ts: float | None = None,
+) -> list[Any]:
+    attempts: list[str] = []
+    strategies = [
+        (200, True),
+        (100, True),
+        (50, True),
+        (100, False),
+        (50, False),
+    ]
+    last_error: RestApiError | None = None
+    for page_limit, include_window in strategies:
+        strategy_name = f"pageLimit={page_limit},window={'on' if include_window else 'off'}"
+        try:
+            items = nwui_monitoring_pages_with_strategy(
+                config,
+                opener,
+                auth_headers,
+                endpoint_name,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                page_limit=page_limit,
+                include_window=include_window,
+            )
+            if not include_window:
+                items = filter_items_to_report_window(items, start_ts, end_ts)
+                debug_log(
+                    f"NWUI monitoring fallback succeeded endpoint={endpoint_name} "
+                    f"strategy={strategy_name} filteredCount={len(items)}"
+                )
+            elif attempts:
+                debug_log(f"NWUI monitoring retry succeeded endpoint={endpoint_name} strategy={strategy_name}")
+            return items
+        except RestApiError as exc:
+            last_error = exc
+            attempts.append(f"{strategy_name}: {exc.message}")
+            if exc.status_code < 500:
+                break
+            debug_log(f"NWUI monitoring retry endpoint={endpoint_name} strategy={strategy_name} error={exc.message}")
+    if last_error:
+        detail = " | ".join(attempts)
+        raise RestApiError(last_error.status_code, f"{last_error.message} (retry attempts: {detail})") from last_error
+    return []
 
 
 def cmd_flag_value(command: str, flag: str) -> str:
@@ -4931,7 +5127,7 @@ def cleanup_dashboard_sessions() -> None:
     ]
     for session_id in stale:
         DASHBOARD_SESSIONS.pop(session_id, None)
-        cancel_alert_automation(session_id)
+        cancel_session_automations(session_id)
 
 
 def build_dashboard_from_session(
@@ -5286,6 +5482,15 @@ def parse_report_time(value: Any) -> str:
     return f"{int(match.group(1)):02d}:{match.group(2)}"
 
 
+def parse_theme(value: Any) -> str:
+    theme = str(value or "default").strip().lower()
+    return theme if theme in THEME_PALETTES else "default"
+
+
+def report_theme_palette(value: Any) -> dict[str, str]:
+    return THEME_PALETTES.get(parse_theme(value), THEME_PALETTES["default"])
+
+
 def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
     host = str(payload.get("smtpHost") or "").strip()
     if not host:
@@ -5319,6 +5524,7 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
         "trigger": trigger,
         "schedule_type": schedule_type,
         "report_time": parse_report_time(payload.get("reportTime")),
+        "theme": parse_theme(payload.get("theme")),
     }
 
 
@@ -5363,7 +5569,7 @@ def dashboard_report_rows(dashboard: dict[str, Any]) -> list[tuple[str, str]]:
         ("SLA not met", str(summary.get("slaMissedJobs", 0))),
         ("Server status", str(health.get("label") or "--")),
         ("CPU usage", "--" if health.get("cpuUsagePercent") is None else f"{health.get('cpuUsagePercent')}%"),
-        ("Memory usage", "--" if health.get("ramUsagePercent") is None else f"{health.get('ramUsagePercent')}%"),
+        ("Memory usage", report_memory_value(health)),
         ("Server Protection Job", f"{protection.get('label') or 'Not found'} - {protection.get('detail') or ''}".strip()),
         ("Generated", str(dashboard.get("generatedAt") or generated_at())),
     ]
@@ -5380,26 +5586,28 @@ def report_percent(part: int, total: int) -> int:
     return round((part / total) * 100) if total else 0
 
 
-def report_bar(label: str, value: int, max_value: int, color: str) -> str:
+def report_bar(label: str, value: int, max_value: int, color: str, palette: dict[str, str] | None = None) -> str:
+    palette = palette or THEME_PALETTES["default"]
     width = max(2, min(100, round((value / max(1, max_value)) * 100)))
     return (
         '<tr>'
-        f'<td style="padding:7px 10px 7px 0;width:92px;font-size:12px;color:#1d3440;">{html_lib.escape(label)}</td>'
+        f'<td style="padding:7px 10px 7px 0;width:92px;font-size:12px;color:{palette["ink"]};">{html_lib.escape(label)}</td>'
         '<td style="padding:7px 8px;width:150px;">'
-        '<div style="height:9px;background:#edf2f4;border:1px solid #cbd7dd;border-radius:6px;overflow:hidden;">'
+        f'<div style="height:9px;background:{palette["surface2"]};border:1px solid {palette["line"]};border-radius:6px;overflow:hidden;">'
         f'<div style="height:9px;width:{width}%;background:{color};border-radius:6px;"></div>'
         '</div>'
         '</td>'
-        f'<td style="padding:7px 0 7px 6px;width:42px;text-align:right;font-size:12px;font-weight:700;color:#0b1d26;">{value:,}</td>'
+        f'<td style="padding:7px 0 7px 6px;width:42px;text-align:right;font-size:12px;font-weight:700;color:{palette["ink"]};">{value:,}</td>'
         '</tr>'
     )
 
 
-def report_metric_card(label: str, value: int, color: str) -> str:
+def report_metric_card(label: str, value: int, color: str, palette: dict[str, str] | None = None) -> str:
+    palette = palette or THEME_PALETTES["default"]
     return (
         '<td style="padding:0 8px 8px 0;width:16.66%;">'
-        '<div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px 14px 12px;">'
-        f'<div style="font-size:12px;color:#1d3440;font-weight:700;margin-bottom:20px;">{html_lib.escape(label)}</div>'
+        f'<div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px 14px 12px;">'
+        f'<div style="font-size:12px;color:{palette["ink"]};font-weight:700;margin-bottom:20px;">{html_lib.escape(label)}</div>'
         f'<div style="font-size:28px;line-height:1;font-weight:800;color:{color};">{value:,}</div>'
         '</div>'
         '</td>'
@@ -5412,7 +5620,13 @@ def report_donut_card(
     center_label: str,
     legend: list[tuple[str, int, str]],
     meta: str,
+    width: str = "16.66%",
+    min_height: str = "252px",
+    donut_size: int = 138,
+    inner_size: int = 82,
+    palette: dict[str, str] | None = None,
 ) -> str:
+    palette = palette or THEME_PALETTES["default"]
     total = sum(max(0, value) for _, value, _ in legend)
     cursor = 0.0
     segments = []
@@ -5422,33 +5636,33 @@ def report_donut_card(
         end = cursor + ((value / total) * 360)
         segments.append(f"{color} {cursor:.2f}deg {end:.2f}deg")
         cursor = end
-    gradient = ", ".join(segments) if segments else "#d8e3e8 0deg 360deg"
+    gradient = ", ".join(segments) if segments else f"{palette['line']} 0deg 360deg"
     legend_rows = "".join(
         '<tr>'
         f'<td style="padding:4px 6px 4px 0;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{color};"></span></td>'
-        f'<td style="padding:4px 8px 4px 0;font-size:12px;font-weight:700;color:#0b1d26;">{html_lib.escape(label)}</td>'
-        f'<td style="padding:4px 0;text-align:right;font-size:12px;font-weight:800;color:#0b1d26;">{value:,} ({report_percent(value, total)}%)</td>'
+        f'<td style="padding:4px 8px 4px 0;font-size:12px;font-weight:700;color:{palette["ink"]};">{html_lib.escape(label)}</td>'
+        f'<td style="padding:4px 0;text-align:right;font-size:12px;font-weight:800;color:{palette["ink"]};">{value:,} ({report_percent(value, total)}%)</td>'
         '</tr>'
         for label, value, color in legend
     )
     return f"""
-      <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
-        <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;min-height:252px;">
+      <td style="padding:0 8px 12px 0;width:{width};min-width:280px;vertical-align:top;">
+        <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:{min_height};">
           <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:10px;">
             <tr>
-              <td style="font-size:14px;font-weight:800;color:#0b1d26;">{html_lib.escape(title)}</td>
-              <td style="font-size:12px;color:#2a3e4a;text-align:right;">{html_lib.escape(meta)}</td>
+              <td style="font-size:14px;font-weight:800;color:{palette["ink"]};">{html_lib.escape(title)}</td>
+              <td style="font-size:12px;color:{palette["muted"]};text-align:right;">{html_lib.escape(meta)}</td>
             </tr>
           </table>
           <table role="presentation" style="width:100%;border-collapse:collapse;">
             <tr>
-              <td style="width:150px;vertical-align:middle;">
-                <div style="width:150px;height:150px;border-radius:50%;background:conic-gradient({gradient});display:table;text-align:center;">
+              <td style="width:{donut_size}px;vertical-align:middle;">
+                <div style="width:{donut_size}px;height:{donut_size}px;border-radius:50%;background:conic-gradient({gradient});display:table;text-align:center;">
                   <div style="display:table-cell;vertical-align:middle;">
-                    <div style="width:88px;height:88px;margin:0 auto;border-radius:50%;background:#ffffff;border:1px solid #d4dee4;display:table;">
+                    <div style="width:{inner_size}px;height:{inner_size}px;margin:0 auto;border-radius:50%;background:{palette["surface"]};border:1px solid {palette["line"]};display:table;">
                       <div style="display:table-cell;vertical-align:middle;text-align:center;">
-                        <div style="font-size:26px;font-weight:850;color:#0b1d26;line-height:1;">{html_lib.escape(center_value)}</div>
-                        <div style="font-size:10px;text-transform:uppercase;color:#40545f;font-weight:800;margin-top:5px;">{html_lib.escape(center_label)}</div>
+                        <div style="font-size:26px;font-weight:850;color:{palette["ink"]};line-height:1;">{html_lib.escape(center_value)}</div>
+                        <div style="font-size:10px;text-transform:uppercase;color:{palette["muted"]};font-weight:800;margin-top:5px;">{html_lib.escape(center_label)}</div>
                       </div>
                     </div>
                   </div>
@@ -5464,12 +5678,459 @@ def report_donut_card(
     """
 
 
-def dashboard_report_email(dashboard: dict[str, Any]) -> tuple[str, str]:
+def report_decimal(value: Any, digits: int = 1) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "--"
+    if numeric.is_integer():
+        return f"{int(numeric):,}"
+    return f"{numeric:,.{digits}f}"
+
+
+def report_connection_label(summary: dict[str, Any]) -> tuple[str, str]:
+    health = str(summary.get("health") or "").lower()
+    if health == "critical":
+        return "Connected - action required", "#f36c7d"
+    if health == "warning":
+        return "Connected with warnings", "#e0a11b"
+    return "Connection established", "#4fd17b"
+
+
+def report_memory_value(health: dict[str, Any]) -> str:
+    total = health.get("ramTotalGb")
+    used = health.get("ramUsedGb")
+    free = health.get("ramFreeGb")
+    try:
+        total_float = float(total)
+    except (TypeError, ValueError):
+        total_float = 0.0
+    if total_float > 0:
+        try:
+            used_float = float(used)
+        except (TypeError, ValueError):
+            try:
+                used_float = max(0.0, total_float - float(free))
+            except (TypeError, ValueError):
+                used_float = 0.0
+        return f"{report_decimal(used_float)} / {report_decimal(total_float)} GB"
+    ram = health.get("ramUsagePercent")
+    return "--" if ram is None else f"{report_int(ram)}%"
+
+
+def report_memory_detail(health: dict[str, Any]) -> str:
+    free = health.get("ramFreeGb")
+    percent = health.get("ramUsagePercent")
+    try:
+        free_float = float(free)
+    except (TypeError, ValueError):
+        free_float = -1.0
+    if free_float >= 0 and percent is not None:
+        return f"{report_decimal(free_float)} GB free - {report_int(percent)}% used"
+    return str(health.get("ramDetail") or health.get("source") or "No memory metric returned.")
+
+
+def report_health_card(
+    label: str,
+    value: str,
+    detail: str,
+    color: str,
+    meter_percent: Any = None,
+    palette: dict[str, str] | None = None,
+) -> str:
+    palette = palette or THEME_PALETTES["default"]
+    meter = ""
+    if meter_percent is not None:
+        width = max(0, min(100, report_int(meter_percent)))
+        meter = (
+            f'<div style="height:7px;background:{palette["surface2"]};border:1px solid {palette["line"]};'
+            'border-radius:6px;overflow:hidden;margin:8px 0 6px;">'
+            f'<div style="height:7px;width:{width}%;background:{color};border-radius:6px;"></div>'
+            '</div>'
+        )
+    return (
+        '<td style="padding:0 10px 10px 0;width:25%;min-width:260px;vertical-align:top;">'
+        f'<div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:92px;">'
+        f'<div style="font-size:12px;color:{palette["ink"]};font-weight:700;margin-bottom:12px;">{html_lib.escape(label)}</div>'
+        f'<div style="font-size:18px;line-height:1.1;font-weight:850;color:{color};">{html_lib.escape(value)}</div>'
+        f'{meter}'
+        f'<div style="font-size:11px;line-height:1.35;color:{palette["muted"]};margin-top:10px;">{html_lib.escape(detail)}</div>'
+        '</div>'
+        '</td>'
+    )
+
+
+def report_color_for_server_status(status: Any, palette: dict[str, str]) -> str:
+    return palette["green"] if str(status or "").lower() == "ok" else palette["red"]
+
+
+def report_color_for_protection_status(status: Any, palette: dict[str, str]) -> str:
+    normalized = str(status or "").lower()
+    if normalized == "failed":
+        return palette["red"]
+    if normalized in ("running", "queued", "warning"):
+        return palette["amber"]
+    return palette["green"]
+
+
+def report_status_model(dashboard: dict[str, Any]) -> dict[str, Any]:
     summary = dashboard.get("summary") or {}
     target = dashboard.get("target") or {}
+    health = dashboard.get("serverHealth") or {}
+    protection = dashboard.get("serverProtectionJob") or dashboard.get("maintenanceBackup") or {}
+    palette = report_theme_palette(dashboard.get("theme") or target.get("theme"))
+    successful = report_int(summary.get("successfulJobs"))
+    failed = report_int(summary.get("failedJobs"))
+    active = report_int(summary.get("activeJobs"))
+    recovery = report_int(summary.get("recoveryJobs"))
+    clones = report_int(summary.get("cloneJobs"))
+    alerts = report_int(summary.get("totalAlerts"))
+    clients = report_int(summary.get("totalClients"))
+    sla_total = report_int(summary.get("slaTotalJobs", summary.get("totalJobs")))
+    sla_met = report_int(summary.get("slaMetJobs"))
+    sla_missed = report_int(summary.get("slaMissedJobs"))
+    range_label = str(summary.get("rangeLabel") or summary.get("range") or "Selected range")
+    generated = str(dashboard.get("generatedAt") or generated_at())
+    connection_label, connection_color = report_connection_label(summary)
+    return {
+        "summary": summary,
+        "target": target,
+        "health": health,
+        "protection": protection,
+        "palette": palette,
+        "brand_background": SCHEDULED_REPORT_DARK_GREEN if dashboard.get("scheduledReport") else palette["brand"],
+        "brand_ink": "#ffffff" if dashboard.get("scheduledReport") else palette["brandInk"],
+        "successful": successful,
+        "failed": failed,
+        "active": active,
+        "recovery": recovery,
+        "clones": clones,
+        "alerts": alerts,
+        "clients": clients,
+        "sla_total": sla_total,
+        "sla_met": sla_met,
+        "sla_missed": sla_missed,
+        "sla_percent": report_int(summary.get("slaPercent")),
+        "range_label": range_label,
+        "generated": generated,
+        "backup_server": str(target.get("backupServer") or "--"),
+        "api_mode": str(target.get("apiMode") or "--").upper(),
+        "connection_label": connection_label,
+        "connection_color": connection_color,
+        "server_status": str(health.get("label") or "Unavailable"),
+        "server_status_color": report_color_for_server_status(health.get("status"), palette),
+        "cpu_value": "--" if health.get("cpuUsagePercent") is None else f"{report_int(health.get('cpuUsagePercent'))}%",
+        "cpu_detail": str(health.get("cpuDetail") or health.get("source") or "No CPU metric returned."),
+        "ram_value": report_memory_value(health),
+        "ram_detail": report_memory_detail(health),
+        "ram_percent": health.get("ramUsagePercent"),
+        "protection_color": report_color_for_protection_status(protection.get("status"), palette),
+        "protection_label": str(protection.get("label") or "Not found"),
+        "protection_detail": str(protection.get("detail") or "No Server Protection job found in this range."),
+    }
+
+
+def snapshot_donut(title: str, value: str, label: str, rows: list[tuple[str, int, str]], meta: str) -> str:
+    total = sum(max(0, row_value) for _, row_value, _ in rows)
+    cursor = 0.0
+    segments = []
+    for _, row_value, color in rows:
+        if not row_value or total <= 0:
+            continue
+        end = cursor + ((row_value / total) * 360)
+        segments.append(f"{color} {cursor:.2f}deg {end:.2f}deg")
+        cursor = end
+    gradient = ", ".join(segments) if segments else "#d7e1e7 0deg 360deg"
+    legend = "".join(
+        f'<div class="legend-item"><i style="background:{color}"></i><span>{html_lib.escape(name)}</span><b>{row_value:,} ({report_percent(row_value, total)}%)</b></div>'
+        for name, row_value, color in rows
+    )
+    return (
+        '<article class="card">'
+        f'<header><h2>{html_lib.escape(title)}</h2><span>{html_lib.escape(meta)}</span></header>'
+        '<div class="donut-layout">'
+        f'<div class="donut" style="background:conic-gradient({gradient});"><div class="donut-hole"><strong>{html_lib.escape(value)}</strong><small>{html_lib.escape(label)}</small></div></div>'
+        f'<div class="legend-list">{legend}</div>'
+        '</div>'
+        '</article>'
+    )
+
+
+def snapshot_bar(label: str, value: int, max_value: int, color: str) -> str:
+    width = max(2, min(100, round((value / max(1, max_value)) * 100)))
+    return (
+        '<div class="bar-row">'
+        f'<span>{html_lib.escape(label)}</span>'
+        f'<div class="bar-track"><i style="width:{width}%;background:{color};"></i></div>'
+        f'<strong>{value:,}</strong>'
+        '</div>'
+    )
+
+
+def snapshot_metric(label: str, value: int, color: str) -> str:
+    return (
+        '<article class="metric">'
+        f'<span>{html_lib.escape(label)}</span>'
+        f'<strong style="color:{color};">{value:,}</strong>'
+        '</article>'
+    )
+
+
+def snapshot_health_card(label: str, value: str, detail: str, color: str, percent: Any = None) -> str:
+    meter = ""
+    if percent is not None:
+        width = max(0, min(100, report_int(percent)))
+        meter = f'<div class="health-meter"><i style="width:{width}%;background:{color};"></i></div>'
+    return (
+        '<article class="health-card">'
+        f'<span>{html_lib.escape(label)}</span>'
+        f'<strong style="color:{color};">{html_lib.escape(value)}</strong>'
+        f'{meter}'
+        f'<small>{html_lib.escape(detail)}</small>'
+        '</article>'
+    )
+
+
+def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
+    model = report_status_model(dashboard)
+    palette = model["palette"]
+    model["brand_background"] = palette["brand"]
+    model["brand_ink"] = palette["brandInk"]
+    successful = model["successful"]
+    failed = model["failed"]
+    active = model["active"]
+    recovery = model["recovery"]
+    clones = model["clones"]
+    alerts = model["alerts"]
+    clients = model["clients"]
+    summary = model["summary"]
+    top_activity = successful + failed + active + recovery
+    overview = [
+        ("Clients", clients, palette["blue"]),
+        ("Successful", successful, palette["green"]),
+        ("Failed", failed, palette["red"]),
+        ("Running", active, palette["blue"]),
+        ("Restores", recovery, palette["amber"]),
+        ("Clones", clones, palette["brand"]),
+        ("Alerts", alerts, palette["muted"]),
+    ]
+    max_overview = max([value for _, value, _ in overview] + [1])
+    overview_rows = "".join(snapshot_bar(label, value, max_overview, color) for label, value, color in overview)
+    activity = snapshot_donut(
+        "Activity Mix",
+        f"{top_activity:,}",
+        "Activity",
+        [
+            ("Successful", successful, palette["green"]),
+            ("Failed", failed, palette["red"]),
+            ("Running", active, palette["blue"]),
+            ("Restores", recovery, palette["amber"]),
+        ],
+        model["range_label"],
+    )
+    sla = snapshot_donut(
+        "Backup SLA",
+        f'{model["sla_percent"]}%',
+        "SLA",
+        [
+            ("SLA met", model["sla_met"], palette["green"]),
+            ("Not met", model["sla_missed"], palette["red"]),
+        ],
+        f'{model["sla_total"]:,} jobs',
+    )
+    metrics = "".join(
+        [
+            snapshot_metric("Clients", clients, palette["blue"]),
+            snapshot_metric("Successful Jobs", successful, palette["green"]),
+            snapshot_metric("Failed Jobs", failed, palette["red"]),
+            snapshot_metric("Active Jobs", active, palette["blue"]),
+            snapshot_metric("Recovery Jobs", recovery, palette["amber"]),
+            snapshot_metric("Alerts", alerts, palette["amber"]),
+        ]
+    )
+    return f"""\
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root {{
+      --bg:{palette["bg"]}; --surface:{palette["surface"]}; --surface2:{palette["surface2"]};
+      --ink:{palette["ink"]}; --muted:{palette["muted"]}; --line:{palette["line"]};
+      --green:{palette["green"]}; --red:{palette["red"]}; --amber:{palette["amber"]}; --blue:{palette["blue"]};
+    }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; background:var(--bg); color:var(--ink); font-family:"Segoe UI",Arial,sans-serif; }}
+    .snapshot {{ width:1880px; padding:6px; }}
+    .top-grid {{ display:grid; grid-template-columns:repeat(6, 1fr); gap:12px; }}
+    .card, .metric, .health-section {{ background:var(--surface); border:1px solid var(--line); border-radius:8px; box-shadow:0 1px 2px rgba(15,23,42,.08); }}
+    .card {{ min-height:338px; padding:16px; display:flex; flex-direction:column; gap:14px; }}
+    .brand-card {{ background:{model["brand_background"]}; background-color:{model["brand_background"]}; color:{model["brand_ink"]}; border-color:rgba(255,255,255,.18); }}
+    .brand-top {{ display:flex; align-items:center; gap:14px; }}
+    .logo {{ width:68px; height:68px; border-radius:7px; background:#f3fbff; padding:4px; object-fit:contain; }}
+    h2 {{ margin:0; font-size:14px; line-height:1.25; font-weight:800; }}
+    header {{ display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }}
+    header span {{ color:var(--muted); font-size:12px; font-weight:700; white-space:nowrap; }}
+    .brand-title strong {{ display:block; font-size:18px; line-height:1.15; font-weight:850; }}
+    .brand-title span {{ display:block; margin-top:4px; font-size:12px; font-weight:720; color:rgba(255,255,255,.82); }}
+    .connection-line {{ min-height:38px; display:flex; align-items:center; gap:8px; padding:9px 11px; margin-top:12px; border-radius:8px; background:rgba(255,255,255,.14); font-size:13px; font-weight:800; }}
+    .dot {{ width:12px; height:12px; border-radius:50%; background:{model["connection_color"]}; box-shadow:0 0 0 4px rgba(255,255,255,.14); }}
+    .brand-details {{ display:grid; gap:9px; margin-top:auto; }}
+    .brand-detail {{ display:flex; justify-content:space-between; gap:12px; font-size:12px; min-height:26px; }}
+    .brand-detail span {{ color:rgba(255,255,255,.7); font-weight:700; }}
+    .brand-detail strong {{ font-weight:820; text-align:right; }}
+    .signature {{ border-top:1px solid rgba(255,255,255,.2); padding-top:11px; display:grid; gap:2px; font-size:11px; line-height:1.25; color:rgba(255,255,255,.85); font-weight:650; }}
+    .signature strong {{ color:#fff; font-size:12px; font-weight:850; }}
+    .donut-layout {{ display:grid; grid-template-columns:172px minmax(0,1fr); align-items:center; gap:14px; margin-top:auto; }}
+    .donut {{ width:172px; height:172px; border-radius:50%; display:grid; place-items:center; box-shadow:inset 0 0 0 1px var(--line); }}
+    .donut-hole {{ width:112px; height:112px; border-radius:50%; background:var(--surface); border:1px solid var(--line); display:grid; place-items:center; align-content:center; text-align:center; }}
+    .donut-hole strong {{ display:block; font-size:28px; line-height:1; font-weight:850; }}
+    .donut-hole small {{ display:block; margin-top:5px; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; }}
+    .legend-list {{ display:grid; gap:9px; min-width:0; }}
+    .legend-item {{ display:grid; grid-template-columns:12px minmax(0,1fr) auto; align-items:center; gap:8px; font-size:12px; font-weight:730; }}
+    .legend-item i {{ width:10px; height:10px; border-radius:50%; }}
+    .legend-item span {{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+    .legend-item b {{ font-size:12px; font-weight:850; }}
+    .bar-chart {{ display:grid; gap:12px; margin-top:auto; }}
+    .bar-row {{ display:grid; grid-template-columns:92px minmax(120px,1fr) 54px; gap:10px; align-items:center; min-height:26px; font-size:12px; font-weight:720; }}
+    .bar-row > span {{ color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+    .bar-track {{ height:12px; border-radius:999px; background:var(--surface2); border:1px solid var(--line); overflow:hidden; }}
+    .bar-track i {{ display:block; height:100%; border-radius:inherit; }}
+    .bar-row strong {{ text-align:right; font-weight:850; }}
+    .summary-band {{ padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface2); margin-top:auto; }}
+    .summary-band strong {{ display:block; font-size:24px; line-height:1; font-weight:850; }}
+    .summary-band span {{ display:block; margin-top:8px; color:var(--muted); font-size:12px; font-weight:720; }}
+    .summary-row {{ display:flex; justify-content:space-between; gap:12px; padding:7px 0; font-size:12px; font-weight:730; }}
+    .summary-row span {{ color:var(--muted); }}
+    .metric-grid {{ display:grid; grid-template-columns:repeat(6, 1fr); gap:12px; margin-top:16px; }}
+    .metric {{ min-height:92px; padding:14px; display:grid; align-content:space-between; gap:10px; }}
+    .metric span {{ color:var(--muted); font-size:12px; font-weight:720; }}
+    .metric strong {{ font-size:30px; line-height:1; font-weight:820; }}
+    .health-section {{ margin-top:16px; overflow:hidden; }}
+    .health-head {{ display:flex; justify-content:space-between; gap:12px; align-items:center; min-height:52px; padding:14px 16px; background:var(--surface2); border-bottom:1px solid var(--line); }}
+    .health-head strong {{ font-size:14px; font-weight:850; }}
+    .health-head span {{ color:var(--muted); font-size:12px; }}
+    .health-grid {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; padding:14px 16px 16px; }}
+    .health-card {{ min-height:104px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); display:grid; gap:8px; align-content:space-between; }}
+    .health-card span {{ color:var(--muted); font-size:12px; font-weight:760; }}
+    .health-card strong {{ font-size:20px; line-height:1.1; font-weight:850; }}
+    .health-card small {{ color:var(--muted); font-size:11px; line-height:1.35; overflow-wrap:anywhere; }}
+    .health-meter {{ height:9px; border-radius:999px; background:var(--surface2); border:1px solid var(--line); overflow:hidden; }}
+    .health-meter i {{ display:block; height:100%; border-radius:inherit; }}
+  </style>
+</head>
+<body>
+  <main class="snapshot">
+    <section class="top-grid">
+      <article class="card brand-card">
+        <div class="brand-top">
+          <img class="logo" alt="NetWorker" width="68" height="68" src="{networker_logo_src()}">
+          <div class="brand-title"><strong>DELL EMC NetWorker</strong><span>Backup &amp; Recovery Status</span></div>
+        </div>
+        <div class="connection-line"><i class="dot"></i>{html_lib.escape(model["connection_label"])}</div>
+        <div class="brand-details">
+          <div class="brand-detail"><span>API source</span><strong>{html_lib.escape(model["api_mode"])}</strong></div>
+          <div class="brand-detail"><span>Backup server</span><strong>{html_lib.escape(model["backup_server"])}</strong></div>
+          <div class="brand-detail"><span>Updated</span><strong>{html_lib.escape(model["generated"])}</strong></div>
+        </div>
+        <div class="signature"><span>Maintained &amp; developed by</span><strong>SHAIKH SHOAIB</strong><span>Sr. Advisor Delivery Specialist</span><span>DELL Technologies</span></div>
+      </article>
+      {activity}
+      {sla}
+      <article class="card">
+        <header><h2>Management Overview</h2><span>Live API</span></header>
+        <div class="bar-chart">{overview_rows}</div>
+      </article>
+      <article class="card">
+        <header><h2>Recovery Health</h2><span>Restores</span></header>
+        <div class="summary-band"><strong>{recovery:,}</strong><span>Restore jobs in {html_lib.escape(model["range_label"])}</span></div>
+        <div class="summary-row"><span>Failed restores</span><strong>{report_int(summary.get("recoveryFailed")):,}</strong></div>
+        <div class="summary-row"><span>Running restores</span><strong>{report_int(summary.get("recoveryRunning")):,}</strong></div>
+        <div class="summary-row"><span>Clone jobs excluded</span><strong>{clones:,}</strong></div>
+      </article>
+      <article class="card">
+        <header><h2>Clone Jobs</h2><span>Actions</span></header>
+        <div class="summary-band"><strong>{clones:,}</strong><span>Clone jobs in {html_lib.escape(model["range_label"])}</span></div>
+        <div class="summary-row"><span>Failed clone jobs</span><strong>{report_int(summary.get("cloneFailed")):,}</strong></div>
+        <div class="summary-row"><span>Running clone jobs</span><strong>{report_int(summary.get("cloneRunning")):,}</strong></div>
+        <div class="summary-row"><span>Clone sessions</span><strong>{report_int(summary.get("cloneSessionTotal")):,}</strong></div>
+      </article>
+    </section>
+    <section class="metric-grid">{metrics}</section>
+    <section class="health-section">
+      <div class="health-head"><strong>NetWorker Server Health</strong><span>Updated {html_lib.escape(model["generated"])} - {html_lib.escape(model["range_label"])}</span></div>
+      <div class="health-grid">
+        {snapshot_health_card("Server status", model["server_status"], str(model["health"].get("detail") or "CPU/RAM endpoint did not return data."), model["server_status_color"])}
+        {snapshot_health_card("CPU usage", model["cpu_value"], model["cpu_detail"], palette["blue"], model["health"].get("cpuUsagePercent"))}
+        {snapshot_health_card("Memory usage", model["ram_value"], model["ram_detail"], palette["amber"], model["ram_percent"])}
+        {snapshot_health_card("Server Protection Job", model["protection_label"], model["protection_detail"], model["protection_color"])}
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
+def headless_browser_path() -> str:
+    candidates = [
+        shutil.which("msedge"),
+        shutil.which("microsoft-edge"),
+        shutil.which("chrome"),
+        shutil.which("chromium"),
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(candidate)
+    return ""
+
+
+def render_dashboard_snapshot_png(dashboard: dict[str, Any]) -> bytes | None:
+    browser = headless_browser_path()
+    if not browser:
+        debug_log("Dashboard email snapshot skipped: no Edge/Chrome browser found.")
+        return None
+    with tempfile.TemporaryDirectory(prefix="networker-dashboard-report-") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        html_path = tmp_path / "dashboard-report.html"
+        png_path = tmp_path / "dashboard-report.png"
+        html_path.write_text(dashboard_snapshot_html(dashboard), encoding="utf-8")
+        command = [
+            browser,
+            "--headless=new",
+            "--disable-gpu",
+            "--hide-scrollbars",
+            "--disable-dev-shm-usage",
+            "--window-size=1880,760",
+            f"--screenshot={png_path}",
+            html_path.as_uri(),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0 or not png_path.exists():
+            debug_log(f"Dashboard email snapshot failed: {result.stderr or result.stdout or result.returncode}")
+            return None
+        try:
+            return png_path.read_bytes()
+        except OSError as exc:
+            debug_log(f"Dashboard email snapshot read failed: {exc}")
+            return None
+
+
+def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") -> tuple[str, str]:
+    summary = dashboard.get("summary") or {}
+    target = dashboard.get("target") or {}
+    health = dashboard.get("serverHealth") or {}
+    protection = dashboard.get("serverProtectionJob") or dashboard.get("maintenanceBackup") or {}
+    palette = report_theme_palette(dashboard.get("theme") or target.get("theme"))
+    brand_background = SCHEDULED_REPORT_DARK_GREEN if dashboard.get("scheduledReport") else palette["brand"]
+    brand_ink = "#ffffff" if dashboard.get("scheduledReport") else palette["brandInk"]
     rows = dashboard_report_rows(dashboard)
     plain = "\n".join(f"{label}: {value}" for label, value in rows)
-    total_jobs = report_int(summary.get("totalJobs"))
+    total_jobs = report_int(summary.get("slaTotalJobs", summary.get("totalJobs")))
     successful = report_int(summary.get("successfulJobs"))
     failed = report_int(summary.get("failedJobs"))
     active = report_int(summary.get("activeJobs"))
@@ -5484,62 +6145,98 @@ def dashboard_report_email(dashboard: dict[str, Any]) -> tuple[str, str]:
     generated = str(dashboard.get("generatedAt") or generated_at())
     backup_server = str((target.get("backupServer") or "--"))
     api_mode = str((target.get("apiMode") or "--")).upper()
+    connection_label, connection_color = report_connection_label(summary)
+    server_status = str(health.get("label") or "Unavailable")
+    server_status_color = palette["green"] if str(health.get("status") or "").lower() == "ok" else palette["red"]
+    cpu_value = "--" if health.get("cpuUsagePercent") is None else f"{report_int(health.get('cpuUsagePercent'))}%"
+    cpu_detail = str(health.get("cpuDetail") or health.get("source") or "No CPU metric returned.")
+    ram_value = report_memory_value(health)
+    ram_detail = report_memory_detail(health)
+    ram_percent = health.get("ramUsagePercent")
+    protection_status = str(protection.get("status") or "").lower()
+    protection_color = (
+        palette["red"]
+        if protection_status == "failed"
+        else (palette["amber"] if protection_status in ("running", "queued", "warning") else palette["green"])
+    )
+    protection_label = str(protection.get("label") or "Not found")
+    protection_detail = str(protection.get("detail") or "No Server Protection job found in this range.")
     overview = [
-        ("Clients", clients, "#4f8f9e"),
-        ("Successful", successful, "#18764a"),
-        ("Failed", failed, "#bd2b3a"),
-        ("Running", active, "#2457a6"),
-        ("Restores", recovery, "#a96800"),
-        ("Clones", clones, "#8a6fb0"),
-        ("Alerts", alerts, "#65747c"),
+        ("Clients", clients, palette["blue"]),
+        ("Successful", successful, palette["green"]),
+        ("Failed", failed, palette["red"]),
+        ("Running", active, palette["blue"]),
+        ("Restores", recovery, palette["amber"]),
+        ("Clones", clones, palette["brand"]),
+        ("Alerts", alerts, palette["muted"]),
     ]
     max_overview = max([value for _, value, _ in overview] + [1])
+    top_activity = successful + failed + active + recovery
     table_rows = "\n".join(
         "<tr>"
-        f"<td style=\"padding:8px 10px;border:1px solid #d7e1e7;font-weight:700;\">{html_lib.escape(label)}</td>"
-        f"<td style=\"padding:8px 10px;border:1px solid #d7e1e7;\">{html_lib.escape(value)}</td>"
+        f"<td style=\"padding:8px 10px;border:1px solid {palette['line']};font-weight:700;color:{palette['ink']};\">{html_lib.escape(label)}</td>"
+        f"<td style=\"padding:8px 10px;border:1px solid {palette['line']};color:{palette['ink']};\">{html_lib.escape(value)}</td>"
         "</tr>"
         for label, value in rows
     )
     metric_rows = (
         "<tr>"
-        + report_metric_card("Clients", clients, "#2457a6")
-        + report_metric_card("Successful Jobs", successful, "#18764a")
-        + report_metric_card("Failed Jobs", failed, "#bd2b3a")
-        + report_metric_card("Active Jobs", active, "#2457a6")
-        + report_metric_card("Recovery Jobs", recovery, "#a96800")
-        + report_metric_card("Alerts", alerts, "#a96800")
+        + report_metric_card("Clients", clients, palette["blue"], palette)
+        + report_metric_card("Successful Jobs", successful, palette["green"], palette)
+        + report_metric_card("Failed Jobs", failed, palette["red"], palette)
+        + report_metric_card("Active Jobs", active, palette["blue"], palette)
+        + report_metric_card("Recovery Jobs", recovery, palette["amber"], palette)
+        + report_metric_card("Alerts", alerts, palette["amber"], palette)
         + "</tr>"
     )
-    overview_rows = "".join(report_bar(label, value, max_overview, color) for label, value, color in overview)
+    overview_rows = "".join(report_bar(label, value, max_overview, color, palette) for label, value, color in overview)
+    recovery_rows = (
+        f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Failed restores <strong style="float:right;color:{palette["ink"]};">{report_int(summary.get("recoveryFailed")):,}</strong></div>'
+        f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Running restores <strong style="float:right;color:{palette["ink"]};">{report_int(summary.get("recoveryRunning")):,}</strong></div>'
+        f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Clone jobs excluded <strong style="float:right;color:{palette["ink"]};">{clones:,}</strong></div>'
+    )
+    clone_rows = (
+        f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Failed clone jobs <strong style="float:right;color:{palette["ink"]};">{report_int(summary.get("cloneFailed")):,}</strong></div>'
+        f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Running clone jobs <strong style="float:right;color:{palette["ink"]};">{report_int(summary.get("cloneRunning")):,}</strong></div>'
+        f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Clone sessions <strong style="float:right;color:{palette["ink"]};">{report_int(summary.get("cloneSessionTotal")):,}</strong></div>'
+    )
+    snapshot_block = ""
+    if snapshot_cid:
+        escaped_cid = html_lib.escape(snapshot_cid, quote=True)
+        snapshot_block = (
+            f'<div style="margin:0 0 14px;background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:10px;">'
+            f'<img alt="NetWorker dashboard snapshot" src="cid:{escaped_cid}" '
+            'style="display:block;width:100%;max-width:1880px;height:auto;border:0;border-radius:6px;">'
+            '</div>'
+        )
     html_body = f"""\
 <!doctype html>
 <html>
-  <body style="margin:0;padding:0;background:#eef3f6;font-family:Segoe UI,Arial,sans-serif;color:#172026;">
-    <div style="padding:18px;background:#eef3f6;">
-      <h2 style="margin:0 0 14px;color:#102832;">NetWorker Daily Backup Status and SLA Report</h2>
-      <table role="presentation" style="width:100%;border-collapse:collapse;">
+  <body style="margin:0;padding:0;background:{palette["bg"]};font-family:Segoe UI,Arial,sans-serif;color:{palette["ink"]};">
+    <div style="padding:18px;background:{palette["bg"]};">
+      {snapshot_block}
+      <table role="presentation" style="width:100%;min-width:1680px;border-collapse:collapse;">
         <tr>
-          <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
-            <div style="background:#115360;border-radius:8px;padding:16px;color:#ffffff;min-height:252px;">
-              <table role="presentation" style="width:100%;border-collapse:collapse;">
+          <td bgcolor="{brand_background}" style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;background:{brand_background};background-color:{brand_background};color:{brand_ink};">
+            <div style="background:{brand_background};background-color:{brand_background};border-radius:8px;padding:16px;color:{brand_ink};min-height:252px;">
+              <table role="presentation" bgcolor="{brand_background}" style="width:100%;border-collapse:collapse;background:{brand_background};background-color:{brand_background};color:{brand_ink};">
                 <tr>
-                  <td style="width:68px;vertical-align:top;">
-                    <img alt="NetWorker" src="{networker_logo_src()}" style="width:60px;height:60px;object-fit:contain;background:#ffffff;border-radius:6px;padding:4px;">
+                  <td bgcolor="{brand_background}" style="width:68px;vertical-align:top;background:{brand_background};background-color:{brand_background};color:{brand_ink};">
+                    <img alt="NetWorker" width="60" height="60" src="{networker_logo_src()}" style="display:block;width:60px;height:60px;max-width:60px;max-height:60px;object-fit:contain;background:{palette["surface"]};border-radius:6px;padding:4px;">
                   </td>
-                  <td style="vertical-align:top;padding-left:10px;">
-                    <div style="font-size:16px;font-weight:850;">DELL EMC NetWorker</div>
-                    <div style="font-size:12px;font-weight:700;margin-top:3px;">Backup &amp; Recovery Status</div>
+                  <td bgcolor="{brand_background}" style="vertical-align:top;padding-left:10px;background:{brand_background};background-color:{brand_background};color:{brand_ink};">
+                    <div style="font-size:16px;font-weight:850;color:{brand_ink};">DELL EMC NetWorker</div>
+                    <div style="font-size:12px;font-weight:700;margin-top:3px;color:{brand_ink};">Backup &amp; Recovery Status</div>
                   </td>
                 </tr>
               </table>
-              <div style="margin-top:14px;background:rgba(255,255,255,0.14);border-radius:7px;padding:10px;font-size:13px;font-weight:800;">Connection established</div>
-              <table role="presentation" style="width:100%;border-collapse:collapse;margin-top:18px;color:#ffffff;">
-                <tr><td style="padding:6px 0;font-size:12px;">API source</td><td style="padding:6px 0;text-align:right;font-size:12px;font-weight:800;">{html_lib.escape(api_mode)}</td></tr>
-                <tr><td style="padding:6px 0;font-size:12px;">Backup server</td><td style="padding:6px 0;text-align:right;font-size:12px;font-weight:800;">{html_lib.escape(backup_server)}</td></tr>
-                <tr><td style="padding:6px 0;font-size:12px;">Updated</td><td style="padding:6px 0;text-align:right;font-size:12px;font-weight:800;">{html_lib.escape(generated)}</td></tr>
+              <div style="margin-top:14px;background:{brand_background};background-color:{brand_background};border-radius:7px;padding:10px;font-size:13px;font-weight:800;color:{brand_ink};"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:{connection_color};vertical-align:-1px;margin-right:6px;"></span>{html_lib.escape(connection_label)}</div>
+              <table role="presentation" bgcolor="{brand_background}" style="width:100%;border-collapse:collapse;margin-top:18px;background:{brand_background};background-color:{brand_background};color:{brand_ink};">
+                <tr><td bgcolor="{brand_background}" style="padding:6px 0;font-size:12px;background:{brand_background};background-color:{brand_background};color:{brand_ink};">API source</td><td bgcolor="{brand_background}" style="padding:6px 0;text-align:right;font-size:12px;font-weight:800;background:{brand_background};background-color:{brand_background};color:{brand_ink};">{html_lib.escape(api_mode)}</td></tr>
+                <tr><td bgcolor="{brand_background}" style="padding:6px 0;font-size:12px;background:{brand_background};background-color:{brand_background};color:{brand_ink};">Backup server</td><td bgcolor="{brand_background}" style="padding:6px 0;text-align:right;font-size:12px;font-weight:800;background:{brand_background};background-color:{brand_background};color:{brand_ink};">{html_lib.escape(backup_server)}</td></tr>
+                <tr><td bgcolor="{brand_background}" style="padding:6px 0;font-size:12px;background:{brand_background};background-color:{brand_background};color:{brand_ink};">Updated</td><td bgcolor="{brand_background}" style="padding:6px 0;text-align:right;font-size:12px;font-weight:800;background:{brand_background};background-color:{brand_background};color:{brand_ink};">{html_lib.escape(generated)}</td></tr>
               </table>
-              <div style="margin-top:12px;border-top:1px solid rgba(255,255,255,0.22);padding-top:10px;font-size:11px;line-height:1.35;">
+              <div style="margin-top:12px;border-top:1px solid rgba(255,255,255,0.22);padding-top:10px;font-size:11px;line-height:1.35;background:{brand_background};background-color:{brand_background};color:{brand_ink};">
                 <div>Maintained &amp; developed by</div>
                 <div style="font-weight:850;">SHAIKH SHOAIB</div>
                 <div>Sr. Advisor Delivery Specialist</div>
@@ -5549,65 +6246,58 @@ def dashboard_report_email(dashboard: dict[str, Any]) -> tuple[str, str]:
           </td>
           {report_donut_card(
               "Activity Mix",
-              f"{successful + failed + active + recovery:,}",
+              f"{top_activity:,}",
               "Activity",
               [
-                  ("Successful", successful, "#18764a"),
-                  ("Failed", failed, "#bd2b3a"),
-                  ("Running", active, "#2457a6"),
-                  ("Restores", recovery, "#a96800"),
+                  ("Successful", successful, palette["green"]),
+                  ("Failed", failed, palette["red"]),
+                  ("Running", active, palette["blue"]),
+                  ("Restores", recovery, palette["amber"]),
               ],
               range_label,
+              palette=palette,
           )}
           {report_donut_card(
               "Backup SLA",
               f"{sla_percent}%",
               "SLA",
               [
-                  ("SLA met", sla_met, "#18764a"),
-                  ("Not met", sla_missed, "#bd2b3a"),
+                  ("SLA met", sla_met, palette["green"]),
+                  ("Not met", sla_missed, palette["red"]),
               ],
               f"{total_jobs:,} jobs",
+              palette=palette,
           )}
-        </tr>
-      </table>
-
-      <table role="presentation" style="width:100%;border-collapse:collapse;">
-        <tr>
-          <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
-            <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;min-height:198px;">
+          <td style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;">
+            <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:252px;">
               <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:12px;">
-                <tr><td style="font-size:14px;font-weight:800;color:#0b1d26;">Management Overview</td><td style="font-size:12px;text-align:right;color:#2a3e4a;">Live API</td></tr>
+                <tr><td style="font-size:14px;font-weight:800;color:{palette["ink"]};">Management Overview</td><td style="font-size:12px;text-align:right;color:{palette["muted"]};">Live API</td></tr>
               </table>
               <table role="presentation" style="width:100%;border-collapse:collapse;">{overview_rows}</table>
             </div>
           </td>
-          <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
-            <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;min-height:198px;">
+          <td style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;">
+            <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:252px;">
               <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:18px;">
-                <tr><td style="font-size:14px;font-weight:800;color:#0b1d26;">Recovery Health</td><td style="font-size:12px;text-align:right;color:#2a3e4a;">Restores</td></tr>
+                <tr><td style="font-size:14px;font-weight:800;color:{palette["ink"]};">Recovery Health</td><td style="font-size:12px;text-align:right;color:{palette["muted"]};">Restores</td></tr>
               </table>
-              <div style="background:#f1f5f7;border:1px solid #d4dee4;border-radius:7px;padding:12px;margin-bottom:13px;">
-                <div style="font-size:24px;font-weight:850;color:#0b1d26;">{recovery:,}</div>
-                <div style="font-size:12px;font-weight:700;color:#40545f;">Restore jobs in {html_lib.escape(range_label)}</div>
+              <div style="background:{palette["surface2"]};border:1px solid {palette["line"]};border-radius:7px;padding:12px;margin-bottom:13px;">
+                <div style="font-size:24px;font-weight:850;color:{palette["ink"]};">{recovery:,}</div>
+                <div style="font-size:12px;font-weight:700;color:{palette["muted"]};">Restore jobs in {html_lib.escape(range_label)}</div>
               </div>
-              <div style="font-size:12px;padding:6px 0;">Failed restores <strong style="float:right;">{report_int(summary.get('recoveryFailed')):,}</strong></div>
-              <div style="font-size:12px;padding:6px 0;">Running restores <strong style="float:right;">{report_int(summary.get('recoveryRunning')):,}</strong></div>
-              <div style="font-size:12px;padding:6px 0;">Clone jobs excluded <strong style="float:right;">{clones:,}</strong></div>
+              {recovery_rows}
             </div>
           </td>
-          <td style="padding:0 8px 12px 0;width:33.33%;vertical-align:top;">
-            <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;min-height:198px;">
+          <td style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;">
+            <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:252px;">
               <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:18px;">
-                <tr><td style="font-size:14px;font-weight:800;color:#0b1d26;">Clone Jobs</td><td style="font-size:12px;text-align:right;color:#2a3e4a;">Actions</td></tr>
+                <tr><td style="font-size:14px;font-weight:800;color:{palette["ink"]};">Clone Jobs</td><td style="font-size:12px;text-align:right;color:{palette["muted"]};">Actions</td></tr>
               </table>
-              <div style="background:#f1f5f7;border:1px solid #d4dee4;border-radius:7px;padding:12px;margin-bottom:13px;">
-                <div style="font-size:24px;font-weight:850;color:#0b1d26;">{clones:,}</div>
-                <div style="font-size:12px;font-weight:700;color:#40545f;">Clone jobs in {html_lib.escape(range_label)}</div>
+              <div style="background:{palette["surface2"]};border:1px solid {palette["line"]};border-radius:7px;padding:12px;margin-bottom:13px;">
+                <div style="font-size:24px;font-weight:850;color:{palette["ink"]};">{clones:,}</div>
+                <div style="font-size:12px;font-weight:700;color:{palette["muted"]};">Clone jobs in {html_lib.escape(range_label)}</div>
               </div>
-              <div style="font-size:12px;padding:6px 0;">Failed clone jobs <strong style="float:right;">{report_int(summary.get('cloneFailed')):,}</strong></div>
-              <div style="font-size:12px;padding:6px 0;">Running clone jobs <strong style="float:right;">{report_int(summary.get('cloneRunning')):,}</strong></div>
-              <div style="font-size:12px;padding:6px 0;">Clone sessions <strong style="float:right;">{report_int(summary.get('cloneSessionTotal')):,}</strong></div>
+              {clone_rows}
             </div>
           </td>
         </tr>
@@ -5615,9 +6305,26 @@ def dashboard_report_email(dashboard: dict[str, Any]) -> tuple[str, str]:
 
       <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:12px;">{metric_rows}</table>
 
-      <div style="background:#ffffff;border:1px solid #d4dee4;border-radius:8px;padding:14px;">
-        <h3 style="margin:0 0 12px;font-size:14px;color:#0b1d26;">Report Details</h3>
-        <table style="border-collapse:collapse;border:1px solid #d7e1e7;min-width:520px;width:100%;">
+      <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;margin-bottom:12px;">
+        <table role="presentation" style="width:100%;border-collapse:collapse;border-bottom:1px solid {palette["line"]};">
+          <tr>
+            <td style="padding:14px 16px;font-size:14px;font-weight:850;color:{palette["ink"]};">NetWorker Server Health</td>
+            <td style="padding:14px 16px;font-size:12px;text-align:right;color:{palette["muted"]};">Updated {html_lib.escape(generated)} - {html_lib.escape(range_label)}</td>
+          </tr>
+        </table>
+        <table role="presentation" style="width:100%;border-collapse:collapse;padding:12px;">
+          <tr>
+            {report_health_card("Server status", server_status, str(health.get("detail") or "CPU/RAM endpoint did not return data."), server_status_color, palette=palette)}
+            {report_health_card("CPU usage", cpu_value, cpu_detail, palette["blue"], health.get("cpuUsagePercent"), palette)}
+            {report_health_card("Memory usage", ram_value, ram_detail, palette["amber"], ram_percent, palette)}
+            {report_health_card("Server Protection Job", protection_label, protection_detail, protection_color, palette=palette)}
+          </tr>
+        </table>
+      </div>
+
+      <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;">
+        <h3 style="margin:0 0 12px;font-size:14px;color:{palette["ink"]};">Report Details</h3>
+        <table style="border-collapse:collapse;border:1px solid {palette["line"]};min-width:520px;width:100%;">
           {table_rows}
         </table>
       </div>
@@ -5679,6 +6386,8 @@ def send_smtp_email(
     body: str,
     smtp_password: str,
     html_body: str = "",
+    inline_images: dict[str, tuple[bytes, str, str]] | None = None,
+    attachments: dict[str, tuple[bytes, str, str]] | None = None,
 ) -> dict[str, Any]:
     stage = "prepare_message"
     diagnostics = smtp_debug_snapshot(settings, smtp_password, stage)
@@ -5691,6 +6400,26 @@ def send_smtp_email(
         message.set_content(body)
         if html_body:
             message.add_alternative(html_body, subtype="html")
+            if inline_images:
+                html_part = message.get_payload()[-1]
+                for cid, (image_bytes, mime_type, filename) in inline_images.items():
+                    maintype, _, subtype = mime_type.partition("/")
+                    html_part.add_related(
+                        image_bytes,
+                        maintype=maintype or "image",
+                        subtype=subtype or "png",
+                        cid=f"<{cid}>",
+                        filename=filename,
+                    )
+        if attachments:
+            for _, (attachment_bytes, mime_type, filename) in attachments.items():
+                maintype, _, subtype = mime_type.partition("/")
+                message.add_attachment(
+                    attachment_bytes,
+                    maintype=maintype or "application",
+                    subtype=subtype or "octet-stream",
+                    filename=filename,
+                )
 
         if settings.smtp_security == "ssl":
             stage = "connect_ssl"
@@ -5748,6 +6477,14 @@ def cancel_alert_automation(automation_id: str) -> bool:
     return True
 
 
+def cancel_session_automations(session_id: str) -> int:
+    count = 0
+    for key in list(session_automation_keys(session_id)):
+        if cancel_alert_automation(key):
+            count += 1
+    return count
+
+
 def seconds_until_daily_report(report_time: str, now: datetime | None = None) -> float:
     now = now or datetime.now().astimezone()
     hour, minute = (int(part) for part in report_time.split(":", 1))
@@ -5771,6 +6508,15 @@ def schedule_alert_automation(automation: AlertAutomation) -> None:
     timer.start()
 
 
+def scheduled_dashboard_email_payload(dashboard: dict[str, Any]) -> tuple[str, str, dict[str, tuple[bytes, str, str]]]:
+    snapshot_png = render_dashboard_snapshot_png(dashboard)
+    attachments: dict[str, tuple[bytes, str, str]] = {}
+    plain, html_body = dashboard_report_email(dashboard)
+    if snapshot_png:
+        attachments["networker-dashboard.png"] = (snapshot_png, "image/png", "networker-dashboard.png")
+    return plain, html_body, attachments
+
+
 def run_alert_automation(automation_id: str) -> None:
     automation = ALERT_AUTOMATIONS.get(automation_id)
     if not automation:
@@ -5780,7 +6526,9 @@ def run_alert_automation(automation_id: str) -> None:
         if status != HTTPStatus.OK:
             raise RuntimeError(dashboard.get("error") or "Dashboard session refresh failed.")
         if automation.schedule_type == "daily_report":
-            plain, html_body = dashboard_report_email(dashboard)
+            dashboard["theme"] = automation.theme
+            dashboard["scheduledReport"] = True
+            plain, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
             report_password = decrypt_process_secret(automation.encrypted_smtp_password)
             smtp_debug = send_smtp_email(
                 automation,
@@ -5788,6 +6536,7 @@ def run_alert_automation(automation_id: str) -> None:
                 plain,
                 report_password,
                 html_body,
+                attachments=attachments,
             ) or smtp_debug_snapshot(automation, report_password, "sent")
             automation.last_signature = dashboard.get("generatedAt") or generated_at()
             automation.last_result = (
@@ -5827,19 +6576,43 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
     action = str(payload.get("action") or "").strip().lower()
     session_id = str(payload.get("sessionId") or "").strip()
     if action == "stop":
-        stopped = cancel_alert_automation(session_id)
-        return HTTPStatus.OK, {"ok": True, "message": "Alert automation stopped." if stopped else "No alert automation was scheduled."}
+        raw_schedule_type = str(payload.get("scheduleType") or "").strip().lower()
+        if raw_schedule_type in ("alert", "daily_report"):
+            schedule_type = raw_schedule_type
+            stopped = cancel_alert_automation(automation_key(session_id, schedule_type))
+            kind = "Daily dashboard report" if schedule_type == "daily_report" else "Alert automation"
+            summary = active_automation_summary(session_id)
+            return HTTPStatus.OK, {
+                "ok": True,
+                "message": (
+                    f"{kind} stopped. Active schedules: {summary}."
+                    if stopped and summary
+                    else (f"{kind} stopped." if stopped else f"No {kind.lower()} was scheduled.")
+                ),
+                "activeAutomations": summary,
+            }
+        stopped_count = cancel_session_automations(session_id)
+        return HTTPStatus.OK, {
+            "ok": True,
+            "message": (
+                f"Stopped {stopped_count} email automation(s)."
+                if stopped_count
+                else "No email automation was scheduled."
+            ),
+            "activeAutomations": active_automation_summary(session_id),
+        }
     if action not in ("start", "test"):
         raise BadRequest("Alert automation action must be start, test, or stop.")
     if not session_id or session_id not in DASHBOARD_SESSIONS:
         raise BadRequest("A live dashboard session is required before scheduling email alerts.")
     settings = parse_smtp_settings(payload)
-    existing = ALERT_AUTOMATIONS.get(session_id)
+    automation_id = automation_key(session_id, settings["schedule_type"])
+    existing = existing_smtp_automation(session_id, settings["schedule_type"])
     smtp_password = settings["smtp_password"] or (
         decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
     )
     automation = AlertAutomation(
-        automation_id=session_id,
+        automation_id=automation_id,
         session_id=session_id,
         smtp_host=settings["smtp_host"],
         smtp_port=settings["smtp_port"],
@@ -5853,20 +6626,26 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         schedule_type=settings["schedule_type"],
         report_time=settings["report_time"],
         created_at=time.time(),
+        theme=settings["theme"],
     )
     if action == "test":
         subject = "NetWorker dashboard test email"
         plain_body = f"Test email from {APP_NAME} at {generated_at()}."
         html_body = ""
+        attachments: dict[str, tuple[bytes, str, str]] = {}
         if automation.schedule_type == "daily_report":
             dashboard = payload.get("dashboard") if isinstance(payload.get("dashboard"), dict) else None
             if dashboard:
-                plain_body, html_body = dashboard_report_email(dashboard)
+                dashboard["theme"] = automation.theme
+                dashboard["scheduledReport"] = True
+                plain_body, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
                 subject = "NetWorker daily backup status and SLA report - test"
             else:
                 status, dashboard = build_dashboard_from_session(session_id)
                 if status == HTTPStatus.OK:
-                    plain_body, html_body = dashboard_report_email(dashboard)
+                    dashboard["theme"] = automation.theme
+                    dashboard["scheduledReport"] = True
+                    plain_body, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
                     subject = "NetWorker daily backup status and SLA report - test"
         try:
             smtp_debug = send_smtp_email(
@@ -5875,6 +6654,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 plain_body,
                 smtp_password,
                 html_body,
+                attachments=attachments,
             ) or smtp_debug_snapshot(automation, smtp_password, "sent")
         except SmtpDeliveryError as exc:
             return HTTPStatus.BAD_GATEWAY, {
@@ -5885,17 +6665,21 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
             }
         return HTTPStatus.OK, {"ok": True, "message": "Test email sent.", "smtpDebug": smtp_debug}
 
-    cancel_alert_automation(session_id)
-    ALERT_AUTOMATIONS[session_id] = automation
+    cancel_alert_automation(automation_id)
+    ALERT_AUTOMATIONS[automation_id] = automation
     schedule_alert_automation(automation)
+    active_summary = active_automation_summary(session_id)
     message = (
         f"Daily backup/SLA report scheduled for {automation.report_time}."
         if automation.schedule_type == "daily_report"
         else f"Alert automation scheduled every {automation.interval_minutes} minute(s)."
     )
+    if active_summary:
+        message = f"{message} Active schedules: {active_summary}."
     return HTTPStatus.OK, {
         "ok": True,
         "message": message,
+        "activeAutomations": active_summary,
     }
 
 
