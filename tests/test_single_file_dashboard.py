@@ -36,6 +36,27 @@ def test_busy_https_port_falls_back_to_random_available_port():
         blocker.close()
 
 
+def test_service_access_urls_include_localhost_and_server_ip(monkeypatch):
+    dashboard = load_single_file_dashboard()
+
+    monkeypatch.setattr(dashboard, "local_ipv4_addresses", lambda: ["198.51.100.11"])
+
+    urls = dashboard.service_access_urls("0.0.0.0", 8443)
+
+    assert urls == [
+        ("Localhost", "https://localhost:8443/"),
+        ("Local server IP", "https://198.51.100.11:8443/"),
+    ]
+
+
+def test_default_bind_serves_all_local_interfaces():
+    dashboard = load_single_file_dashboard()
+
+    args = dashboard.parse_args([])
+
+    assert args.bind == "0.0.0.0"
+
+
 def test_reused_cookie_session_does_not_login_with_blank_password(monkeypatch):
     dashboard = load_single_file_dashboard()
 
@@ -587,6 +608,72 @@ def test_nwui_clone_jobs_are_separate_from_recovery_health(monkeypatch):
     assert body["tables"]["jobs"][0]["name"] == "Backup"
     assert body["tables"]["recovery"][0]["name"] == "File Restore"
     assert body["tables"]["cloneJobs"][0]["name"] == "Clone"
+
+
+def test_nwui_backup_summary_uses_save_session_counts_like_dpa(monkeypatch):
+    dashboard = load_single_file_dashboard()
+
+    def fake_pages(config, opener, auth_headers, endpoint_name, start_ts=None, end_ts=None):
+        if endpoint_name == "monitoringactions":
+            return [
+                {
+                    "startTime": 1778400000000,
+                    "duration": 120000,
+                    "status": "completed",
+                    "workflowName": "Filesystem",
+                    "actionName": "Backup",
+                    "policyName": "Daily",
+                    "jobData": {
+                        "successfulInputCount": 2843,
+                        "failedInputCount": 4,
+                        "runningInputCount": 3,
+                        "waitingInputCount": 1,
+                    },
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(dashboard, "nwui_monitoring_all_pages", fake_pages)
+    monkeypatch.setattr(dashboard, "load_server_health_nwui", lambda *args, **kwargs: dashboard.unavailable_server_health())
+
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="192.0.2.10",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=5,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    status, body = dashboard.build_dashboard_nwui(
+        config,
+        cookie_jar=CookieJar(),
+        auth_headers={},
+        create_session=False,
+    )
+
+    assert status == 200
+    assert body["summary"]["totalJobs"] == 2847
+    assert body["summary"]["completedJobs"] == 2847
+    assert body["summary"]["successfulJobs"] == 2843
+    assert body["summary"]["failedJobs"] == 4
+    assert body["summary"]["activeJobs"] == 4
+    assert body["summary"]["slaTotalJobs"] == 2847
+    assert body["summary"]["slaMetJobs"] == 2843
+    assert body["summary"]["slaMissedJobs"] == 4
+    assert body["summary"]["slaPercent"] == 99.86
+    assert body["tables"]["jobs"][0]["message"] == "2851 sessions (2843 ok, 4 failed, 3 running, 1 waiting, 0 canceled)"
 
 
 def test_wmi_credentials_accept_special_characters_and_encrypt_in_session():

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.9 - 2026-05-17
+
+- Updated NWUI backup summary totals to count save-session inputs from `jobData` so Completed, Succeeded, Failed, and Active backup counts align with Data Protection Advisor style reports.
+- Preserved decimal SLA percentages such as `99.86%` instead of rounding large reports up to `100%`.
+- Updated startup binding and console output so the HTTPS service runs on both localhost and the local server IP by default.
+
 ## v1.1.8 - 2026-05-17
 
 - Updated the scheduled backup/SLA email report to mirror the dashboard output order.

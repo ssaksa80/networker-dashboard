@@ -1,6 +1,6 @@
 # NetWorker Backup Dashboard
 
-Version: `1.1.8`
+Version: `1.1.9`
 
 Local HTTPS dashboard for Dell NetWorker backup monitoring. This recreates the May 6 prototype as a single-file project with the same login flow and the `/nwui/api/monitoringactions` polling behavior.
 
@@ -25,11 +25,11 @@ Test email failures return SMTP diagnostics in the page, including the failing s
 
 ## Configuration
 
-The dashboard listens on `127.0.0.1` by default so it is not exposed to the network during local testing.
+The dashboard listens on `0.0.0.0` by default so it is reachable from both `https://localhost:<port>/` and the local server IP, such as `https://10.x.x.x:<port>/`. Use `--bind 127.0.0.1` if you want local-only access.
 
 Useful settings:
 
-- `--bind` controls the local listener address.
+- `--bind` controls the local listener address. Use `0.0.0.0` for localhost plus local server IP, or `127.0.0.1` for local-only access.
 - `--port` controls the preferred HTTPS port. If unavailable, the app selects a free random port.
 - `--cert` and `--key` can point to your own TLS certificate and private key.
 - `--no-auto-cert` requires the provided certificate files instead of writing the embedded development certificate.

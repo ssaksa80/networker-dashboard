@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.1.9"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -3387,7 +3387,7 @@ def add_sla_summary(summary: dict[str, Any]) -> dict[str, Any]:
     summary["slaTotalJobs"] = total
     summary["slaMetJobs"] = met
     summary["slaMissedJobs"] = missed
-    summary["slaPercent"] = round((met / total) * 100) if total else 0
+    summary["slaPercent"] = round((met / total) * 100, 2) if total else 0
     return summary
 
 
@@ -4889,7 +4889,7 @@ def project_nwui_job(item: Any) -> dict[str, Any]:
             "total": total_sessions,
         },
         "_save_set": (
-            f"{total_sessions} sessions ({success} ok, {failed} failed, {running} running)"
+            f"{total_sessions} sessions ({success} ok, {failed} failed, {running} running, {waiting} waiting, {canceled} canceled)"
             if total_sessions
             else ""
         ),
@@ -4937,6 +4937,47 @@ def session_counts_for_jobs(jobs: list[dict[str, Any]]) -> dict[str, int]:
         totals["total"] += int(counts.get("total") or 0)
         totals["failed"] += int(counts.get("failed") or 0)
         totals["running"] += int(counts.get("running") or 0)
+    return totals
+
+
+def nwui_backup_activity_counts(jobs: list[dict[str, Any]]) -> dict[str, int]:
+    totals = {
+        "completed": 0,
+        "successful": 0,
+        "failed": 0,
+        "active": 0,
+        "warnings": 0,
+    }
+    for job in jobs:
+        counts = job.get("_sessions") or {}
+        success = int(counts.get("success") or 0)
+        failed = int(counts.get("failed") or 0)
+        canceled = int(counts.get("canceled") or 0)
+        running = int(counts.get("running") or 0)
+        waiting = int(counts.get("waiting") or 0)
+        session_total = success + failed + canceled + running + waiting
+        if session_total:
+            failed_total = failed + canceled
+            totals["successful"] += success
+            totals["failed"] += failed_total
+            totals["active"] += running + waiting
+            totals["completed"] += success + failed_total
+            if str(job.get("status") or "").lower() == "warning" and not failed_total:
+                totals["warnings"] += 1
+            continue
+
+        status = str(job.get("status") or "").lower()
+        if status == "succeeded":
+            totals["successful"] += 1
+            totals["completed"] += 1
+        elif status == "failed":
+            totals["failed"] += 1
+            totals["completed"] += 1
+        elif status == "warning":
+            totals["warnings"] += 1
+            totals["completed"] += 1
+        elif status in ("running", "queued"):
+            totals["active"] += 1
     return totals
 
 
@@ -5360,10 +5401,11 @@ def build_dashboard_nwui(
     clone_recovery_rows = [project_nwui_recovery(item) for item in clone_recoveries]
 
     clone_session_counts = session_counts_for_jobs(clone_jobs)
-    successful_jobs = sum(1 for job in backup_jobs if job.get("status") == "succeeded")
-    failed_count = sum(1 for job in backup_jobs if job.get("status") == "failed")
-    warning_count = sum(1 for job in backup_jobs if job.get("status") == "warning")
-    active_jobs = sum(1 for job in backup_jobs if job.get("status") in ("running", "queued"))
+    backup_activity = nwui_backup_activity_counts(backup_jobs)
+    successful_jobs = backup_activity["successful"]
+    failed_count = backup_activity["failed"]
+    warning_count = backup_activity["warnings"]
+    active_jobs = backup_activity["active"]
     recovery_failed = sum(1 for row in recovery_rows if row.get("status") == "failed")
     recovery_running = sum(1 for row in recovery_rows if row.get("status") in ("running", "queued"))
     clone_failed = sum(1 for job in clone_jobs if job.get("status") == "failed") + sum(
@@ -5425,7 +5467,8 @@ def build_dashboard_nwui(
         },
         "summary": add_sla_summary({
             "totalClients": len(clients),
-            "totalJobs": len(backup_jobs),
+            "totalJobs": backup_activity["completed"],
+            "completedJobs": backup_activity["completed"],
             "successfulJobs": successful_jobs,
             "failedJobs": failed_count,
             "activeJobs": active_jobs,
@@ -5810,7 +5853,7 @@ def report_status_model(dashboard: dict[str, Any]) -> dict[str, Any]:
         "sla_total": sla_total,
         "sla_met": sla_met,
         "sla_missed": sla_missed,
-        "sla_percent": report_int(summary.get("slaPercent")),
+        "sla_percent": report_decimal(summary.get("slaPercent"), 2),
         "range_label": range_label,
         "generated": generated,
         "backup_server": str(target.get("backupServer") or "--"),
@@ -6138,7 +6181,7 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
     clones = report_int(summary.get("cloneJobs"))
     alerts = report_int(summary.get("totalAlerts"))
     clients = report_int(summary.get("totalClients"))
-    sla_percent = report_int(summary.get("slaPercent"))
+    sla_percent = report_decimal(summary.get("slaPercent"), 2)
     sla_met = report_int(summary.get("slaMetJobs"))
     sla_missed = report_int(summary.get("slaMissedJobs"))
     range_label = str(summary.get("rangeLabel") or summary.get("range") or "Selected range")
@@ -7272,9 +7315,59 @@ def bind_dashboard_server(bind_host: str, requested_port: int) -> tuple[Threadin
         return server, int(server.server_address[1]), True
 
 
+def local_ipv4_addresses() -> list[str]:
+    addresses: set[str] = set()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))
+            address = probe.getsockname()[0]
+            if address and not address.startswith("127."):
+                addresses.add(address)
+    except OSError:
+        pass
+    for name in {socket.gethostname(), socket.getfqdn()}:
+        try:
+            for family, _, _, _, sockaddr in socket.getaddrinfo(name, None, socket.AF_INET):
+                if family == socket.AF_INET:
+                    address = sockaddr[0]
+                    if address and not address.startswith("127."):
+                        addresses.add(address)
+        except socket.gaierror:
+            continue
+    return sorted(addresses)
+
+
+def service_access_urls(bind_host: str, port: int) -> list[tuple[str, str]]:
+    normalized = (bind_host or "").strip().lower()
+    urls: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(label: str, host: str) -> None:
+        url = f"https://{host}:{port}/"
+        if url not in seen:
+            seen.add(url)
+            urls.append((label, url))
+
+    if normalized in ("", "0.0.0.0", "::"):
+        add("Localhost", "localhost")
+        for address in local_ipv4_addresses():
+            add("Local server IP", address)
+    elif normalized in ("127.0.0.1", "localhost", "::1"):
+        add("Localhost", "localhost")
+    else:
+        add("Configured bind address", bind_host)
+        if not normalized.startswith("127."):
+            add("Localhost", "localhost")
+    return urls
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=APP_NAME)
-    parser.add_argument("--bind", default="127.0.0.1", help="Interface to bind.")
+    parser.add_argument(
+        "--bind",
+        default="0.0.0.0",
+        help="Interface to bind. Defaults to 0.0.0.0 so localhost and the local server IP are both available.",
+    )
     parser.add_argument(
         "--port",
         type=int,
@@ -7327,11 +7420,12 @@ def run(argv: list[str] | None = None) -> int:
     context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
     server.socket = context.wrap_socket(server.socket, server_side=True)
 
-    url_host = "localhost" if args.bind in ("127.0.0.1", "0.0.0.0", "::1") else args.bind
     print(f"{APP_NAME} {APP_VERSION}")
     if used_random_port:
         print(f"Requested HTTPS port {args.port} is not available; selected {selected_port} instead.")
-    print(f"Serving HTTPS only at https://{url_host}:{selected_port}/")
+    print("Serving HTTPS only at:")
+    for label, url in service_access_urls(args.bind, selected_port):
+        print(f"  {label}: {url}")
     if used_embedded_cert:
         print(
             "Using the embedded self-signed development certificate. "
