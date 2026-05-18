@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.9"
+APP_VERSION = "1.1.10"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -109,7 +109,7 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
 SCHEDULED_REPORT_DARK_GREEN = "#003b24"
 CUSTOM_REPORT_RANGE = "custom"
 DEFAULT_REPORT_RANGE = "24h"
-SESSION_TTL_SECONDS = 8 * 60 * 60
+SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 ALERT_AUTOMATION_MIN_INTERVAL_MINUTES = 1
 ALERT_AUTOMATION_MAX_INTERVAL_MINUTES = 1440
 WMI_CREDENTIAL_KEY = Fernet.generate_key() if Fernet else b""
@@ -2882,7 +2882,7 @@ HTML_PAGE = r"""<!doctype html>
       }
       if (!payload.password && !payload.sessionId && !payload.dashboard) {
         setStatus("Password required", "warn");
-        notice.textContent = "Reconnect before exporting. The password is not saved after login.";
+        notice.textContent = "Reconnect before exporting if the in-memory session is no longer available.";
         notice.classList.add("show");
         return;
       }
@@ -3072,6 +3072,7 @@ class DashboardSession:
     config: ApiConfig
     cookie_jar: CookieJar
     auth_headers: dict[str, str]
+    encrypted_networker_password: str
     encrypted_wmi_password: str
     created_at: float
     last_used: float
@@ -4863,7 +4864,10 @@ def project_nwui_job(item: Any) -> dict[str, Any]:
     pool_from_cmd = cmd_flag_value(command, "b")
     group_from_cmd = cmd_flag_value(command, "g")
     start = parse_nwui_time(item.get("startTime"))
-    duration_ms = int(item.get("duration") or 0)
+    try:
+        duration_ms = int(float(item.get("duration") or 0))
+    except (TypeError, ValueError):
+        duration_ms = 0
     duration_seconds = int(duration_ms / 1000) if duration_ms else 0
     status = normalize_nwui_status(item.get("status"), failed)
     workflow = str(item.get("workflowName") or item.get("groupName") or server_from_cmd or "")
@@ -4928,6 +4932,72 @@ def project_nwui_recovery(item: Any) -> dict[str, str]:
         "duration": str(item.get("durationSeconds") or item.get("duration") or ""),
         "message": str(item.get("saveSet") or item.get("path") or item.get("message") or ""),
     }
+
+
+def rest_job_as_nwui_action(job: Any) -> dict[str, Any]:
+    status = status_text(job)
+    status_lower = status.lower()
+    success = 1 if is_success_job(job) else 0
+    failed = 1 if is_failed_job(job) else 0
+    running = 1 if is_active_job(job) and "queue" not in status_lower else 0
+    waiting = 1 if "queue" in status_lower or "wait" in status_lower or "pending" in status_lower else 0
+    return {
+        "startTime": first_value(job, "startTime", "started", "start"),
+        "duration": first_value(job, "elapsedTime", "duration", "elapsed"),
+        "status": status,
+        "workflowName": first_value(job, "clientHostname", "client", "hostname", "workflowName"),
+        "actionName": first_value(job, "name", "policyActionName", "actionName"),
+        "policyName": first_value(job, "policyName", "policy", "workflowName", "protectionPolicyName"),
+        "message": first_value(job, "message", "messages", "statusMessage", "errorMessage"),
+        "jobData": {
+            "successfulInputCount": success,
+            "failedInputCount": failed,
+            "runningInputCount": running,
+            "waitingInputCount": waiting,
+            "canceledInputCount": 0,
+        },
+    }
+
+
+def rest_fallback_versions(config: ApiConfig) -> tuple[str, ...]:
+    if config.api_version != "auto":
+        return (config.api_version,)
+    return API_VERSION_CANDIDATES
+
+
+def nwui_rest_fallback_items(
+    config: ApiConfig,
+    target: str,
+    context: ssl.SSLContext,
+) -> tuple[list[Any], str]:
+    if not config.password:
+        raise RestApiError(502, "Direct REST fallback needs the current login password; reconnect to refresh this source.")
+    paths = dashboard_endpoints()
+    source_name = "jobs" if target == "actions" else "policies"
+    path = paths["jobs" if target == "actions" else "policies"]
+    headers = build_headers(config)
+    last_error: RestApiError | None = None
+    for version in rest_fallback_versions(config):
+        url = api_base_url_for_version(config, version) + path
+        try:
+            data = fetch_json(url, headers, config.timeout_seconds, context, f"nwuiFallback:{source_name}:{version}")
+            preferred_key = "jobs" if target == "actions" else "policies"
+            items = collection_from(data, preferred_key)
+            if target == "actions":
+                items = [
+                    rest_job_as_nwui_action(job)
+                    for job in sort_jobs(items)
+                    if in_report_window(first_value(job, "startTime", "started", "start"), config)
+                ]
+            return items, f"/nwrestapi/{version}{compact_path_for_log(path)}"
+        except RestApiError as exc:
+            last_error = exc
+            if exc.status_code in (401, 403):
+                break
+            continue
+    if last_error:
+        raise last_error
+    raise RestApiError(502, f"Direct REST fallback for {source_name} did not return data.")
 
 
 def session_counts_for_jobs(jobs: list[dict[str, Any]]) -> dict[str, int]:
@@ -5139,6 +5209,52 @@ def refresh_server_protection_job_nwui(
         }
 
 
+def session_config_with_secrets(session: DashboardSession) -> ApiConfig:
+    config = session.config
+    networker_password = decrypt_process_secret(session.encrypted_networker_password)
+    wmi_password = decrypt_wmi_password(session.encrypted_wmi_password)
+    if networker_password or wmi_password:
+        config = replace(
+            config,
+            password=networker_password or config.password,
+            wmi_password=wmi_password or config.wmi_password,
+        )
+    return config
+
+
+def sanitize_session_config(config: ApiConfig) -> ApiConfig:
+    return replace(config, password="", wmi_password="")
+
+
+def dashboard_needs_reauth(status: int, body: dict[str, Any]) -> bool:
+    if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+        return True
+    sources = body.get("sources") if isinstance(body.get("sources"), dict) else {}
+    for item in sources.values():
+        if isinstance(item, dict) and not item.get("ok") and item.get("status") in (401, 403):
+            return True
+    return False
+
+
+def reauthenticate_dashboard_session(session: DashboardSession, config: ApiConfig) -> bool:
+    password = decrypt_process_secret(session.encrypted_networker_password)
+    if not password:
+        return False
+    context = ssl_context_for_api(config.verify_tls)
+    import urllib.request as _urllib_request
+
+    cookie_jar = CookieJar()
+    opener = _urllib_request.build_opener(
+        _urllib_request.HTTPCookieProcessor(cookie_jar),
+        _urllib_request.HTTPSHandler(context=context),
+    )
+    auth_headers, _ = nwui_login(replace(config, password=password, api_mode="nwui"), opener)
+    session.cookie_jar = cookie_jar
+    session.auth_headers = dict(auth_headers)
+    session.last_used = time.time()
+    return True
+
+
 def create_dashboard_session(
     config: ApiConfig,
     cookie_jar: CookieJar,
@@ -5151,6 +5267,7 @@ def create_dashboard_session(
         config=replace(config, password="", wmi_password="", api_mode="nwui"),
         cookie_jar=cookie_jar,
         auth_headers=dict(auth_headers),
+        encrypted_networker_password=encrypt_process_secret(config.password),
         encrypted_wmi_password=encrypt_wmi_password(config.wmi_password),
         created_at=time.time(),
         last_used=time.time(),
@@ -5191,10 +5308,7 @@ def build_dashboard_from_session(
             "tables": {"jobs": [], "failedJobs": [], "recovery": [], "cloneJobs": [], "alerts": [], "clients": []},
         }
     session.last_used = time.time()
-    config = session.config
-    wmi_password = decrypt_wmi_password(session.encrypted_wmi_password)
-    if wmi_password:
-        config = replace(config, wmi_password=wmi_password)
+    config = session_config_with_secrets(session)
     if report_range and (report_range in REPORT_RANGES or report_range == CUSTOM_REPORT_RANGE):
         if report_range == CUSTOM_REPORT_RANGE:
             parse_custom_date_window(custom_start_date, custom_end_date)
@@ -5211,15 +5325,32 @@ def build_dashboard_from_session(
                 custom_start_date="",
                 custom_end_date="",
             )
-        session.config = replace(config, wmi_password="")
+        session.config = sanitize_session_config(config)
     status, body = build_dashboard_nwui(
         config,
         cookie_jar=session.cookie_jar,
         auth_headers=session.auth_headers,
         create_session=False,
     )
+    if dashboard_needs_reauth(status, body):
+        try:
+            if reauthenticate_dashboard_session(session, config):
+                status, body = build_dashboard_nwui(
+                    config,
+                    cookie_jar=session.cookie_jar,
+                    auth_headers=session.auth_headers,
+                    create_session=False,
+                )
+        except RestApiError as exc:
+            body.setdefault("sources", {})["nwuiRelogin"] = {
+                "ok": False,
+                "path": "/nwui/api/login",
+                "status": exc.status_code,
+                "error": exc.message,
+            }
     if status == 200:
         body["sessionId"] = session_id
+    session.config = sanitize_session_config(config)
     return status, body
 
 
@@ -5235,10 +5366,7 @@ def build_server_health_from_session(session_id: str) -> tuple[int, dict[str, An
         }
 
     session.last_used = time.time()
-    config = session.config
-    wmi_password = decrypt_wmi_password(session.encrypted_wmi_password)
-    if wmi_password:
-        config = replace(config, wmi_password=wmi_password)
+    config = session_config_with_secrets(session)
 
     if config.use_wmi_health:
         health = load_server_health_wmi(config) or unavailable_server_health(
@@ -5251,16 +5379,27 @@ def build_server_health_from_session(session_id: str) -> tuple[int, dict[str, An
         health = unavailable_server_health("Real-time server health refresh requires a dashboard session with stored authentication.")
 
     if session.auth_headers or any(True for _ in session.cookie_jar):
-        server_protection = refresh_server_protection_job_nwui(
-            config,
-            session.cookie_jar,
-            session.auth_headers,
-            session.server_protection_job,
-        )
+        try:
+            server_protection = refresh_server_protection_job_nwui(
+                config,
+                session.cookie_jar,
+                session.auth_headers,
+                session.server_protection_job,
+            )
+        except RestApiError as exc:
+            if exc.status_code in (401, 403) and reauthenticate_dashboard_session(session, config):
+                server_protection = refresh_server_protection_job_nwui(
+                    config,
+                    session.cookie_jar,
+                    session.auth_headers,
+                    session.server_protection_job,
+                )
+            else:
+                raise
     else:
         server_protection = session.server_protection_job or maintenance_backup_status([])
     session.server_protection_job = server_protection
-    session.config = replace(config, wmi_password="")
+    session.config = sanitize_session_config(config)
     return HTTPStatus.OK, {
         "ok": True,
         "generatedAt": generated_at(),
@@ -5370,6 +5509,37 @@ def build_dashboard_nwui(
             elif target == "recoveries":
                 raw_recoveries = items
         except RestApiError as exc:
+            if target in ("actions", "policies"):
+                try:
+                    items, fallback_path = nwui_rest_fallback_items(config, target, context)
+                    sources[source_name] = {
+                        "ok": True,
+                        "path": fallback_path,
+                        "count": len(items),
+                        "detail": f"Used direct REST fallback after /nwui/api/{endpoint_name} returned HTTP {exc.status_code}.",
+                    }
+                    if target == "actions":
+                        raw_actions = items
+                    else:
+                        raw_policies = items
+                    continue
+                except RestApiError as fallback_exc:
+                    if target == "policies":
+                        sources[source_name] = {
+                            "ok": True,
+                            "path": f"/nwui/api/{endpoint_name}",
+                            "count": 0,
+                            "detail": (
+                                "Optional policy summary unavailable; dashboard continues without policy rows. "
+                                f"NWUI error: {safe_log_text(exc.message, 220)}; REST fallback: {safe_log_text(fallback_exc.message, 220)}"
+                            ),
+                        }
+                        raw_policies = []
+                        continue
+                    exc = RestApiError(
+                        exc.status_code,
+                        f"{exc.message}; direct REST fallback also failed: {fallback_exc.message}",
+                    )
             sources[source_name] = {
                 "ok": False,
                 "path": f"/nwui/api/{endpoint_name}",
@@ -7433,7 +7603,7 @@ def run(argv: list[str] | None = None) -> int:
         )
     if APP_DEBUG:
         print("Debug logging is enabled. Passwords and Authorization headers are not logged.")
-    print("Passwords are used per request only and are not saved.")
+    print("Passwords are encrypted in process memory for seamless reconnect and are not written to disk.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

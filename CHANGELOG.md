@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.10 - 2026-05-18
+
+- Added a direct NetWorker REST fallback for NWUI `/monitoringactions` HTTP 500 failures so backup job data can still load when the NWUI monitoring POST endpoint is unstable.
+- Treated NWUI `/monitoringpolicies` failures as optional when policy fallback is unavailable, preventing noisy source warnings while preserving backup job visibility.
+- Added encrypted in-process NetWorker credential retention and automatic NWUI re-login so dashboard refreshes can recover from expired upstream sessions without asking for the password again.
+
 ## v1.1.9 - 2026-05-17
 
 - Updated NWUI backup summary totals to count save-session inputs from `jobData` so Completed, Succeeded, Failed, and Active backup counts align with Data Protection Advisor style reports.

@@ -1,6 +1,6 @@
 # NetWorker Backup Dashboard
 
-Version: `1.1.9`
+Version: `1.1.10`
 
 Local HTTPS dashboard for Dell NetWorker backup monitoring. This recreates the May 6 prototype as a single-file project with the same login flow and the `/nwui/api/monitoringactions` polling behavior.
 
@@ -17,7 +17,7 @@ Open the `https://...` URL printed in the console. The dashboard tries port `844
 
 ## Email Alerts
 
-After connecting to NetWorker, use **Email Alert Automation** to configure SMTP delivery. The dashboard can send a test email, schedule recurring alert checks, or schedule a daily backup/SLA status report from the current logged-in session. SMTP passwords are accepted over the local HTTPS page, encrypted in process memory, and are not written to disk.
+After connecting to NetWorker, use **Email Alert Automation** to configure SMTP delivery. The dashboard can send a test email, schedule recurring alert checks, or schedule a daily backup/SLA status report from the current logged-in session. NetWorker, WMI, and SMTP passwords are accepted over the local HTTPS page, encrypted in process memory for seamless reconnect/refresh behavior, and are not written to disk.
 
 The alert scheduler can trigger on critical issues only, warnings plus critical issues, or every scheduled check. Daily reports keep the dashboard-style HTML summary in the email body and attach a PNG snapshot of the dashboard as `networker-dashboard.png`. The HTML report includes summary cards, activity/SLA donuts, management bars, backup job totals, success/failure counts, active jobs, alerts, server health, clone/recovery health, and the latest Server Protection Job state. Alert emails and daily dashboard reports can be scheduled at the same time. Scheduled report emails use the dashboard theme selected when the automation is scheduled or tested, with a dark green branded NetWorker status card.
 
@@ -38,7 +38,7 @@ Useful settings:
 ## Security Notes
 
 - The dashboard only serves over HTTPS. Plain HTTP requests are rejected and the listening socket is wrapped with TLS before serving.
-- NetWorker passwords are not saved to disk. WMI credentials are encrypted while held in process memory.
+- NetWorker and WMI credentials are encrypted while held in process memory so the dashboard can silently reconnect if the upstream session expires. They are not written to disk.
 - SMTP passwords for alert automation are encrypted while held in process memory and are cleared from the browser field after use.
 - Browser responses include no-store cache headers, HSTS, frame denial, content type protection, and a restrictive content security policy.
 - Generated certificates and `.env` are ignored by git.

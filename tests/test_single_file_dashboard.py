@@ -76,9 +76,9 @@ def test_reused_cookie_session_does_not_login_with_blank_password(monkeypatch):
         password="",
         api_mode="nwui",
         api_version="auto",
-        report_range="24h",
-        custom_start_date="",
-        custom_end_date="",
+        report_range="custom",
+        custom_start_date="10-05-2026",
+        custom_end_date="10-05-2026",
         use_wmi_health=True,
         wmi_username=r"DOMAIN\svc_networker_health",
         wmi_password="wmi-password",
@@ -120,9 +120,9 @@ def test_nwui_login_tries_backup_server_payload_after_initial_401(monkeypatch):
         password="networker-password",
         api_mode="nwui",
         api_version="auto",
-        report_range="24h",
-        custom_start_date="",
-        custom_end_date="",
+        report_range="custom",
+        custom_start_date="10-05-2026",
+        custom_end_date="10-05-2026",
         use_wmi_health=False,
         wmi_username="",
         wmi_password="",
@@ -373,6 +373,81 @@ def test_nwui_monitoring_unfiltered_fallback_preserves_report_window(monkeypatch
 
     assert items == [{"startTime": 1778400000000, "status": "completed"}]
     assert attempts == [(200, True), (100, True), (50, True), (100, False)]
+
+
+def test_nwui_http_500_actions_use_direct_rest_fallback(monkeypatch):
+    dashboard = load_single_file_dashboard()
+
+    def fake_pages(config, opener, auth_headers, endpoint_name, start_ts=None, end_ts=None):
+        if endpoint_name in ("monitoringactions", "monitoringpolicies"):
+            raise dashboard.RestApiError(500, "HTTP 500 NWUI POST failed")
+        return []
+
+    def fake_fetch_json(url, headers, timeout, context, label):
+        if "/global/jobs" in url:
+            return {
+                "jobs": [
+                    {
+                        "clientHostname": "client-a",
+                        "startTime": 1778400000000,
+                        "completionStatus": "Succeeded",
+                        "name": "Filesystem backup",
+                        "policyName": "Daily",
+                    },
+                    {
+                        "clientHostname": "client-b",
+                        "startTime": 1778400100000,
+                        "completionStatus": "Failed",
+                        "name": "Filesystem backup",
+                        "policyName": "Daily",
+                        "message": "Save failed",
+                    },
+                ]
+            }
+        if "/global/protectionpolicies" in url:
+            raise dashboard.RestApiError(500, "REST policies failed")
+        raise AssertionError(f"Unexpected REST fallback URL: {url}")
+
+    monkeypatch.setattr(dashboard, "nwui_monitoring_all_pages", fake_pages)
+    monkeypatch.setattr(dashboard, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(dashboard, "load_server_health_nwui", lambda *args, **kwargs: dashboard.unavailable_server_health())
+
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="192.0.2.10",
+        backup_server_port=9090,
+        username="admin",
+        password="networker-password",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="custom",
+        custom_start_date="10-05-2026",
+        custom_end_date="10-05-2026",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=5,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    status, body = dashboard.build_dashboard_nwui(
+        config,
+        cookie_jar=CookieJar(),
+        auth_headers={},
+        create_session=False,
+    )
+
+    assert status == 200
+    assert body["summary"]["totalJobs"] == 2
+    assert body["summary"]["successfulJobs"] == 1
+    assert body["summary"]["failedJobs"] == 1
+    assert body["sources"]["monitoringActions"]["ok"] is True
+    assert body["sources"]["monitoringActions"]["path"].startswith("/nwrestapi/")
+    assert "Used direct REST fallback" in body["sources"]["monitoringActions"]["detail"]
+    assert body["sources"]["monitoringPolicies"]["ok"] is True
+    assert "Optional policy summary unavailable" in body["sources"]["monitoringPolicies"]["detail"]
 
 
 def test_dashboard_dates_and_sla_summary_are_formatted():
@@ -705,6 +780,94 @@ def test_wmi_credentials_accept_special_characters_and_encrypt_in_session():
     assert session.encrypted_wmi_password
     assert password not in session.encrypted_wmi_password
     assert dashboard.decrypt_wmi_password(session.encrypted_wmi_password) == password
+
+
+def test_networker_password_is_encrypted_for_session_relogin():
+    dashboard = load_single_file_dashboard()
+    password = "networker-secret"
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password=password,
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Old": "token"})
+    session = dashboard.DASHBOARD_SESSIONS[session_id]
+
+    assert session.config.password == ""
+    assert session.encrypted_networker_password
+    assert password not in session.encrypted_networker_password
+    assert dashboard.decrypt_process_secret(session.encrypted_networker_password) == password
+
+
+def test_session_refresh_reauthenticates_after_upstream_401(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="networker-secret",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Old": "token"})
+    calls = []
+
+    def fake_build(config, cookie_jar=None, auth_headers=None, create_session=True):
+        calls.append((config.password, dict(auth_headers or {})))
+        if len(calls) == 1:
+            return 502, {
+                "ok": False,
+                "sources": {
+                    "nwuiLogin": {"ok": True},
+                    "monitoringActions": {"ok": False, "status": 401, "error": "expired"},
+                },
+            }
+        return 200, {
+            "ok": True,
+            "generatedAt": "18-05-2026 10:00:00 Arabian Standard Time",
+            "summary": {"health": "ok"},
+            "sources": {"nwuiLogin": {"ok": True}, "monitoringActions": {"ok": True}},
+            "tables": {"jobs": []},
+        }
+
+    monkeypatch.setattr(dashboard, "build_dashboard_nwui", fake_build)
+    monkeypatch.setattr(dashboard, "nwui_login", lambda config, opener: ({"X-New": "token"}, {"status": 200}))
+
+    status, body = dashboard.build_dashboard_from_session(session_id)
+
+    assert status == 200
+    assert body["sessionId"] == session_id
+    assert calls[0][0] == "networker-secret"
+    assert calls[0][1] == {"X-Old": "token"}
+    assert calls[1][0] == "networker-secret"
+    assert calls[1][1] == {"X-New": "token"}
+    assert dashboard.DASHBOARD_SESSIONS[session_id].config.password == ""
 
 
 def test_wmi_timeout_error_hides_encoded_command(monkeypatch):
