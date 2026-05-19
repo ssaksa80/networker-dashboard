@@ -1,6 +1,6 @@
 # NetWorker Backup Dashboard
 
-Version: `1.1.10`
+Version: `1.1.11`
 
 Local HTTPS dashboard for Dell NetWorker backup monitoring. This recreates the May 6 prototype as a single-file project with the same login flow and the `/nwui/api/monitoringactions` polling behavior.
 
@@ -13,7 +13,7 @@ python -m pip install -r requirements.txt
 python networker_dashboard.py
 ```
 
-Open the `https://...` URL printed in the console. The dashboard tries port `8443` by default; if that port is busy, it automatically selects a free random HTTPS port. The first run creates a self-signed certificate under `.certs/`, so the browser will ask you to accept the local certificate.
+The launcher runs a startup port self-test, tries port `8443` by default, and automatically selects a free random HTTPS port if `8443` is already in use. After the HTTPS health check passes, it opens the dashboard page in your default browser. The first run creates a self-signed certificate under `.certs/`, so the browser will ask you to accept the local certificate.
 
 ## Email Alerts
 
@@ -21,7 +21,15 @@ After connecting to NetWorker, use **Email Alert Automation** to configure SMTP 
 
 The alert scheduler can trigger on critical issues only, warnings plus critical issues, or every scheduled check. Daily reports keep the dashboard-style HTML summary in the email body and attach a PNG snapshot of the dashboard as `networker-dashboard.png`. The HTML report includes summary cards, activity/SLA donuts, management bars, backup job totals, success/failure counts, active jobs, alerts, server health, clone/recovery health, and the latest Server Protection Job state. Alert emails and daily dashboard reports can be scheduled at the same time. Scheduled report emails use the dashboard theme selected when the automation is scheduled or tested, with a dark green branded NetWorker status card.
 
+Daily reports validate that the backup job source is available before sending. If a scheduled refresh loses `/nwui/api/monitoringactions`, the report uses the last successful dashboard snapshot with a notice; if no reliable snapshot exists, the email is skipped instead of sending a misleading zero-count report.
+
 Test email failures return SMTP diagnostics in the page, including the failing stage, host, port, security mode, auth state, and recipient count. Passwords are never included in diagnostics.
+
+## Shared Session and Snapshots
+
+After the first successful connection, the running dashboard keeps the active NetWorker session and latest dashboard data in server memory. Other users on the network can open the same HTTPS link and see the current dashboard without re-entering the connection details, while the **Connection** button remains available for reconnecting or changing credentials.
+
+Use **Local Snapshot Growth** to save a local snapshot of the current dashboard counts. Snapshots are stored under `data/networker_snapshots.json`, keep no passwords, and can compare total backup jobs, success/failure counts, active jobs, restore jobs, clone jobs, alerts, and clients across 7, 30, or 90 days.
 
 ## Configuration
 
@@ -30,9 +38,10 @@ The dashboard listens on `0.0.0.0` by default so it is reachable from both `http
 Useful settings:
 
 - `--bind` controls the local listener address. Use `0.0.0.0` for localhost plus local server IP, or `127.0.0.1` for local-only access.
-- `--port` controls the preferred HTTPS port. If unavailable, the app selects a free random port.
+- `--port` controls the preferred HTTPS port. If unavailable, the app selects a free random port and validates the selected listener with `/api/health`.
 - `--cert` and `--key` can point to your own TLS certificate and private key.
 - `--no-auto-cert` requires the provided certificate files instead of writing the embedded development certificate.
+- `--no-launch` keeps the browser closed after the startup self-test; the console still prints the working HTTPS URLs.
 - `--debug` enables verbose REST API diagnostics without logging passwords or Authorization headers.
 
 ## Security Notes
@@ -40,6 +49,7 @@ Useful settings:
 - The dashboard only serves over HTTPS. Plain HTTP requests are rejected and the listening socket is wrapped with TLS before serving.
 - NetWorker and WMI credentials are encrypted while held in process memory so the dashboard can silently reconnect if the upstream session expires. They are not written to disk.
 - SMTP passwords for alert automation are encrypted while held in process memory and are cleared from the browser field after use.
+- Local growth snapshots save dashboard metrics only and do not include NetWorker, WMI, or SMTP passwords.
 - Browser responses include no-store cache headers, HSTS, frame denial, content type protection, and a restrictive content security policy.
 - Generated certificates and `.env` are ignored by git.
 

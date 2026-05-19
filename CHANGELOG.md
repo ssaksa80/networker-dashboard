@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.11 - 2026-05-19
+
+- Fixed NWUI split-host direct REST fallback: when `/nwui/api/monitoringactions` returns HTTP 500, the dashboard now tries `/nwrestapi/.../global/jobs` on the configured NetWorker backup server before falling back to the NWUI host.
+- Added detailed direct REST fallback diagnostics that show the host/version attempts, making HTTP 404 routing issues easier to identify.
+- Protected scheduled daily backup/SLA emails from sending misleading empty reports when the backup job source is unavailable.
+- Scheduled reports now reuse the last successful dashboard snapshot with a visible report notice, or skip sending if no reliable data is available.
+- Prevented failed zero-count refreshes from overwriting the shared last-good dashboard cache.
+- Improved the dashboard card layout so Activity Mix, Backup SLA, Management Overview, and the branded status card remain readable at default size and browser zoom levels.
+- Added regression coverage for split-host fallback routing, scheduled-report source validation, last-good report reuse, and responsive dashboard layout rules.
+
 ## v1.1.10 - 2026-05-18
 
 - Added a direct NetWorker REST fallback for NWUI `/monitoringactions` HTTP 500 failures so backup job data can still load when the NWUI monitoring POST endpoint is unstable.

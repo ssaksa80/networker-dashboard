@@ -36,6 +36,27 @@ def test_busy_https_port_falls_back_to_random_available_port():
         blocker.close()
 
 
+def test_wildcard_bind_detects_localhost_port_already_in_use():
+    dashboard = load_single_file_dashboard()
+
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    busy_port = blocker.getsockname()[1]
+
+    try:
+        assert dashboard.can_exclusively_bind_port("0.0.0.0", busy_port) is False
+        server, selected_port, used_random_port = dashboard.bind_dashboard_server("0.0.0.0", busy_port)
+        try:
+            assert used_random_port is True
+            assert selected_port != busy_port
+            assert selected_port > 0
+        finally:
+            server.server_close()
+    finally:
+        blocker.close()
+
+
 def test_service_access_urls_include_localhost_and_server_ip(monkeypatch):
     dashboard = load_single_file_dashboard()
 
@@ -49,12 +70,128 @@ def test_service_access_urls_include_localhost_and_server_ip(monkeypatch):
     ]
 
 
+def test_preferred_launch_url_uses_localhost_first():
+    dashboard = load_single_file_dashboard()
+
+    url = dashboard.preferred_launch_url(
+        [
+            ("Local server IP", "https://198.51.100.11:8443/"),
+            ("Localhost", "https://localhost:8443/"),
+        ]
+    )
+
+    assert url == "https://localhost:8443/"
+
+
+def test_self_test_dashboard_listener_validates_https_health(monkeypatch):
+    dashboard = load_single_file_dashboard()
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, limit):
+            return json.dumps({"ok": True, "https": True}).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0, context=None):
+        assert request.full_url == "https://localhost:9443/api/health"
+        assert context is not None
+        return FakeResponse()
+
+    monkeypatch.setattr(dashboard, "urlopen", fake_urlopen)
+
+    ok, message = dashboard.self_test_dashboard_listener("https://localhost:9443/", timeout_seconds=0.5)
+
+    assert ok is True
+    assert "port 9443" in message
+
+
 def test_default_bind_serves_all_local_interfaces():
     dashboard = load_single_file_dashboard()
 
     args = dashboard.parse_args([])
 
     assert args.bind == "0.0.0.0"
+    assert args.no_launch is False
+
+
+def test_no_launch_argument_disables_auto_browser_launch():
+    dashboard = load_single_file_dashboard()
+
+    args = dashboard.parse_args(["--no-launch"])
+    opened, message = dashboard.auto_launch_dashboard("https://localhost:8443/", enabled=not args.no_launch)
+
+    assert args.no_launch is True
+    assert opened is False
+    assert "--no-launch" in message
+
+
+def test_dashboard_snapshots_save_and_compare_growth(tmp_path, monkeypatch):
+    dashboard = load_single_file_dashboard()
+    monkeypatch.setattr(dashboard, "DASHBOARD_SNAPSHOT_FILE", tmp_path / "networker_snapshots.json")
+    monkeypatch.setattr(dashboard, "DATA_DIR", tmp_path)
+
+    base = {
+        "ok": True,
+        "generatedAt": "01-05-2026 10:00:00 Arabian Standard Time",
+        "target": {"apiMode": "nwui", "backupServer": "198.51.100.11:9090", "reportRange": "24h"},
+        "summary": {
+            "range": "24h",
+            "rangeLabel": "Last 24 Hours",
+            "totalJobs": 100,
+            "successfulJobs": 98,
+            "failedJobs": 2,
+            "activeJobs": 0,
+            "recoveryJobs": 1,
+            "cloneJobs": 5,
+            "totalAlerts": 1,
+            "totalClients": 25,
+            "slaPercent": 98,
+            "health": "warning",
+        },
+        "serverHealth": {"label": "Healthy"},
+        "serverProtectionJob": {"label": "Succeeded"},
+    }
+    newer = json.loads(json.dumps(base))
+    newer["summary"]["totalJobs"] = 130
+    newer["summary"]["successfulJobs"] = 127
+    newer["summary"]["failedJobs"] = 3
+
+    dashboard.save_dashboard_snapshot(base, dashboard.datetime(2026, 5, 1))
+    dashboard.save_dashboard_snapshot(newer, dashboard.datetime(2026, 5, 8))
+
+    comparison = dashboard.compare_dashboard_snapshots("7d")
+    total_jobs = next(row for row in comparison["metrics"] if row["key"] == "totalJobs")
+
+    assert comparison["ok"] is True
+    assert comparison["previousDate"] == "2026-05-01"
+    assert comparison["currentDate"] == "2026-05-08"
+    assert total_jobs["delta"] == 30
+    assert "2026-05-08" in dashboard.snapshot_summary_text()
+
+
+def test_shared_dashboard_payload_returns_last_server_session(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    monkeypatch.setattr(dashboard, "snapshot_summary_text", lambda: "snapshot summary")
+    dashboard.set_shared_dashboard(
+        "session-1",
+        {
+            "ok": True,
+            "generatedAt": "18-05-2026 10:00:00 Arabian Standard Time",
+            "summary": {"totalJobs": 10},
+            "target": {"apiMode": "nwui"},
+        },
+    )
+
+    payload = dashboard.shared_dashboard_payload()
+
+    assert payload["ok"] is True
+    assert payload["sessionId"] == "session-1"
+    assert payload["dashboard"]["sessionId"] == "session-1"
+    assert payload["snapshotSummary"] == "snapshot summary"
 
 
 def test_reused_cookie_session_does_not_login_with_blank_password(monkeypatch):
@@ -157,7 +294,7 @@ def test_nwui_login_reports_all_401_payload_attempts(monkeypatch):
         password="wrong-password",
         api_mode="nwui",
         api_version="auto",
-        report_range="24h",
+        report_range="30d",
         custom_start_date="",
         custom_end_date="",
         use_wmi_health=False,
@@ -300,7 +437,7 @@ def test_nwui_monitoring_retries_smaller_page_after_http_500(monkeypatch):
         password="",
         api_mode="nwui",
         api_version="auto",
-        report_range="24h",
+        report_range="30d",
         custom_start_date="",
         custom_end_date="",
         use_wmi_health=False,
@@ -444,10 +581,110 @@ def test_nwui_http_500_actions_use_direct_rest_fallback(monkeypatch):
     assert body["summary"]["successfulJobs"] == 1
     assert body["summary"]["failedJobs"] == 1
     assert body["sources"]["monitoringActions"]["ok"] is True
-    assert body["sources"]["monitoringActions"]["path"].startswith("/nwrestapi/")
+    assert "/nwrestapi/" in body["sources"]["monitoringActions"]["path"]
     assert "Used direct REST fallback" in body["sources"]["monitoringActions"]["detail"]
     assert body["sources"]["monitoringPolicies"]["ok"] is True
     assert "Optional policy summary unavailable" in body["sources"]["monitoringPolicies"]["detail"]
+
+
+def test_nwui_direct_rest_fallback_prefers_backup_server_host(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    requested_urls = []
+
+    def fake_fetch_json(url, headers, timeout, context, label):
+        requested_urls.append(url)
+        assert "198.51.100.11:9090" in url
+        return {
+            "jobs": [
+                {
+                    "clientHostname": "client-a",
+                    "startTime": 1778400000000,
+                    "completionStatus": "Succeeded",
+                    "name": "Filesystem backup",
+                    "policyName": "Daily",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(dashboard, "fetch_json", fake_fetch_json)
+
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="networker-password",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="30d",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=5,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    items, fallback_path = dashboard.nwui_rest_fallback_items(
+        config,
+        "actions",
+        dashboard.ssl_context_for_api(False),
+    )
+
+    assert requested_urls[0].startswith("https://198.51.100.11:9090/nwrestapi/v3/global/jobs")
+    assert "192.0.2.10" not in requested_urls[0]
+    assert fallback_path.startswith("https://198.51.100.11:9090/nwrestapi/v3/global/jobs")
+    assert items[0]["workflowName"] == "client-a"
+
+
+def test_nwui_direct_rest_fallback_tries_nwui_host_after_backup_host_404(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    requested_urls = []
+
+    def fake_fetch_json(url, headers, timeout, context, label):
+        requested_urls.append(url)
+        if "198.51.100.11:9090" in url:
+            raise dashboard.RestApiError(404, "HTTP 404 Not Found")
+        if "192.0.2.10:9090" in url:
+            return {"jobs": []}
+        raise AssertionError(f"Unexpected fallback URL: {url}")
+
+    monkeypatch.setattr(dashboard, "fetch_json", fake_fetch_json)
+
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="networker-password",
+        api_mode="nwui",
+        api_version="v3",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=5,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+
+    items, fallback_path = dashboard.nwui_rest_fallback_items(
+        config,
+        "actions",
+        dashboard.ssl_context_for_api(False),
+    )
+
+    assert len(requested_urls) == 2
+    assert requested_urls[0].startswith("https://198.51.100.11:9090/nwrestapi/v3/global/jobs")
+    assert requested_urls[1].startswith("https://192.0.2.10:9090/nwrestapi/v3/global/jobs")
+    assert fallback_path.startswith("https://192.0.2.10:9090/nwrestapi/v3/global/jobs")
+    assert items == []
 
 
 def test_dashboard_dates_and_sla_summary_are_formatted():
@@ -480,6 +717,10 @@ def test_management_bar_fill_is_block_level():
 
     assert ".bar-fill" in dashboard.HTML_PAGE
     assert "display: block;" in dashboard.HTML_PAGE
+    assert "repeat(auto-fit, minmax(min(100%, 320px), 1fr))" in dashboard.HTML_PAGE
+    assert "grid-template-columns: minmax(124px, 0.9fr) minmax(132px, 1fr)" in dashboard.HTML_PAGE
+    assert "overflow-wrap: anywhere" in dashboard.HTML_PAGE
+    assert "repeat(auto-fit, minmax(170px, 1fr))" in dashboard.HTML_PAGE
     assert "Backup SLA" in dashboard.HTML_PAGE
     assert "DD-MM-YYYY" in dashboard.HTML_PAGE
     assert "NetWorker Server Health" in dashboard.HTML_PAGE
@@ -506,6 +747,12 @@ def test_dashboard_html_embeds_networker_logo_data_uri():
     assert "/networker-logo.png" not in html
     assert "SHAIKH SHOAIB" in html
     assert "Email Alert Automation" in html
+    assert "alertConfigBtn" in html
+    assert "showConnectionBtn" in html
+    assert "topbar-button" in html
+    assert "connection-open" in html
+    assert "alertAutomationModal" in html
+    assert "openAlertAutomationModal" in html
     assert "/api/alert-automation" in html
     assert "value=\"arctic\"" in html
     assert "value=\"ember\"" in html
@@ -1639,6 +1886,199 @@ def test_daily_report_automation_sends_embedded_report(monkeypatch):
     assert "#1f7a45" in sent[0][3]
     assert "cid:networker-dashboard-snapshot" not in sent[0][3]
     assert sent[0][4]["networker-dashboard.png"][0] == b"png-bytes"
+
+
+def test_daily_report_skips_empty_email_when_backup_source_failed(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
+    sent = []
+
+    monkeypatch.setattr(
+        dashboard,
+        "build_dashboard_from_session",
+        lambda session_id: (
+            200,
+            {
+                "ok": True,
+                "generatedAt": "19-05-2026 07:30:07 Arabian Standard Time",
+                "summary": {
+                    "rangeLabel": "Last 24 Hours",
+                    "totalJobs": 0,
+                    "successfulJobs": 0,
+                    "failedJobs": 0,
+                    "activeJobs": 0,
+                    "recoveryJobs": 0,
+                    "cloneJobs": 0,
+                    "totalAlerts": 0,
+                    "slaPercent": 0,
+                    "slaMetJobs": 0,
+                    "slaTotalJobs": 0,
+                    "slaMissedJobs": 0,
+                    "health": "critical",
+                },
+                "serverHealth": {"status": "ok", "label": "Healthy"},
+                "serverProtectionJob": {"status": "unknown", "label": "Not found"},
+                "sources": {
+                    "monitoringActions": {
+                        "ok": False,
+                        "path": "/nwui/api/monitoringactions",
+                        "status": 500,
+                        "error": "HTTP 500 NWUI POST failed; direct REST fallback also failed: HTTP 404",
+                    }
+                },
+            },
+        ),
+    )
+    monkeypatch.setattr(dashboard, "send_smtp_email", lambda *args, **kwargs: sent.append(args))
+    monkeypatch.setattr(dashboard, "schedule_alert_automation", lambda automation: None)
+
+    status, _ = dashboard.handle_alert_automation(
+        {
+            "action": "start",
+            "sessionId": session_id,
+            "smtpHost": "smtp.example.com",
+            "smtpPort": "587",
+            "smtpSecurity": "starttls",
+            "smtpUsername": "svc",
+            "smtpPassword": "daily-secret",
+            "smtpFrom": "networker@example.com",
+            "smtpTo": "ops@example.com",
+            "intervalMinutes": "60",
+            "trigger": "all",
+            "scheduleType": "daily_report",
+            "reportTime": "07:30",
+            "theme": "forest",
+        }
+    )
+
+    assert status == 200
+    dashboard.run_alert_automation(dashboard.automation_key(session_id, "daily_report"))
+
+    assert sent == []
+    assert "Daily report skipped because backup job data was unavailable" in dashboard.ALERT_AUTOMATIONS[
+        dashboard.automation_key(session_id, "daily_report")
+    ].last_result
+
+
+def test_daily_report_uses_last_good_dashboard_when_scheduled_refresh_loses_job_source(monkeypatch):
+    dashboard = load_single_file_dashboard()
+    config = dashboard.ApiConfig(
+        rest_api_host="192.0.2.10",
+        rest_api_port=9090,
+        backup_server_host="198.51.100.11",
+        backup_server_port=9090,
+        username="admin",
+        password="",
+        api_mode="nwui",
+        api_version="auto",
+        report_range="24h",
+        custom_start_date="",
+        custom_end_date="",
+        use_wmi_health=False,
+        wmi_username="",
+        wmi_password="",
+        timeout_seconds=10,
+        verify_tls=False,
+        use_authc_header=False,
+    )
+    session_id = dashboard.create_dashboard_session(config, CookieJar(), {"X-Test": "token"})
+    good_dashboard = {
+        "ok": True,
+        "generatedAt": "19-05-2026 07:20:00 Arabian Standard Time",
+        "summary": {
+            "rangeLabel": "Last 24 Hours",
+            "totalJobs": 32,
+            "successfulJobs": 31,
+            "failedJobs": 1,
+            "activeJobs": 0,
+            "recoveryJobs": 0,
+            "cloneJobs": 0,
+            "totalAlerts": 1,
+            "slaPercent": 97,
+            "slaMetJobs": 31,
+            "slaTotalJobs": 32,
+            "slaMissedJobs": 1,
+        },
+        "sources": {"monitoringActions": {"ok": True, "path": "/nwui/api/monitoringactions", "count": 32}},
+        "serverHealth": {"label": "Healthy"},
+        "serverProtectionJob": {"label": "Succeeded", "detail": "Server backup completed"},
+    }
+    dashboard.set_shared_dashboard(session_id, good_dashboard)
+    sent = []
+
+    monkeypatch.setattr(
+        dashboard,
+        "build_dashboard_from_session",
+        lambda session_id: (
+            200,
+            {
+                "ok": True,
+                "generatedAt": "19-05-2026 07:30:07 Arabian Standard Time",
+                "summary": {"rangeLabel": "Last 24 Hours", "totalJobs": 0, "slaTotalJobs": 0, "health": "critical"},
+                "sources": {
+                    "monitoringActions": {
+                        "ok": False,
+                        "path": "/nwui/api/monitoringactions",
+                        "status": 500,
+                        "error": "HTTP 500 NWUI POST failed",
+                    }
+                },
+            },
+        ),
+    )
+    monkeypatch.setattr(dashboard, "render_dashboard_snapshot_png", lambda dashboard_payload: None)
+
+    def fake_send(settings, subject, body, smtp_password, html_body="", inline_images=None, attachments=None):
+        sent.append((subject, body, html_body))
+
+    monkeypatch.setattr(dashboard, "send_smtp_email", fake_send)
+    monkeypatch.setattr(dashboard, "schedule_alert_automation", lambda automation: None)
+
+    status, _ = dashboard.handle_alert_automation(
+        {
+            "action": "start",
+            "sessionId": session_id,
+            "smtpHost": "smtp.example.com",
+            "smtpPort": "587",
+            "smtpSecurity": "starttls",
+            "smtpUsername": "svc",
+            "smtpPassword": "daily-secret",
+            "smtpFrom": "networker@example.com",
+            "smtpTo": "ops@example.com",
+            "intervalMinutes": "60",
+            "trigger": "all",
+            "scheduleType": "daily_report",
+            "reportTime": "07:30",
+            "theme": "forest",
+        }
+    )
+
+    assert status == 200
+    dashboard.run_alert_automation(dashboard.automation_key(session_id, "daily_report"))
+
+    assert sent
+    assert "Total backup jobs: 32" in sent[0][1]
+    assert "Report notice:" in sent[0][1]
+    assert "last successful dashboard snapshot" in sent[0][2]
 
 
 def test_alert_and_daily_report_can_be_scheduled_together(monkeypatch):
