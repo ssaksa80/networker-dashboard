@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.12 - 2026-05-19
+
+- Added NetWorker-style log cleanup for multi-record `jobOutput` payloads from both NWUI and direct REST job sources.
+- Recent Jobs now suppresses raw `savegrp`, `nsrim`, and `nsrexecd` telemetry IDs and shows concise NMC-style messages such as final waiting, processing, or crosscheck events.
+- Added a Logs tab with Priority, Time, Source, Category, and Message columns for easier comparison with the NetWorker console log view.
+- Changed job duration display from raw seconds to readable values such as `5m 31s` and `8h 36m`.
+- Added regression coverage for combined NetWorker output parsing, direct REST message cleanup, NWUI message cleanup, log tab rendering, and duration formatting.
+
 ## v1.1.11 - 2026-05-19
 
 - Fixed NWUI split-host direct REST fallback: when `/nwui/api/monitoringactions` returns HTTP 500, the dashboard now tries `/nwrestapi/.../global/jobs` on the configured NetWorker backup server before falling back to the NWUI host.

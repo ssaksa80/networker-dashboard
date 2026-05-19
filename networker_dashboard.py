@@ -50,7 +50,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "1.1.11"
+APP_VERSION = "1.1.12"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -2106,6 +2106,7 @@ HTML_PAGE = r"""<!doctype html>
           <button class="tab" type="button" data-table="failedJobs">Failed Jobs</button>
           <button class="tab" type="button" data-table="recovery">Restores</button>
           <button class="tab" type="button" data-table="cloneJobs">Clone Jobs</button>
+          <button class="tab" type="button" data-table="logs">Logs</button>
           <button class="tab" type="button" data-table="alerts">Alerts</button>
           <button class="tab" type="button" data-table="clients">Clients</button>
         </div>
@@ -2229,6 +2230,16 @@ HTML_PAGE = r"""<!doctype html>
           ["status", "Status"],
           ["started", "Started"],
           ["duration", "Duration"],
+          ["message", "Message"],
+        ],
+      },
+      logs: {
+        title: "Log",
+        columns: [
+          ["priority", "Priority"],
+          ["time", "Time"],
+          ["source", "Source"],
+          ["category", "Category"],
           ["message", "Message"],
         ],
       },
@@ -2790,7 +2801,7 @@ HTML_PAGE = r"""<!doctype html>
     function chooseVisibleTable() {
       const tables = latestDashboard?.tables || {};
       if ((tables[activeTable] || []).length) return;
-      const fallback = ["jobs", "failedJobs", "recovery", "cloneJobs", "alerts", "clients"].find((name) => {
+      const fallback = ["jobs", "failedJobs", "recovery", "cloneJobs", "logs", "alerts", "clients"].find((name) => {
         return (tables[name] || []).length > 0;
       });
       if (fallback) {
@@ -2824,7 +2835,7 @@ HTML_PAGE = r"""<!doctype html>
       tableBody.innerHTML = rows.map((row) => {
         return `<tr>${def.columns.map(([key]) => {
           const value = row[key];
-          if (key === "status" || key === "severity") {
+          if (key === "status" || key === "severity" || key === "priority") {
             return `<td><span class="badge ${badgeClass(value)}">${escapeHtml(value)}</span></td>`;
           }
           const muted = value ? "" : " cell-muted";
@@ -4519,6 +4530,227 @@ def stringify(value: Any, max_len: int = 220) -> str:
     return text
 
 
+def networker_group_name_from_output(text: str) -> str:
+    patterns = (
+        r"\bGroup\s+(.+?)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d{5,}",
+        r"\bfor workflow '([^']+)'",
+        r"\bStarting workflow '([^']+)'",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        value = re.sub(r"\s+", " ", match.group(1)).strip(" .")
+        if value and "%" not in value:
+            return value
+    return ""
+
+
+def clean_networker_record_body(body: str, group_name: str = "") -> str:
+    body = re.sub(r"\s+", " ", body).strip()
+    if not body:
+        return ""
+
+    waiting_match = re.search(
+        r"\bwaiting\s+for\s+(\d+)\s+jobs\s+\((\d+)\s+awaiting\s+restart\)\s+to\s+complete\b",
+        body,
+        flags=re.IGNORECASE,
+    )
+    if waiting_match:
+        prefix = f"Group {group_name} " if group_name else ""
+        return (
+            f"{prefix}waiting for {waiting_match.group(1)} jobs "
+            f"({waiting_match.group(2)} awaiting restart) to complete."
+        ).strip()
+
+    nested_message = re.search(
+        r"\bUnable to handle job (?:add|monitor) message:\s+(?:\d+\s+){3,}(.+?)(?=\s+\d+\s+\d+\s+\d+\s+\S+\s+NSR\b|$)",
+        body,
+        flags=re.IGNORECASE,
+    )
+    if nested_message:
+        nested = re.sub(r"\s+", " ", nested_message.group(1)).strip(" .")
+        nested = re.sub(r"\s+\d+\s+\d+\s+\d+\s+\S+.*$", "", nested).strip(" .")
+        if nested:
+            return f"{nested}."
+
+    sentence_match = re.match(r"(.+?\.)\s+(.+)$", body)
+    sentence = sentence_match.group(1) if sentence_match else body
+    arg_tail = sentence_match.group(2) if sentence_match else ""
+    sentence = re.sub(r"\\[rn]", " ", sentence)
+    sentence = re.sub(r"\s+", " ", sentence).strip(" .")
+    if not sentence:
+        return ""
+
+    if "%" in sentence:
+        placeholders = re.findall(r"%[sdu]", sentence)
+        arg_tokens = arg_tail.split()
+        if arg_tokens and arg_tokens[0].isdigit() and int(arg_tokens[0]) == len(placeholders):
+            arg_tokens = arg_tokens[1:]
+        numeric_needed = sum(1 for placeholder in placeholders if placeholder in ("%d", "%u"))
+        string_needed = sum(1 for placeholder in placeholders if placeholder == "%s")
+        numeric_values: list[str] = []
+        while arg_tokens and len(numeric_values) < numeric_needed and re.fullmatch(r"\d+", arg_tokens[0]):
+            numeric_values.append(arg_tokens.pop(0))
+        while arg_tokens and re.fullmatch(r"\d+", arg_tokens[-1]):
+            arg_tokens.pop()
+        string_values: list[str] = []
+        if string_needed == 1 and arg_tokens:
+            string_values.append(" ".join(arg_tokens))
+        elif string_needed > 1:
+            string_values.extend(arg_tokens[:string_needed])
+        if len(numeric_values) >= numeric_needed and len(string_values) >= string_needed:
+            numeric_index = 0
+            string_index = 0
+
+            def replace_record_placeholder(match: re.Match[str]) -> str:
+                nonlocal numeric_index, string_index
+                placeholder = match.group(0)
+                if placeholder in ("%d", "%u"):
+                    value = numeric_values[numeric_index]
+                    numeric_index += 1
+                    return value
+                value = string_values[string_index]
+                string_index += 1
+                return value
+
+            rendered = re.sub(r"%[sdu]", replace_record_placeholder, sentence)
+            rendered = re.sub(r"\s+", " ", rendered).strip(" .")
+            if rendered:
+                return f"{rendered}."
+
+        generic_templates = (
+            (r"^Started\s+''\s+job\s+with\s+jobid\s+\[%u\]", "Backup job started."),
+            (r"^Action\s+''\s+has\s+initialized", "Action initialized."),
+        )
+        for pattern, replacement in generic_templates:
+            if re.search(pattern, sentence, flags=re.IGNORECASE):
+                return replacement
+        sentence = re.sub(r"\s+with job id %u.*$", "", sentence, flags=re.IGNORECASE).strip(" .")
+        sentence = re.sub(r"\s+with jobid \[%u\].*$", "", sentence, flags=re.IGNORECASE).strip(" .")
+        sentence = re.sub(r"%[sdu]", "", sentence)
+        sentence = re.sub(r"\s+", " ", sentence).strip(" .'")
+
+    if re.fullmatch(r"\d{1,2}:\d{1,2}\s+\S+", sentence):
+        return ""
+    return f"{sentence}." if sentence and not sentence.endswith(".") else sentence
+
+
+def extract_networker_record_messages(text: str, group_name: str = "") -> list[str]:
+    marker_pattern = re.compile(
+        r"\b(?P<source>[A-Za-z0-9_.-]+)\s+NSR\s+(?P<level>info|notice|warning|error|critical)\s+(?P<code>\d+)\s+",
+        flags=re.IGNORECASE,
+    )
+    matches = list(marker_pattern.finditer(text))
+    messages: list[str] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        message = clean_networker_record_body(text[start:end], group_name)
+        if message:
+            messages.append(message)
+    return messages
+
+
+def clean_networker_job_message(value: Any, fallback: str = "", group_name: str = "") -> str:
+    text = stringify(value, 12000)
+    if not text:
+        return fallback
+    had_suppressed_prefix = bool(re.search(r"\bsuppressed\s+\d+\s+bytes?\s+of\s+output\b", text, re.IGNORECASE))
+    text = re.sub(r"\bsuppressed\s+\d+\s+bytes?\s+of\s+output\.?", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return fallback
+
+    record_messages = extract_networker_record_messages(text, group_name)
+    if record_messages:
+        preferred = [message for message in record_messages if "waiting for" in message.lower()]
+        return (preferred or record_messages)[-1]
+
+    rendered_waiting_match = re.search(
+        r"\bGroup\s+(.+?)\s+waiting\s+for\s+(\d+)\s+jobs\s+\((\d+)\s+awaiting\s+restart\)\s+to\s+complete\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if rendered_waiting_match:
+        group = re.sub(r"\s+", " ", rendered_waiting_match.group(1)).strip(" .")
+        if len(group) <= 80 and not re.search(r"\b(?:NSR|savegrp|Program Files)\b", group, re.IGNORECASE):
+            return (
+                f"Group {group} waiting for {rendered_waiting_match.group(2)} jobs "
+                f"({rendered_waiting_match.group(3)} awaiting restart) to complete."
+            )
+
+    waiting_match = re.search(
+        r"\bwaiting\s+for\s+(\d+)\s+jobs\s+\((\d+)\s+awaiting\s+restart\)\s+to\s+complete\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if waiting_match:
+        group = group_name or networker_group_name_from_output(text)
+        prefix = f"Group {group} " if group else ""
+        return (
+            f"{prefix}waiting for {waiting_match.group(1)} jobs "
+            f"({waiting_match.group(2)} awaiting restart) to complete."
+        ).strip().capitalize() if not prefix else (
+            f"{prefix}waiting for {waiting_match.group(1)} jobs "
+            f"({waiting_match.group(2)} awaiting restart) to complete."
+        )
+
+    catalog_match = re.search(
+        r"\bNSR\s+(?:info|notice|warning|error|critical)\s+\d+\s+(.+?)\.\s+(\d+)\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if catalog_match:
+        template = catalog_match.group(1).strip()
+        arg_count = int(catalog_match.group(2) or 0)
+        arg_tokens = catalog_match.group(3).split()
+        placeholders = re.findall(r"%[sd]", template)
+        numeric_needed = sum(1 for placeholder in placeholders if placeholder == "%d")
+        string_needed = sum(1 for placeholder in placeholders if placeholder == "%s")
+        numeric_values = []
+        while arg_tokens and len(numeric_values) < numeric_needed and re.fullmatch(r"\d+", arg_tokens[0]):
+            numeric_values.append(arg_tokens.pop(0))
+        while arg_tokens and re.fullmatch(r"\d+", arg_tokens[-1]):
+            arg_tokens.pop()
+        string_values: list[str] = []
+        if string_needed == 1 and arg_tokens:
+            string_values.append(" ".join(arg_tokens))
+        elif string_needed > 1:
+            string_values.extend(arg_tokens[:string_needed])
+
+        if len(placeholders) == arg_count and len(numeric_values) >= numeric_needed and len(string_values) >= string_needed:
+            numeric_index = 0
+            string_index = 0
+
+            def replace_placeholder(match: re.Match[str]) -> str:
+                nonlocal numeric_index, string_index
+                placeholder = match.group(0)
+                if placeholder == "%d":
+                    value = numeric_values[numeric_index]
+                    numeric_index += 1
+                    return value
+                value = string_values[string_index]
+                string_index += 1
+                return value
+
+            rendered = re.sub(r"%[sd]", replace_placeholder, template)
+            rendered = re.sub(r"\s+", " ", rendered).strip(" .")
+            if rendered:
+                return f"{rendered}."
+        compact_template = re.sub(r"%[sd]", "", template)
+        compact_template = re.sub(r"\s+", " ", compact_template).strip(" .")
+        if compact_template:
+            return f"{compact_template}."
+
+    tokens = text.split()
+    numeric_tokens = sum(1 for token in tokens if re.fullmatch(r"\d+", token))
+    if had_suppressed_prefix or (len(tokens) >= 18 and numeric_tokens / max(1, len(tokens)) > 0.45):
+        return fallback or "Verbose NetWorker job output suppressed."
+    return stringify(text, 260)
+
+
 def first_value(item: Any, *keys: str) -> Any:
     if not isinstance(item, dict):
         return ""
@@ -4566,6 +4798,47 @@ def timestamp(value: Any) -> float:
         except ValueError:
             continue
     return 0.0
+
+
+def format_duration_seconds(total_seconds: Any) -> str:
+    try:
+        seconds = int(float(total_seconds))
+    except (TypeError, ValueError):
+        return ""
+    if seconds <= 0:
+        return ""
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds and not days and not hours:
+        parts.append(f"{seconds}s")
+    return " ".join(parts[:3]) or "0s"
+
+
+def format_duration_value(value: Any) -> str:
+    if value in (None, "", []):
+        return ""
+    if isinstance(value, (int, float)):
+        return format_duration_seconds(value)
+    text = stringify(value, 80).strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return format_duration_seconds(float(text))
+    colon_match = re.fullmatch(r"(?:(\d+):)?(\d{1,2}):(\d{2})", text)
+    if colon_match:
+        hours = int(colon_match.group(1) or 0)
+        minutes = int(colon_match.group(2))
+        seconds = int(colon_match.group(3))
+        return format_duration_seconds((hours * 3600) + (minutes * 60) + seconds)
+    return text
 
 
 def status_text(job: Any) -> str:
@@ -4634,21 +4907,68 @@ def is_warning_alert(alert: Any) -> bool:
     return any(word in alert_severity(alert).lower() for word in ("warn", "minor", "medium"))
 
 
+def networker_log_priority(status: Any, message: Any = "") -> str:
+    text = f"{stringify(status, 80)} {stringify(message, 140)}".lower()
+    if any(word in text for word in ("critical", "fatal", "failed", "failure", "error")):
+        return "error"
+    if any(word in text for word in ("warn", "waiting", "queued", "awaiting restart")):
+        return "warning"
+    return "info"
+
+
+def networker_log_category(message: Any, default: str = "policy") -> str:
+    text = stringify(message, 260).lower()
+    if any(word in text for word in ("device", "volume", "save set", "saveset", "media", "ddboost", "ddclone")):
+        return "media"
+    if any(word in text for word in ("workflow", "action", "group", "policy")):
+        return "policy"
+    if any(word in text for word in ("client", "host")):
+        return "client"
+    return default or "event"
+
+
+def networker_log_row(
+    message: Any,
+    time_value: Any = "",
+    status: Any = "",
+    category: str = "",
+    source: str = "event",
+) -> dict[str, str]:
+    clean_message = clean_networker_job_message(message)
+    return {
+        "priority": networker_log_priority(status, clean_message),
+        "time": display_datetime(time_value) if time_value else "",
+        "source": source or "event",
+        "category": networker_log_category(clean_message, category or "policy"),
+        "message": clean_message,
+    }
+
+
+def project_job_log(job: Any) -> dict[str, str]:
+    projected = project_job(job)
+    return networker_log_row(
+        projected.get("message") or projected.get("name"),
+        first_value(job, "startTime", "started", "start"),
+        projected.get("status"),
+        "policy",
+        "event",
+    )
+
+
 def project_job(job: Any) -> dict[str, str]:
+    group_name = stringify(
+        first_value(job, "workflowName", "groupName", "policyName", "policy", "protectionPolicyName"),
+        140,
+    )
+    raw_message = first_value(job, "jobOutput", "message", "messages", "statusMessage", "errorMessage")
     return {
         "client": stringify(first_value(job, "clientHostname", "client", "hostname"), 120),
         "name": stringify(first_value(job, "name", "policyActionName", "actionName"), 140),
-        "policy": stringify(
-            first_value(job, "policyName", "policy", "workflowName", "protectionPolicyName"),
-            140,
-        ),
+        "policy": group_name,
         "status": status_text(job),
         "started": display_datetime(first_value(job, "startTime", "started", "start")),
-        "duration": stringify(first_value(job, "elapsedTime", "duration", "elapsed"), 80),
-        "message": stringify(
-            first_value(job, "message", "messages", "statusMessage", "errorMessage"),
-            260,
-        ),
+        "duration": format_duration_value(first_value(job, "elapsedTime", "duration", "elapsed")),
+        "message": clean_networker_job_message(raw_message, "", group_name),
     }
 
 
@@ -4883,6 +5203,11 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "failedJobs": [project_failed_job(job) for job in failed_jobs[:TABLE_LIMIT]],
         "recovery": [project_job(job) for job in recovery_jobs[:TABLE_LIMIT]],
         "cloneJobs": [project_job(job) for job in clone_jobs[:TABLE_LIMIT]],
+        "logs": [
+            row
+            for row in (project_job_log(job) for job in (backup_jobs + clone_jobs)[:TABLE_LIMIT])
+            if row.get("message")
+        ],
         "alerts": [project_alert(alert) for alert in alerts[:TABLE_LIMIT]],
         "clients": [project_client(client) for client in clients[:TABLE_LIMIT]],
     }
@@ -5313,14 +5638,23 @@ def project_nwui_job(item: Any) -> dict[str, Any]:
     status = normalize_nwui_status(item.get("status"), failed)
     workflow = str(item.get("workflowName") or item.get("groupName") or server_from_cmd or "")
     action = str(item.get("actionName") or item.get("jobType") or item.get("name") or "")
+    session_summary = (
+        f"{total_sessions} sessions ({success} ok, {failed} failed, {running} running, {waiting} waiting, {canceled} canceled)"
+        if total_sessions
+        else ""
+    )
     return {
         "client": workflow,
         "name": action,
         "policy": str(item.get("policyName") or ""),
         "status": status,
         "started": start,
-        "duration": str(duration_seconds) if duration_seconds else "",
-        "message": str(item.get("jobOutput") or item.get("message") or "")[:260],
+        "duration": format_duration_seconds(duration_seconds),
+        "message": clean_networker_job_message(
+            first_value(item, "jobOutput", "message", "statusMessage", "errorMessage"),
+            session_summary,
+            workflow,
+        ),
         "_workflow": workflow,
         "_group": str(item.get("groupName") or group_from_cmd or ""),
         "_pool": pool_from_cmd,
@@ -5333,11 +5667,7 @@ def project_nwui_job(item: Any) -> dict[str, Any]:
             "canceled": canceled,
             "total": total_sessions,
         },
-        "_save_set": (
-            f"{total_sessions} sessions ({success} ok, {failed} failed, {running} running, {waiting} waiting, {canceled} canceled)"
-            if total_sessions
-            else ""
-        ),
+        "_save_set": session_summary,
     }
 
 
@@ -5351,6 +5681,17 @@ def nwui_job_table_row(job: dict[str, Any]) -> dict[str, str]:
         "duration": str(job.get("duration") or ""),
         "message": str(job.get("message") or job.get("_save_set") or ""),
     }
+
+
+def nwui_job_log_row(job: dict[str, Any]) -> dict[str, str]:
+    message = str(job.get("message") or job.get("_save_set") or job.get("name") or "")
+    return networker_log_row(
+        message,
+        job.get("started"),
+        job.get("status"),
+        networker_log_category(message, "policy"),
+        "event",
+    )
 
 
 def project_nwui_recovery(item: Any) -> dict[str, str]:
@@ -5780,7 +6121,7 @@ def build_dashboard_from_session(
             "serverProtectionJob": maintenance_backup_status([]),
             "maintenanceBackup": maintenance_backup_status([]),
             "sources": {},
-            "tables": {"jobs": [], "failedJobs": [], "recovery": [], "cloneJobs": [], "alerts": [], "clients": []},
+            "tables": {"jobs": [], "failedJobs": [], "recovery": [], "cloneJobs": [], "logs": [], "alerts": [], "clients": []},
         }
     session.last_used = time.time()
     config = session_config_with_secrets(session)
@@ -5949,7 +6290,7 @@ def build_dashboard_nwui(
             "serverProtectionJob": maintenance_backup_status([]),
             "maintenanceBackup": maintenance_backup_status([]),
             "sources": sources,
-            "tables": {"jobs": [], "failedJobs": [], "recovery": [], "cloneJobs": [], "alerts": [], "clients": []},
+            "tables": {"jobs": [], "failedJobs": [], "recovery": [], "cloneJobs": [], "logs": [], "alerts": [], "clients": []},
             "error": exc.message,
         }
         return exc.status_code if exc.status_code in (401, 403) else 502, body
@@ -6089,6 +6430,11 @@ def build_dashboard_nwui(
         ],
         "recovery": recovery_rows[:TABLE_LIMIT],
         "cloneJobs": ([nwui_job_table_row(job) for job in clone_jobs] + clone_recovery_rows)[:TABLE_LIMIT],
+        "logs": [
+            row
+            for row in (nwui_job_log_row(job) for job in (backup_jobs + clone_jobs)[:TABLE_LIMIT])
+            if row.get("message")
+        ],
         "alerts": (alerts + policy_alert_rows)[:TABLE_LIMIT],
         "clients": clients[:TABLE_LIMIT],
     }
@@ -7885,6 +8231,13 @@ def build_excel_report(dashboard: dict[str, Any]) -> bytes:
         ("started", "Started"),
         ("message", "Message"),
     ]
+    log_cols = [
+        ("priority", "Priority"),
+        ("time", "Time"),
+        ("source", "Source"),
+        ("category", "Category"),
+        ("message", "Message"),
+    ]
     alert_cols = [("severity", "Severity"), ("time", "Time"), ("message", "Message"), ("resource", "Resource")]
     client_cols = [
         ("hostname", "Hostname"),
@@ -7899,6 +8252,7 @@ def build_excel_report(dashboard: dict[str, Any]) -> bytes:
         ("Failed Jobs", rows_from_table(tables.get("failedJobs", []), failed_cols), [22, 24, 24, 24, 58]),
         ("Restores", rows_from_table(tables.get("recovery", []), jobs_cols), [22, 24, 24, 16, 24, 14, 48]),
         ("Clone Jobs", rows_from_table(tables.get("cloneJobs", []), jobs_cols), [22, 24, 24, 16, 24, 14, 48]),
+        ("Logs", rows_from_table(tables.get("logs", []), log_cols), [14, 24, 16, 18, 80]),
         ("Alerts", rows_from_table(tables.get("alerts", []), alert_cols), [16, 24, 64, 28]),
         ("Clients", rows_from_table(tables.get("clients", []), client_cols), [28, 16, 20, 24, 40]),
     ]

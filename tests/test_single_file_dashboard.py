@@ -998,6 +998,155 @@ def test_nwui_backup_summary_uses_save_session_counts_like_dpa(monkeypatch):
     assert body["tables"]["jobs"][0]["message"] == "2851 sessions (2843 ok, 4 failed, 3 running, 1 waiting, 0 canceled)"
 
 
+def test_nwui_verbose_job_output_is_rendered_like_networker_log():
+    dashboard = load_single_file_dashboard()
+    raw_output = (
+        "suppressed 6184 bytes of output. 128137 1779170408 0 0 2 10488 11156 0 "
+        "nwsrv01.example.local savegrp NSR info 63 Group %s waiting for %d jobs "
+        "(%d awaiting restart) to complete. 3 26 10 NMC server 1 1 1 1 1 0"
+    )
+
+    job = dashboard.project_nwui_job(
+        {
+            "startTime": 1779170408000,
+            "duration": 120000,
+            "status": "running",
+            "workflowName": "NMC server",
+            "actionName": "Backup",
+            "policyName": "Server Protection",
+            "jobOutput": raw_output,
+            "jobData": {
+                "successfulInputCount": 0,
+                "failedInputCount": 0,
+                "runningInputCount": 0,
+                "waitingInputCount": 2,
+                "canceledInputCount": 0,
+            },
+        }
+    )
+
+    assert job["message"] == "Group NMC server waiting for 26 jobs (10 awaiting restart) to complete."
+    assert "suppressed" not in job["message"].lower()
+    assert "savegrp NSR" not in job["message"]
+    assert dashboard.nwui_job_log_row(job) == {
+        "priority": "warning",
+        "time": job["started"],
+        "source": "event",
+        "category": "policy",
+        "message": "Group NMC server waiting for 26 jobs (10 awaiting restart) to complete.",
+    }
+
+
+def test_nwui_verbose_job_output_without_counts_is_safely_summarized():
+    dashboard = load_single_file_dashboard()
+    raw_output = (
+        "suppressed 6184 bytes of output. 128137 1779170408 0 0 2 10488 11156 0 "
+        "nwsrv01.example.local savegrp NSR info 63 Group %s waiting for %d jobs "
+        "(%d awaiting restart) to complete. 3 26 10 NMC server 1 1 1"
+    )
+
+    message = dashboard.clean_networker_job_message(raw_output)
+
+    assert message == "Group NMC server waiting for 26 jobs (10 awaiting restart) to complete."
+    assert "suppressed" not in message.lower()
+    assert "128137" not in message
+
+
+def test_nwui_combined_job_output_uses_final_networker_log_message():
+    dashboard = load_single_file_dashboard()
+    raw_output = (
+        "Group NMC server 1 1 1 1 0 116552 1779170579 2 5 0 10488 11156 0 "
+        "nwsrv01.example.local savegrp NSR warning 40 Unable to handle job monitor message: %s "
+        "1 49 194 116550 88 Unable to add the job to monitor list: No entry found for save set '%s' "
+        "in client '%s'. 2 0 60 D:\\Program Files\\EMC NetWorker\\Management\\GST\\cst "
+        "174897 1779170615 1 5 0 10488 11156 0 nwsrv01.example.local savegrp NSR notice 71 "
+        "The save job for the save set '%s' on the host '%s' has been completed. 2 20 53 "
+        "D:\\Program Files\\EMC NetWorker\\Management\\cstq 12 21 nwsrv01.example.local "
+        "90491 1779170618 1 5 0 10488 11156 0 nwsrv01.example.local savegrp NSR notice 9 "
+        "%s:%s. 3 12 23 nwsrv01.example.local savegrp waiting for 26 jobs "
+        "(10 awaiting restart) to complete."
+    )
+
+    job = dashboard.project_nwui_job(
+        {
+            "startTime": 1779170579000,
+            "duration": 222000,
+            "status": "completed",
+            "workflowName": "NMC server backup",
+            "actionName": "NMC server backup",
+            "policyName": "Server Protection",
+            "jobOutput": raw_output,
+            "jobData": {
+                "successfulInputCount": 1,
+                "failedInputCount": 0,
+                "runningInputCount": 0,
+                "waitingInputCount": 0,
+                "canceledInputCount": 0,
+            },
+        }
+    )
+
+    assert job["message"] == "Group NMC server backup waiting for 26 jobs (10 awaiting restart) to complete."
+    assert "Unable to handle job monitor" not in job["message"]
+    assert "Program Files" not in job["message"]
+    assert "NSR notice" not in job["message"]
+
+
+def test_rest_job_projection_cleans_combined_networker_output_and_formats_duration():
+    dashboard = load_single_file_dashboard()
+    raw_output = (
+        "Action '' has initialized as '' with job id %u 4 0 6 expire 0 10 Expiration 0 11 utility job "
+        "5 8 10934314 88411 1779170620 1 5 0 14540 14372 0 nwsrv01.example.local nsrim "
+        "NSR notice 28 Checking for invalid volumes 0 86069 1779170620 1 5 0 14540 14372 0 "
+        "nwsrv01.example.local nsrim NSR notice 21 Processing clients 1 1 3 124 86067 "
+        "1779170704 1 5 0 14540 14372 0 nwsrv01.example.local nsrim NSR notice 37 "
+        "Crosschecking indexes for clients."
+    )
+
+    row = dashboard.project_job(
+        {
+            "clientHostname": "Server backup",
+            "name": "Expiration",
+            "policyName": "Server Protection",
+            "completionStatus": "succeeded",
+            "elapsedTime": 331,
+            "message": raw_output,
+        }
+    )
+
+    assert row["duration"] == "5m 31s"
+    assert row["message"] == "Crosschecking indexes for clients."
+    assert "1779170620" not in row["message"]
+    assert "NSR notice" not in row["message"]
+
+
+def test_long_nwui_job_duration_is_displayed_as_hours_and_minutes():
+    dashboard = load_single_file_dashboard()
+
+    job = dashboard.project_nwui_job(
+        {
+            "duration": 30999000,
+            "status": "running",
+            "workflowName": "Daily DB Arch Log Backups",
+            "actionName": "Cerner_ArchiveLog_Backup",
+            "policyName": "Cerner_DB_Backup",
+            "jobData": {"runningInputCount": 1},
+        }
+    )
+
+    assert job["duration"] == "8h 36m"
+
+
+def test_dashboard_html_includes_networker_style_log_tab():
+    dashboard = load_single_file_dashboard()
+
+    assert 'data-table="logs"' in dashboard.HTML_PAGE
+    assert 'title: "Log"' in dashboard.HTML_PAGE
+    assert '["priority", "Priority"]' in dashboard.HTML_PAGE
+    assert '["source", "Source"]' in dashboard.HTML_PAGE
+    assert '["category", "Category"]' in dashboard.HTML_PAGE
+
+
 def test_wmi_credentials_accept_special_characters_and_encrypt_in_session():
     dashboard = load_single_file_dashboard()
     password = r"P@ss;word!`\"'&<>|{}[]$"
