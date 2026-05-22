@@ -5165,6 +5165,68 @@ class AlertAutomation:
 
 ALERT_AUTOMATIONS: dict[str, AlertAutomation] = {}
 
+# One reentrant lock guards both global registries. Reentrant so nested calls
+# (cleanup -> cancel_session_automations -> cancel_alert_automation) cannot
+# self-deadlock. Invariant: never hold REGISTRY_LOCK across network I/O —
+# snapshot what you need under the lock, release, then call out.
+REGISTRY_LOCK = threading.RLock()
+
+
+def _get_session(session_id: str) -> "DashboardSession | None":
+    with REGISTRY_LOCK:
+        return DASHBOARD_SESSIONS.get(session_id)
+
+
+def _put_session(session_id: str, session: Any) -> None:
+    with REGISTRY_LOCK:
+        DASHBOARD_SESSIONS[session_id] = session
+
+
+def _pop_session(session_id: str) -> Any:
+    with REGISTRY_LOCK:
+        return DASHBOARD_SESSIONS.pop(session_id, None)
+
+
+def _session_exists(session_id: str) -> bool:
+    with REGISTRY_LOCK:
+        return session_id in DASHBOARD_SESSIONS
+
+
+def _session_items_snapshot() -> list[tuple[str, Any]]:
+    with REGISTRY_LOCK:
+        return list(DASHBOARD_SESSIONS.items())
+
+
+def _session_ids_snapshot() -> list[str]:
+    with REGISTRY_LOCK:
+        return list(DASHBOARD_SESSIONS.keys())
+
+
+def _get_automation(key: str) -> "AlertAutomation | None":
+    with REGISTRY_LOCK:
+        return ALERT_AUTOMATIONS.get(key)
+
+
+def _put_automation(key: str, automation: Any) -> None:
+    with REGISTRY_LOCK:
+        ALERT_AUTOMATIONS[key] = automation
+
+
+def _pop_automation(key: str) -> Any:
+    with REGISTRY_LOCK:
+        return ALERT_AUTOMATIONS.pop(key, None)
+
+
+def _automation_items_snapshot() -> list[tuple[str, Any]]:
+    with REGISTRY_LOCK:
+        return list(ALERT_AUTOMATIONS.items())
+
+
+def _automation_keys_snapshot() -> list[str]:
+    with REGISTRY_LOCK:
+        return list(ALERT_AUTOMATIONS.keys())
+
+
 # ── SSE clients ──────────────────────────────────────────────────────────────
 SSE_CLIENTS: list[Any] = []
 SSE_CLIENTS_LOCK = threading.Lock()
@@ -5291,7 +5353,7 @@ def session_automation_keys(session_id: str) -> list[str]:
     prefix = f"{session_id}:"
     return [
         key
-        for key, automation in ALERT_AUTOMATIONS.items()
+        for key, automation in _automation_items_snapshot()
         if key == session_id or key.startswith(prefix) or automation.session_id == session_id
     ]
 
@@ -5299,7 +5361,7 @@ def session_automation_keys(session_id: str) -> list[str]:
 def active_automation_summary(session_id: str) -> str:
     labels: list[str] = []
     for key in session_automation_keys(session_id):
-        automation = ALERT_AUTOMATIONS.get(key)
+        automation = _get_automation(key)
         if not automation:
             continue
         if automation.schedule_type == "daily_report":
@@ -5310,11 +5372,11 @@ def active_automation_summary(session_id: str) -> str:
 
 
 def existing_smtp_automation(session_id: str, schedule_type: str) -> AlertAutomation | None:
-    same_type = ALERT_AUTOMATIONS.get(automation_key(session_id, schedule_type))
+    same_type = _get_automation(automation_key(session_id, schedule_type))
     if same_type:
         return same_type
     for key in session_automation_keys(session_id):
-        automation = ALERT_AUTOMATIONS.get(key)
+        automation = _get_automation(key)
         if automation and automation.encrypted_smtp_password:
             return automation
     return None
@@ -5483,8 +5545,8 @@ def shared_dashboard_refresh_loop() -> None:
             continue
 
         # Session expired or auth failure — attempt silent reauth then retry once
-        if status in (401, 403) or not DASHBOARD_SESSIONS.get(session_id):
-            session = DASHBOARD_SESSIONS.get(session_id)
+        if status in (401, 403) or not _get_session(session_id):
+            session = _get_session(session_id)
             if session:
                 config = session_config_with_secrets(session)
                 debug_log(f"shared_refresh: session {session_id[:8]}… auth failure, attempting reauth")
@@ -8105,7 +8167,7 @@ def persist_sessions() -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         records = {
             sid: _session_to_dict(sid, s)
-            for sid, s in DASHBOARD_SESSIONS.items()
+            for sid, s in _session_items_snapshot()
         }
         tmp = SESSION_PERSISTENCE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(records, separators=(",", ":")), encoding="utf-8")
@@ -8171,7 +8233,7 @@ def restore_sessions_from_disk() -> int:
             )
             auth_headers, _ = nwui_login(config, opener)
 
-            DASHBOARD_SESSIONS[session_id] = DashboardSession(
+            _put_session(session_id, DashboardSession(
                 config=replace(config, password="", wmi_password=""),
                 cookie_jar=cookie_jar,
                 auth_headers=dict(auth_headers),
@@ -8179,7 +8241,7 @@ def restore_sessions_from_disk() -> int:
                 encrypted_wmi_password=str(rec.get("encrypted_wmi_password") or ""),
                 created_at=float(rec.get("created_at") or now),
                 last_used=now,
-            )
+            ))
             restored += 1
         except Exception:
             continue
@@ -8195,7 +8257,7 @@ def create_dashboard_session(
 ) -> str:
     cleanup_dashboard_sessions()
     session_id = uuid.uuid4().hex
-    DASHBOARD_SESSIONS[session_id] = DashboardSession(
+    _put_session(session_id, DashboardSession(
         config=replace(config, password="", wmi_password="", api_mode="nwui"),
         cookie_jar=cookie_jar,
         auth_headers=dict(auth_headers),
@@ -8204,7 +8266,7 @@ def create_dashboard_session(
         created_at=time.time(),
         last_used=time.time(),
         server_protection_job=server_protection_job or maintenance_backup_status([]),
-    )
+    ))
     persist_sessions()
     return session_id
 
@@ -8213,11 +8275,11 @@ def cleanup_dashboard_sessions() -> None:
     now = time.time()
     stale = [
         session_id
-        for session_id, session in DASHBOARD_SESSIONS.items()
+        for session_id, session in _session_items_snapshot()
         if now - session.last_used > SESSION_TTL_SECONDS
     ]
     for session_id in stale:
-        DASHBOARD_SESSIONS.pop(session_id, None)
+        _pop_session(session_id)
         cancel_session_automations(session_id)
     if stale:
         persist_sessions()
@@ -8230,7 +8292,7 @@ def build_dashboard_from_session(
     custom_end_date: str = "",
 ) -> tuple[int, dict[str, Any]]:
     cleanup_dashboard_sessions()
-    session = DASHBOARD_SESSIONS.get(session_id)
+    session = _get_session(session_id)
     if not session:
         return 401, {
             "ok": False,
@@ -8306,7 +8368,7 @@ def build_dashboard_from_session(
 
 def build_server_health_from_session(session_id: str) -> tuple[int, dict[str, Any]]:
     cleanup_dashboard_sessions()
-    session = DASHBOARD_SESSIONS.get(session_id)
+    session = _get_session(session_id)
     if not session:
         return HTTPStatus.UNAUTHORIZED, {
             "ok": False,
@@ -9939,7 +10001,7 @@ def send_smtp_email(
 
 
 def cancel_alert_automation(automation_id: str) -> bool:
-    automation = ALERT_AUTOMATIONS.pop(automation_id, None)
+    automation = _pop_automation(automation_id)
     if not automation:
         return False
     if automation.timer:
@@ -9965,7 +10027,7 @@ def seconds_until_daily_report(report_time: str, now: datetime | None = None) ->
 
 
 def schedule_alert_automation(automation: AlertAutomation) -> None:
-    if automation.automation_id not in ALERT_AUTOMATIONS:
+    if _get_automation(automation.automation_id) is None:
         return
     delay = (
         seconds_until_daily_report(automation.report_time)
@@ -9988,7 +10050,7 @@ def scheduled_dashboard_email_payload(dashboard: dict[str, Any]) -> tuple[str, s
 
 
 def run_alert_automation(automation_id: str) -> None:
-    automation = ALERT_AUTOMATIONS.get(automation_id)
+    automation = _get_automation(automation_id)
     if not automation:
         return
     try:
@@ -10086,7 +10148,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         }
     if action not in ("start", "test"):
         raise BadRequest("Alert automation action must be start, test, or stop.")
-    if not session_id or session_id not in DASHBOARD_SESSIONS:
+    if not session_id or not _session_exists(session_id):
         raise BadRequest("A live dashboard session is required before scheduling email alerts.")
     settings = parse_smtp_settings(payload)
     automation_id = automation_key(session_id, settings["schedule_type"])
@@ -10149,7 +10211,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         return HTTPStatus.OK, {"ok": True, "message": "Test email sent.", "smtpDebug": smtp_debug}
 
     cancel_alert_automation(automation_id)
-    ALERT_AUTOMATIONS[automation_id] = automation
+    _put_automation(automation_id, automation)
     schedule_alert_automation(automation)
     active_summary = active_automation_summary(session_id)
     message = (
@@ -10980,7 +11042,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 action = str(payload.get("action") or "").strip().lower()
                 if action == "create":
                     session_id = str(payload.get("sessionId") or "").strip()
-                    if not session_id or session_id not in DASHBOARD_SESSIONS:
+                    if not session_id or not _session_exists(session_id):
                         raise BadRequest("Valid session ID required to create share link.")
                     token = create_share_token(session_id)
                     self._send_json(HTTPStatus.OK, {"ok": True, "token": token})
@@ -11353,9 +11415,9 @@ def run(argv: list[str] | None = None) -> int:
             print(f"Restored {count} dashboard session(s) from previous run.")
             # Re-prime shared dashboard state with first restored session
             with SHARED_DASHBOARD_LOCK:
-                if not SHARED_DASHBOARD_STATE.get("sessionId") and DASHBOARD_SESSIONS:
-                    first_sid = next(iter(DASHBOARD_SESSIONS))
-                    SHARED_DASHBOARD_STATE["sessionId"] = first_sid
+                ids = _session_ids_snapshot()
+                if not SHARED_DASHBOARD_STATE.get("sessionId") and ids:
+                    SHARED_DASHBOARD_STATE["sessionId"] = ids[0]
         else:
             print("No previous sessions to restore (connect via browser to begin monitoring).")
 
@@ -11376,7 +11438,7 @@ def run(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nStopping dashboard.")
     finally:
-        for automation_id in list(ALERT_AUTOMATIONS):
+        for automation_id in _automation_keys_snapshot():
             cancel_alert_automation(automation_id)
         SHARED_REFRESH_STOP.set()
         if server_thread.is_alive():
