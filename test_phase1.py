@@ -42,5 +42,33 @@ class RegistryLockTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class LoopGuardTests(unittest.TestCase):
+    def test_refresh_loop_survives_iteration_exception(self):
+        # Regression for C2: one bad iteration must not kill the loop thread.
+        calls = []
+        orig_once = nd._shared_dashboard_refresh_once
+        orig_interval = nd.SHARED_REFRESH_SECONDS
+
+        def boom():
+            calls.append(1)
+            raise RuntimeError("boom")
+
+        nd._shared_dashboard_refresh_once = boom
+        nd.SHARED_REFRESH_SECONDS = 0.02
+        nd.SHARED_REFRESH_STOP.clear()
+        thread = threading.Thread(target=nd.shared_dashboard_refresh_loop, daemon=True)
+        thread.start()
+        try:
+            time.sleep(0.3)
+            self.assertGreaterEqual(len(calls), 2)  # survived >=2 exceptions
+            self.assertTrue(thread.is_alive())
+        finally:
+            nd.SHARED_REFRESH_STOP.set()
+            thread.join(2.0)
+            nd._shared_dashboard_refresh_once = orig_once
+            nd.SHARED_REFRESH_SECONDS = orig_interval
+            nd.SHARED_REFRESH_STOP.clear()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5531,39 +5531,46 @@ def shared_dashboard_payload() -> dict[str, Any]:
         }
 
 
+def _shared_dashboard_refresh_once() -> None:
+    with SHARED_DASHBOARD_LOCK:
+        session_id = str(SHARED_DASHBOARD_STATE.get("sessionId") or "")
+    if not session_id:
+        return
+
+    status, dashboard = build_dashboard_from_session(session_id)
+
+    if status < 400 and dashboard.get("ok") and dashboard_backup_source_available(dashboard):
+        set_shared_dashboard(session_id, dashboard)
+        return
+
+    # Session expired or auth failure — attempt silent reauth then retry once
+    if status in (401, 403) or not _get_session(session_id):
+        session = _get_session(session_id)
+        if session:
+            config = session_config_with_secrets(session)
+            debug_log(f"shared_refresh: session {session_id[:8]}… auth failure, attempting reauth")
+            if reauthenticate_dashboard_session(session, config):
+                status, dashboard = build_dashboard_from_session(session_id)
+                if status < 400 and dashboard.get("ok") and dashboard_backup_source_available(dashboard):
+                    set_shared_dashboard(session_id, dashboard)
+                    debug_log(f"shared_refresh: reauth succeeded for session {session_id[:8]}…")
+                    return
+        debug_log(f"shared_refresh: reauth failed or session missing for {session_id[:8]}…")
+
+    with SHARED_DASHBOARD_LOCK:
+        SHARED_DASHBOARD_STATE["lastError"] = str(
+            dashboard_backup_source_error(dashboard)
+            if status < 400 and dashboard.get("ok")
+            else dashboard.get("error") or dashboard.get("message") or f"Refresh failed with HTTP {status}"
+        )
+
+
 def shared_dashboard_refresh_loop() -> None:
     while not SHARED_REFRESH_STOP.wait(SHARED_REFRESH_SECONDS):
-        with SHARED_DASHBOARD_LOCK:
-            session_id = str(SHARED_DASHBOARD_STATE.get("sessionId") or "")
-        if not session_id:
-            continue
-
-        status, dashboard = build_dashboard_from_session(session_id)
-
-        if status < 400 and dashboard.get("ok") and dashboard_backup_source_available(dashboard):
-            set_shared_dashboard(session_id, dashboard)
-            continue
-
-        # Session expired or auth failure — attempt silent reauth then retry once
-        if status in (401, 403) or not _get_session(session_id):
-            session = _get_session(session_id)
-            if session:
-                config = session_config_with_secrets(session)
-                debug_log(f"shared_refresh: session {session_id[:8]}… auth failure, attempting reauth")
-                if reauthenticate_dashboard_session(session, config):
-                    status, dashboard = build_dashboard_from_session(session_id)
-                    if status < 400 and dashboard.get("ok") and dashboard_backup_source_available(dashboard):
-                        set_shared_dashboard(session_id, dashboard)
-                        debug_log(f"shared_refresh: reauth succeeded for session {session_id[:8]}…")
-                        continue
-            debug_log(f"shared_refresh: reauth failed or session missing for {session_id[:8]}…")
-
-        with SHARED_DASHBOARD_LOCK:
-            SHARED_DASHBOARD_STATE["lastError"] = str(
-                dashboard_backup_source_error(dashboard)
-                if status < 400 and dashboard.get("ok")
-                else dashboard.get("error") or dashboard.get("message") or f"Refresh failed with HTTP {status}"
-            )
+        try:
+            _shared_dashboard_refresh_once()
+        except Exception as exc:  # noqa: BLE001 — loop must never die.
+            debug_log(f"shared_dashboard_refresh_loop iteration failed: {exc}")
 
 
 class BadRequest(ValueError):
@@ -8879,25 +8886,31 @@ def save_auto_snapshot_config(enabled: bool) -> None:
     AUTO_SNAPSHOT_FILE.write_text(json.dumps({"enabled": enabled}), encoding="utf-8")
 
 
+def _auto_snapshot_once() -> None:
+    if not load_auto_snapshot_config():
+        return
+    today = snapshot_date_key()
+    with SNAPSHOTS_LOCK:
+        existing = load_dashboard_snapshots()
+    if today in existing:
+        return
+    with SHARED_DASHBOARD_LOCK:
+        dashboard = dict(SHARED_DASHBOARD_STATE.get("dashboard") or {})
+    if not isinstance(dashboard, dict) or not dashboard.get("ok"):
+        return
+    with SNAPSHOTS_LOCK:
+        save_dashboard_snapshot(dashboard)
+
+
 def auto_snapshot_worker() -> None:
     while not SHARED_REFRESH_STOP.is_set():
         SHARED_REFRESH_STOP.wait(600)
-        if not load_auto_snapshot_config():
-            continue
-        today = snapshot_date_key()
-        with SNAPSHOTS_LOCK:
-            existing = load_dashboard_snapshots()
-        if today in existing:
-            continue
-        with SHARED_DASHBOARD_LOCK:
-            dashboard = dict(SHARED_DASHBOARD_STATE.get("dashboard") or {})
-        if not isinstance(dashboard, dict) or not dashboard.get("ok"):
-            continue
+        if SHARED_REFRESH_STOP.is_set():
+            break
         try:
-            with SNAPSHOTS_LOCK:
-                save_dashboard_snapshot(dashboard)
-        except Exception:
-            pass
+            _auto_snapshot_once()
+        except Exception as exc:  # noqa: BLE001 — loop must never die.
+            debug_log(f"auto_snapshot_worker iteration failed: {exc}")
 
 
 def compare_dashboard_snapshots(range_value: Any = "7d") -> dict[str, Any]:
