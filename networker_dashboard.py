@@ -10475,6 +10475,57 @@ def build_multi_server_dashboard(session_ids: list[str]) -> tuple[int, dict[str,
     }
 
 
+def login_page_html() -> str:
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NetWorker Dashboard — Sign in</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif;background:#eef3f6;color:#172026;min-height:100vh;display:flex;align-items:center;justify-content:center}
+  .card{background:#fff;border:1px solid #d7e1e7;border-radius:12px;padding:32px;width:340px;box-shadow:0 4px 16px rgba(0,0,0,.06)}
+  h1{font-size:18px;margin-bottom:6px}
+  p{font-size:13px;color:#5f6d76;margin-bottom:20px}
+  label{display:block;font-size:13px;margin-bottom:6px}
+  input{width:100%;padding:10px 12px;border:1px solid #d7e1e7;border-radius:8px;font-size:14px;margin-bottom:16px}
+  button{width:100%;padding:10px;border:0;border-radius:8px;background:#126e82;color:#fff;font-size:14px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  .err{background:#fde2e4;border:1px solid #f0b8bc;color:#bd2b3a;border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:16px;display:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>NetWorker Dashboard</h1>
+  <p>Enter the dashboard access password to continue.</p>
+  <div class="err" id="err"></div>
+  <form id="loginForm">
+    <label for="pw">Password</label>
+    <input type="password" id="pw" autocomplete="current-password" autofocus>
+    <button type="submit" id="btn">Sign in</button>
+  </form>
+</div>
+<script>
+  const form=document.getElementById('loginForm');
+  const err=document.getElementById('err');
+  const btn=document.getElementById('btn');
+  form.addEventListener('submit',async(e)=>{
+    e.preventDefault();
+    btn.disabled=true;err.style.display='none';
+    try{
+      const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('pw').value})});
+      if(r.ok){location.reload();return;}
+      const d=await r.json().catch(()=>({}));
+      err.textContent=d.error||'Sign in failed.';err.style.display='block';
+    }catch(_){err.textContent='Network error.';err.style.display='block';}
+    btn.disabled=false;
+  });
+</script>
+</body>
+</html>"""
+
+
 def read_only_view_html(token: str) -> str:
     """Minimal read-only dashboard page served at /view/{token}."""
     return f"""<!DOCTYPE html>
@@ -11001,6 +11052,74 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return True
         self._send_error_json(HTTPStatus.FORBIDDEN, "HTTPS is required.")
         return False
+
+    def _authenticated(self) -> bool:
+        if not AUTH_ENABLED:
+            return True
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return False
+        try:
+            jar = SimpleCookie()
+            jar.load(raw)
+        except Exception:  # noqa: BLE001 — malformed cookie header
+            return False
+        morsel = jar.get(COOKIE_NAME)
+        if not morsel:
+            return False
+        return _verify_auth_cookie(morsel.value)
+
+    def _send_json_with_cookie(self, status: int, payload: dict[str, Any], cookie_value: str, max_age: int) -> None:
+        body = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        cookie = (
+            f"{COOKIE_NAME}={cookie_value}; HttpOnly; Secure; SameSite=Strict; "
+            f"Path=/; Max-Age={max_age}"
+        )
+        self._send_bytes(status, body, "application/json; charset=utf-8", {"Set-Cookie": cookie})
+
+    def _handle_login(self) -> None:
+        ip = self.client_address[0]
+        if _login_rate_limited(ip):
+            self._send_error_json(HTTPStatus.TOO_MANY_REQUESTS, "Too many login attempts. Wait and try again.")
+            return
+        try:
+            payload = self._read_json_body()
+        except (BadRequest, json.JSONDecodeError):
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "Invalid login request.")
+            return
+        password = str(payload.get("password") or "")
+        if not AUTH_ENABLED:
+            self._send_json(HTTPStatus.OK, {"ok": True, "authDisabled": True})
+            return
+        if verify_auth_password(password):
+            _clear_login_failures(ip)
+            self._send_json_with_cookie(HTTPStatus.OK, {"ok": True}, _make_auth_cookie(), AUTH_TTL_SECONDS)
+        else:
+            _record_login_failure(ip)
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid password.")
+
+    def _handle_token_dashboard(self, path: str) -> None:
+        token = path[len("/api/view/"):].strip("/")
+        if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
+            self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
+            return
+        session_id = validate_share_token(token)
+        if not session_id:
+            self._send_error_json(HTTPStatus.GONE, "This share link has expired or been revoked.")
+            return
+        dashboard = cached_reliable_dashboard_for_session(session_id)
+        if not isinstance(dashboard, dict):
+            with SHARED_DASHBOARD_LOCK:
+                if SHARED_DASHBOARD_STATE.get("sessionId") == session_id:
+                    candidate = SHARED_DASHBOARD_STATE.get("dashboard")
+                    dashboard = candidate if isinstance(candidate, dict) else None
+        if not isinstance(dashboard, dict):
+            self._send_json(HTTPStatus.OK, {"ok": False, "message": "No dashboard data available for this share link yet."})
+            return
+        self._send_json(
+            HTTPStatus.OK,
+            {"ok": True, "dashboard": json_clone(dashboard), "updatedAt": dashboard.get("generatedAt", "")},
+        )
 
     def do_GET(self) -> None:
         if not self._require_https():

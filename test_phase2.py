@@ -99,5 +99,13 @@ class LoopbackTests(unittest.TestCase):
             self.assertFalse(nd._is_loopback_bind(host))
 
 
+class LoginPageTests(unittest.TestCase):
+    def test_login_page_renders_form(self):
+        html = nd.login_page_html()
+        self.assertIn("<form", html)
+        self.assertIn("/api/login", html)
+        self.assertIn("password", html)
+
+
 if __name__ == "__main__":
     unittest.main()
