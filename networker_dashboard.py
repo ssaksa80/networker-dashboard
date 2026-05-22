@@ -17,6 +17,7 @@ import html as html_lib
 import json
 import re
 import shutil
+import signal
 import smtplib
 import subprocess
 import socket
@@ -8797,10 +8798,12 @@ def load_dashboard_snapshots() -> dict[str, Any]:
 
 def write_dashboard_snapshots(snapshots: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    DASHBOARD_SNAPSHOT_FILE.write_text(
+    tmp = DASHBOARD_SNAPSHOT_FILE.with_suffix(".tmp")
+    tmp.write_text(
         json.dumps(snapshots, ensure_ascii=True, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    tmp.replace(DASHBOARD_SNAPSHOT_FILE)
     try:
         DASHBOARD_SNAPSHOT_FILE.chmod(0o600)
     except OSError:
@@ -11492,6 +11495,17 @@ def run(argv: list[str] | None = None) -> int:
     if APP_DEBUG:
         print("Debug logging is enabled. Passwords and Authorization headers are not logged.")
     print("Passwords are encrypted in process memory for seamless reconnect and are not written to disk.")
+
+    def _handle_term(_signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    for _sig_name in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _sig_name, None)
+        if _sig is not None:
+            try:
+                signal.signal(_sig, _handle_term)
+            except (ValueError, OSError, RuntimeError):
+                pass
 
     server_thread = threading.Thread(
         target=server.serve_forever,

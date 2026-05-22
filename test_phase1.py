@@ -1,6 +1,9 @@
+import shutil
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 import networker_dashboard as nd
 
@@ -131,6 +134,28 @@ class ConnectionCapTests(unittest.TestCase):
     def test_config_constants_exist(self):
         self.assertIsInstance(nd.DEFAULT_REQUEST_TIMEOUT_SECONDS, int)
         self.assertIsInstance(nd.DEFAULT_MAX_CONNECTIONS, int)
+
+
+class SnapshotWriteTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._orig_data_dir = nd.DATA_DIR
+        self._orig_snap = nd.DASHBOARD_SNAPSHOT_FILE
+        nd.DATA_DIR = Path(self._tmpdir)
+        nd.DASHBOARD_SNAPSHOT_FILE = nd.DATA_DIR / "networker_snapshots.json"
+
+    def tearDown(self):
+        nd.DATA_DIR = self._orig_data_dir
+        nd.DASHBOARD_SNAPSHOT_FILE = self._orig_snap
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_snapshot_write_is_atomic_and_leaves_no_tmp(self):
+        data = {"2026-05-22": {"date": "2026-05-22", "metrics": {}}}
+        nd.write_dashboard_snapshots(data)
+        self.assertTrue(nd.DASHBOARD_SNAPSHOT_FILE.exists())
+        tmp = nd.DASHBOARD_SNAPSHOT_FILE.with_suffix(".tmp")
+        self.assertFalse(tmp.exists())
+        self.assertEqual(nd.load_dashboard_snapshots(), data)
 
 
 if __name__ == "__main__":
