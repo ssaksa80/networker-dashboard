@@ -244,6 +244,65 @@ def verify_auth_password(password: str) -> bool:
     return hmac.compare_digest(candidate, expected)
 
 
+def _make_auth_cookie() -> str:
+    now = int(time.time())
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"iat": now, "exp": now + AUTH_TTL_SECONDS}).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    sig = base64.urlsafe_b64encode(
+        hmac.new(AUTH_SECRET_KEY, payload.encode("ascii"), hashlib.sha256).digest()
+    ).decode("ascii").rstrip("=")
+    return f"{payload}.{sig}"
+
+
+def _verify_auth_cookie(value: str) -> bool:
+    if not value or "." not in value:
+        return False
+    payload, _, sig = value.rpartition(".")
+    if not payload or not sig:
+        return False
+    expected_sig = base64.urlsafe_b64encode(
+        hmac.new(AUTH_SECRET_KEY, payload.encode("ascii"), hashlib.sha256).digest()
+    ).decode("ascii").rstrip("=")
+    if not hmac.compare_digest(sig, expected_sig):
+        return False
+    try:
+        padded = payload + "=" * (-len(payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        return int(data.get("exp", 0)) > int(time.time())
+    except (ValueError, json.JSONDecodeError):
+        return False
+
+
+LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+LOGIN_ATTEMPTS_LOCK = threading.Lock()
+
+
+def _login_rate_limited(ip: str) -> bool:
+    now = time.time()
+    with LOGIN_ATTEMPTS_LOCK:
+        attempts = [t for t in LOGIN_ATTEMPTS.get(ip, []) if now - t < LOGIN_WINDOW_SECONDS]
+        LOGIN_ATTEMPTS[ip] = attempts
+        return len(attempts) >= LOGIN_MAX_ATTEMPTS
+
+
+def _record_login_failure(ip: str) -> None:
+    now = time.time()
+    with LOGIN_ATTEMPTS_LOCK:
+        attempts = [t for t in LOGIN_ATTEMPTS.get(ip, []) if now - t < LOGIN_WINDOW_SECONDS]
+        attempts.append(now)
+        LOGIN_ATTEMPTS[ip] = attempts
+
+
+def _clear_login_failures(ip: str) -> None:
+    with LOGIN_ATTEMPTS_LOCK:
+        LOGIN_ATTEMPTS.pop(ip, None)
+
+
+def _is_loopback_bind(host: str) -> bool:
+    return (host or "").strip().lower() in ("127.0.0.1", "localhost", "::1")
+
+
 def _derive_profile_key() -> bytes | None:
     """Derive a 256-bit AES key from the stable master key via HKDF-SHA256."""
     if not WMI_CREDENTIAL_KEY:
