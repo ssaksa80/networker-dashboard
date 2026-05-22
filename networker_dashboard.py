@@ -2987,6 +2987,17 @@ HTML_PAGE = r"""<!doctype html>
   </main>
 
   <script>
+    (function(){
+      const _fetch = window.fetch;
+      window.fetch = async function(...args){
+        const resp = await _fetch.apply(this, args);
+        try {
+          const url = (args[0] && args[0].url) ? args[0].url : String(args[0] || "");
+          if (resp.status === 401 && url.indexOf("/api/") !== -1) { location.reload(); }
+        } catch (_e) {}
+        return resp;
+      };
+    })();
     const form = document.getElementById("connectionForm");
     const topStatus = document.getElementById("topStatus");
     const discoverBtn = document.getElementById("discoverBtn");
@@ -10571,7 +10582,7 @@ def read_only_view_html(token: str) -> str:
 <script>
   async function load() {{
     try {{
-      const r = await fetch('/api/current-dashboard', {{cache: 'no-store'}});
+      const r = await fetch('/api/view/{token}', {{cache: 'no-store'}});
       const data = await r.json();
       render(data);
     }} catch(e) {{
@@ -11681,8 +11692,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument(
         "--bind",
-        default="0.0.0.0",
-        help="Interface to bind. Defaults to 0.0.0.0 so localhost and the local server IP are both available.",
+        default="127.0.0.1",
+        help="Interface to bind. Defaults to 127.0.0.1 (local only). Use 0.0.0.0 to expose on the network (set an auth password first).",
     )
     parser.add_argument(
         "--port",
@@ -11733,17 +11744,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=DEFAULT_MAX_SSE_CLIENTS,
         help="Maximum concurrent live-stream (SSE) viewers.",
     )
+    parser.add_argument(
+        "--auth-password",
+        default="",
+        help="Dashboard access password. May also be supplied via the DASHBOARD_AUTH_PASSWORD environment variable. Stored only as a salted hash.",
+    )
     return parser.parse_args(argv)
 
 
 def run(argv: list[str] | None = None) -> int:
-    global APP_DEBUG, REQUEST_TIMEOUT_SECONDS, MAX_CONNECTIONS, MAX_SSE_CLIENTS
+    global APP_DEBUG, REQUEST_TIMEOUT_SECONDS, MAX_CONNECTIONS, MAX_SSE_CLIENTS, AUTH_ENABLED
     args = parse_args(argv or sys.argv[1:])
     APP_DEBUG = bool(args.debug)
     REQUEST_TIMEOUT_SECONDS = max(5, int(args.request_timeout))
     MAX_CONNECTIONS = max(1, int(args.max_connections))
     MAX_SSE_CLIENTS = max(1, int(args.max_sse))
     DashboardHandler.timeout = REQUEST_TIMEOUT_SECONDS
+    auth_password = args.auth_password or os.environ.get("DASHBOARD_AUTH_PASSWORD") or ""
+    if auth_password:
+        set_auth_password(auth_password)
+    AUTH_ENABLED = auth_password_configured()
     cert_path = Path(args.cert).expanduser().resolve()
     key_path = Path(args.key).expanduser().resolve()
 
@@ -11785,7 +11805,17 @@ def run(argv: list[str] | None = None) -> int:
         )
     if APP_DEBUG:
         print("Debug logging is enabled. Passwords and Authorization headers are not logged.")
-    print("Passwords are encrypted in process memory for seamless reconnect and are not written to disk.")
+    print("Credentials are encrypted at rest in the data directory and are never stored in plaintext or placed in URLs.")
+    if AUTH_ENABLED:
+        print("Dashboard authentication is ENABLED (gateway password required).")
+    elif not _is_loopback_bind(args.bind):
+        print("=" * 72)
+        print("WARNING: Bound to a non-loopback address with NO authentication.")
+        print("Anyone who can reach this port can view all backup data.")
+        print("Set DASHBOARD_AUTH_PASSWORD (or --auth-password), or bind to 127.0.0.1.")
+        print("=" * 72)
+    else:
+        print("Dashboard authentication is disabled (local loopback bind).")
 
     def _handle_term(_signum: int, _frame: Any) -> None:
         raise KeyboardInterrupt
