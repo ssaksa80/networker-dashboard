@@ -54,8 +54,8 @@ APP_VERSION = "1.1.15"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
-DEFAULT_TIMEOUT_SECONDS = 30
-DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+DEFAULT_TIMEOUT_SECONDS = 30  # outbound NetWorker REST/API call timeout
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30  # inbound per-request socket timeout (slowloris guard)
 DEFAULT_MAX_CONNECTIONS = 200
 REQUEST_TIMEOUT_SECONDS = DEFAULT_REQUEST_TIMEOUT_SECONDS
 MAX_CONNECTIONS = DEFAULT_MAX_CONNECTIONS
@@ -11196,7 +11196,9 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
         try:
             self._conn_semaphore.release()
         except ValueError:
-            pass
+            # Over-release means a slot was released without a matching acquire —
+            # a logic bug. Log it rather than crash the worker thread.
+            debug_log("ExclusiveThreadingHTTPServer._release_slot over-release ignored")
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._acquire_slot():
@@ -11204,7 +11206,14 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
             # proxy/LB will retry; we avoid spawning an unbounded thread.
             self.shutdown_request(request)
             return
-        super().process_request(request, client_address)
+        try:
+            # super() spawns the worker thread, which releases the slot in
+            # process_request_thread's finally. If thread creation itself fails
+            # (e.g. OS thread exhaustion), release here so the slot is not leaked.
+            super().process_request(request, client_address)
+        except Exception:
+            self._release_slot()
+            raise
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
         try:
