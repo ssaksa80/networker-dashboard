@@ -11124,121 +11124,137 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._require_https():
             return
-        path = urlparse(self.path).path
-        if path in ("/", "/index.html"):
-            self._send_bytes(
-                HTTPStatus.OK,
-                dashboard_html().encode("utf-8"),
-                "text/html; charset=utf-8",
-            )
-            return
-        if path == "/favicon.ico":
-            self._send_bytes(HTTPStatus.OK, FAVICON_SVG, "image/svg+xml")
-            return
-        if path == "/networker-logo.png":
-            if NETWORKER_LOGO_PATH.exists():
-                self._send_bytes(HTTPStatus.OK, NETWORKER_LOGO_PATH.read_bytes(), "image/png")
-            else:
+        try:
+            path = urlparse(self.path).path
+
+            # --- Always-open routes (no auth) ---
+            if path == "/favicon.ico":
                 self._send_bytes(HTTPStatus.OK, FAVICON_SVG, "image/svg+xml")
-            return
-        if path == "/api/health":
-            self._send_json(
-                HTTPStatus.OK,
-                {
-                    "ok": True,
-                    "app": APP_NAME,
-                    "version": APP_VERSION,
-                    "https": True,
-                    "debug": APP_DEBUG,
-                    "time": datetime.now().astimezone().isoformat(),
-                },
-            )
-            return
-        if path == "/api/current-dashboard":
-            self._send_json(HTTPStatus.OK, shared_dashboard_payload())
-            return
-        if path == "/api/profiles":
-            with PROFILES_LOCK:
-                self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(load_profiles())})
-            return
-        if path == "/api/stream":
-            wfile = self.wfile
-            if not _sse_register(wfile):
-                self._send_error_json(HTTPStatus.SERVICE_UNAVAILABLE, "Too many live viewers connected. Try again shortly.")
                 return
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-            self.end_headers()
-            # Send current state immediately
-            payload = shared_dashboard_payload()
-            dash = payload.get("dashboard")
-            if isinstance(dash, dict):
-                try:
-                    wfile.write(f"event: dashboard\ndata: {json.dumps(dash, separators=(',', ':'))}\n\n".encode("utf-8"))
-                    wfile.flush()
-                except OSError:
-                    pass
-            # Keep connection alive — heartbeat every 25s
-            while not SHARED_REFRESH_STOP.is_set():
-                try:
-                    wfile.write(b": heartbeat\n\n")
-                    wfile.flush()
-                    SHARED_REFRESH_STOP.wait(25)
-                except OSError:
-                    break
-            with SSE_CLIENTS_LOCK:
-                try:
-                    SSE_CLIENTS.remove(wfile)
-                except ValueError:
-                    pass
-            return
-        if path == "/api/snapshots":
-            query = dict(parse_qsl(urlparse(self.path).query, keep_blank_values=True))
-            action = query.get("action", "compare")
-            if action == "list":
-                with SNAPSHOTS_LOCK:
-                    self._send_json(HTTPStatus.OK, {"ok": True, "snapshots": list_snapshot_summary()})
-            elif action == "history":
-                with SNAPSHOTS_LOCK:
-                    self._send_json(HTTPStatus.OK, snapshot_history_all())
-            elif action == "export":
-                with SNAPSHOTS_LOCK:
-                    csv_data = snapshots_to_csv()
-                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if path == "/networker-logo.png":
+                if NETWORKER_LOGO_PATH.exists():
+                    self._send_bytes(HTTPStatus.OK, NETWORKER_LOGO_PATH.read_bytes(), "image/png")
+                else:
+                    self._send_bytes(HTTPStatus.OK, FAVICON_SVG, "image/svg+xml")
+                return
+            if path == "/api/health":
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "app": APP_NAME,
+                        "version": APP_VERSION,
+                        "https": True,
+                        "debug": APP_DEBUG,
+                        "time": datetime.now().astimezone().isoformat(),
+                    },
+                )
+                return
+
+            # --- Token-gated share routes (capability URL, no cookie) ---
+            if path.startswith("/view/"):
+                token = path[6:].strip("/")
+                if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
+                    self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
+                    return
+                session_id = validate_share_token(token)
+                if not session_id:
+                    self._send_bytes(
+                        HTTPStatus.GONE,
+                        b"<html><body><p>This share link has expired or been revoked.</p></body></html>",
+                        "text/html; charset=utf-8",
+                    )
+                    return
                 self._send_bytes(
                     HTTPStatus.OK,
-                    csv_data.encode("utf-8"),
-                    "text/csv; charset=utf-8",
-                )
-            elif action == "auto-config":
-                self._send_json(HTTPStatus.OK, {"ok": True, "enabled": load_auto_snapshot_config()})
-            else:
-                with SNAPSHOTS_LOCK:
-                    self._send_json(HTTPStatus.OK, compare_dashboard_snapshots(query.get("range", "7d")))
-            return
-        if path.startswith("/view/"):
-            token = path[6:].strip("/")
-            if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
-                self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
-                return
-            session_id = validate_share_token(token)
-            if not session_id:
-                self._send_bytes(
-                    HTTPStatus.GONE,
-                    b"<html><body><p>This share link has expired or been revoked.</p></body></html>",
+                    read_only_view_html(token).encode("utf-8"),
                     "text/html; charset=utf-8",
                 )
                 return
-            self._send_bytes(
-                HTTPStatus.OK,
-                read_only_view_html(token).encode("utf-8"),
-                "text/html; charset=utf-8",
-            )
-            return
-        self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
+            if path.startswith("/api/view/"):
+                self._handle_token_dashboard(path)
+                return
+
+            # --- Root: login page when auth required and not authenticated ---
+            if path in ("/", "/index.html"):
+                if AUTH_ENABLED and not self._authenticated():
+                    self._send_bytes(HTTPStatus.OK, login_page_html().encode("utf-8"), "text/html; charset=utf-8")
+                else:
+                    self._send_bytes(HTTPStatus.OK, dashboard_html().encode("utf-8"), "text/html; charset=utf-8")
+                return
+
+            # --- Everything below requires authentication ---
+            if AUTH_ENABLED and not self._authenticated():
+                self._send_error_json(HTTPStatus.UNAUTHORIZED, "Authentication required.")
+                return
+
+            if path == "/api/current-dashboard":
+                self._send_json(HTTPStatus.OK, shared_dashboard_payload())
+                return
+            if path == "/api/profiles":
+                with PROFILES_LOCK:
+                    self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(load_profiles())})
+                return
+            if path == "/api/stream":
+                wfile = self.wfile
+                if not _sse_register(wfile):
+                    self._send_error_json(HTTPStatus.SERVICE_UNAVAILABLE, "Too many live viewers connected. Try again shortly.")
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+                self.end_headers()
+                payload = shared_dashboard_payload()
+                dash = payload.get("dashboard")
+                if isinstance(dash, dict):
+                    try:
+                        wfile.write(f"event: dashboard\ndata: {json.dumps(dash, separators=(',', ':'))}\n\n".encode("utf-8"))
+                        wfile.flush()
+                    except OSError:
+                        pass
+                while not SHARED_REFRESH_STOP.is_set():
+                    try:
+                        wfile.write(b": heartbeat\n\n")
+                        wfile.flush()
+                        SHARED_REFRESH_STOP.wait(25)
+                    except OSError:
+                        break
+                with SSE_CLIENTS_LOCK:
+                    try:
+                        SSE_CLIENTS.remove(wfile)
+                    except ValueError:
+                        pass
+                return
+            if path == "/api/snapshots":
+                query = dict(parse_qsl(urlparse(self.path).query, keep_blank_values=True))
+                action = query.get("action", "compare")
+                if action == "list":
+                    with SNAPSHOTS_LOCK:
+                        self._send_json(HTTPStatus.OK, {"ok": True, "snapshots": list_snapshot_summary()})
+                elif action == "history":
+                    with SNAPSHOTS_LOCK:
+                        self._send_json(HTTPStatus.OK, snapshot_history_all())
+                elif action == "export":
+                    with SNAPSHOTS_LOCK:
+                        csv_data = snapshots_to_csv()
+                    self._send_bytes(HTTPStatus.OK, csv_data.encode("utf-8"), "text/csv; charset=utf-8")
+                elif action == "auto-config":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "enabled": load_auto_snapshot_config()})
+                else:
+                    with SNAPSHOTS_LOCK:
+                        self._send_json(HTTPStatus.OK, compare_dashboard_snapshots(query.get("range", "7d")))
+                return
+
+            self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
+        except Exception as exc:  # noqa: BLE001
+            ref = uuid.uuid4().hex[:8]
+            debug_log(f"do_GET unhandled error ref={ref}: {safe_log_text(exc)}")
+            try:
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
+            except Exception:  # noqa: BLE001 — headers may already be sent
+                pass
 
     def do_POST(self) -> None:
         if not self._require_https():
