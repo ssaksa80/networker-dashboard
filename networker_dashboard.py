@@ -15,6 +15,9 @@ import concurrent.futures
 import email.utils
 import html as html_lib
 import json
+import hashlib
+import hmac
+import os
 import re
 import shutil
 import signal
@@ -31,6 +34,7 @@ import webbrowser
 import zipfile
 import xml.etree.ElementTree as ET
 from http.cookiejar import CookieJar
+from http.cookies import SimpleCookie
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -127,6 +131,14 @@ SESSION_KEY_FILE = DATA_DIR / ".session_key"
 SESSION_PERSISTENCE_FILE = DATA_DIR / "sessions.json"
 LAST_GOOD_DASHBOARD_FILE = DATA_DIR / "last_good_dashboard.json"
 PROFILES_FILE = DATA_DIR / "profiles.json"
+AUTH_KEY_FILE = DATA_DIR / ".auth_key"
+AUTH_CONFIG_FILE = DATA_DIR / "auth.json"
+COOKIE_NAME = "nwdash_auth"
+AUTH_TTL_SECONDS = 43200  # 12 hours
+PBKDF2_ITERATIONS = 200_000
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_WINDOW_SECONDS = 300
+AUTH_ENABLED = False  # set in run() once a password is configured
 
 
 _PROFILE_PW_SENTINEL = "__profile_password__"
@@ -158,6 +170,78 @@ def _load_or_create_stable_key() -> bytes:
 
 WMI_CREDENTIAL_KEY = _load_or_create_stable_key()
 WMI_CIPHER = Fernet(WMI_CREDENTIAL_KEY) if (Fernet and WMI_CREDENTIAL_KEY) else None
+
+
+def _load_or_create_auth_key() -> bytes:
+    """Stable 32-byte HMAC key for signing auth cookies. Stdlib only."""
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if AUTH_KEY_FILE.exists():
+            data = AUTH_KEY_FILE.read_bytes()
+            if len(data) >= 32:
+                return data
+    except OSError:
+        pass
+    key = os.urandom(32)
+    try:
+        AUTH_KEY_FILE.write_bytes(key)
+        AUTH_KEY_FILE.chmod(0o600)
+    except OSError:
+        pass
+    return key
+
+
+AUTH_SECRET_KEY = _load_or_create_auth_key()
+
+
+def _hash_password(password: str, salt: bytes, iterations: int = PBKDF2_ITERATIONS) -> bytes:
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+
+
+def set_auth_password(password: str) -> None:
+    salt = os.urandom(16)
+    record = {
+        "salt": salt.hex(),
+        "hash": _hash_password(password, salt).hex(),
+        "iterations": PBKDF2_ITERATIONS,
+    }
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = AUTH_CONFIG_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record), encoding="utf-8")
+    tmp.replace(AUTH_CONFIG_FILE)
+    try:
+        AUTH_CONFIG_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _load_auth_config() -> dict[str, Any] | None:
+    try:
+        if AUTH_CONFIG_FILE.exists():
+            data = json.loads(AUTH_CONFIG_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("hash") and data.get("salt"):
+                return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def auth_password_configured() -> bool:
+    return _load_auth_config() is not None
+
+
+def verify_auth_password(password: str) -> bool:
+    config = _load_auth_config()
+    if not config:
+        return False
+    try:
+        salt = bytes.fromhex(config["salt"])
+        expected = bytes.fromhex(config["hash"])
+        iterations = int(config.get("iterations") or PBKDF2_ITERATIONS)
+    except (ValueError, TypeError):
+        return False
+    candidate = _hash_password(password, salt, iterations)
+    return hmac.compare_digest(candidate, expected)
 
 
 def _derive_profile_key() -> bytes | None:
