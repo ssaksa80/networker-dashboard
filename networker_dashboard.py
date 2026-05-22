@@ -11260,6 +11260,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._require_https():
             return
         path = urlparse(self.path).path
+        # Always-open auth endpoints
+        if path == "/api/login":
+            self._handle_login()
+            return
+        if path == "/api/logout":
+            self._send_json_with_cookie(HTTPStatus.OK, {"ok": True}, "", 0)
+            return
+        # Auth gate for all other POST routes
+        if AUTH_ENABLED and not self._authenticated():
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, "Authentication required.")
+            return
         allowed = {"/api/dashboard", "/api/export", "/api/server-health",
                    "/api/alert-automation", "/api/snapshots",
                    "/api/share", "/api/multi-server", "/api/profiles"}
@@ -11435,7 +11446,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_error_json(HTTPStatus.BAD_REQUEST, "Request body must be valid JSON.")
         except Exception as exc:
-            self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            ref = uuid.uuid4().hex[:8]
+            debug_log(f"do_POST unhandled error ref={ref}: {safe_log_text(exc)}")
+            self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
 
 
 def write_embedded_dev_certificate(cert_path: Path, key_path: Path) -> None:
