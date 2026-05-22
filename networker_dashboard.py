@@ -5230,20 +5230,37 @@ def _automation_keys_snapshot() -> list[str]:
 # ── SSE clients ──────────────────────────────────────────────────────────────
 SSE_CLIENTS: list[Any] = []
 SSE_CLIENTS_LOCK = threading.Lock()
+DEFAULT_MAX_SSE_CLIENTS = 50
+MAX_SSE_CLIENTS = DEFAULT_MAX_SSE_CLIENTS
+
+
+def _sse_register(wfile: Any) -> bool:
+    """Register an SSE client if under cap. Returns False when full."""
+    with SSE_CLIENTS_LOCK:
+        if len(SSE_CLIENTS) >= MAX_SSE_CLIENTS:
+            return False
+        SSE_CLIENTS.append(wfile)
+        return True
 
 
 def sse_broadcast(event: str, data: str) -> None:
     payload = f"event: {event}\ndata: {data}\n\n".encode("utf-8")
     with SSE_CLIENTS_LOCK:
-        dead = []
-        for wfile in SSE_CLIENTS:
-            try:
-                wfile.write(payload)
-                wfile.flush()
-            except OSError:
-                dead.append(wfile)
-        for wfile in dead:
-            SSE_CLIENTS.remove(wfile)
+        clients = list(SSE_CLIENTS)
+    dead = []
+    for wfile in clients:
+        try:
+            wfile.write(payload)
+            wfile.flush()
+        except OSError:
+            dead.append(wfile)
+    if dead:
+        with SSE_CLIENTS_LOCK:
+            for wfile in dead:
+                try:
+                    SSE_CLIENTS.remove(wfile)
+                except ValueError:
+                    pass
 
 
 # ── Connection profiles ───────────────────────────────────────────────────────
@@ -10875,15 +10892,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(load_profiles())})
             return
         if path == "/api/stream":
+            wfile = self.wfile
+            if not _sse_register(wfile):
+                self._send_error_json(HTTPStatus.SERVICE_UNAVAILABLE, "Too many live viewers connected. Try again shortly.")
+                return
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
             self.end_headers()
-            wfile = self.wfile
-            with SSE_CLIENTS_LOCK:
-                SSE_CLIENTS.append(wfile)
             # Send current state immediately
             payload = shared_dashboard_payload()
             dash = payload.get("dashboard")

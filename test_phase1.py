@@ -70,5 +70,49 @@ class LoopGuardTests(unittest.TestCase):
             nd.SHARED_REFRESH_STOP.clear()
 
 
+class SseTests(unittest.TestCase):
+    def test_sse_register_respects_cap(self):
+        nd.SSE_CLIENTS.clear()
+        orig_cap = nd.MAX_SSE_CLIENTS
+        nd.MAX_SSE_CLIENTS = 2
+        try:
+            self.assertTrue(nd._sse_register(object()))
+            self.assertTrue(nd._sse_register(object()))
+            self.assertFalse(nd._sse_register(object()))
+            self.assertEqual(len(nd.SSE_CLIENTS), 2)
+        finally:
+            nd.SSE_CLIENTS.clear()
+            nd.MAX_SSE_CLIENTS = orig_cap
+
+    def test_broadcast_prunes_dead_clients(self):
+        nd.SSE_CLIENTS.clear()
+
+        class DeadFile:
+            def write(self, _data):
+                raise OSError("broken pipe")
+
+            def flush(self):
+                pass
+
+        class LiveFile:
+            def __init__(self):
+                self.written = b""
+
+            def write(self, data):
+                self.written += data
+
+            def flush(self):
+                pass
+
+        live = LiveFile()
+        nd.SSE_CLIENTS.extend([DeadFile(), live])
+        nd.sse_broadcast("dashboard", "{}")
+        remaining_dead = [c for c in nd.SSE_CLIENTS if isinstance(c, DeadFile)]
+        self.assertEqual(remaining_dead, [])
+        self.assertIn(live, nd.SSE_CLIENTS)
+        self.assertTrue(live.written)
+        nd.SSE_CLIENTS.clear()
+
+
 if __name__ == "__main__":
     unittest.main()
