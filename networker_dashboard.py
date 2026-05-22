@@ -55,6 +55,10 @@ APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
 DEFAULT_TIMEOUT_SECONDS = 30
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+DEFAULT_MAX_CONNECTIONS = 200
+REQUEST_TIMEOUT_SECONDS = DEFAULT_REQUEST_TIMEOUT_SECONDS
+MAX_CONNECTIONS = DEFAULT_MAX_CONNECTIONS
 SERVER_HEALTH_REFRESH_SECONDS = 60
 MAX_POST_BYTES = 128 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -10766,6 +10770,7 @@ def debug_log(message: str) -> None:
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = f"NetWorkerDashboard/{APP_VERSION}"
     protocol_version = "HTTP/1.1"
+    timeout = REQUEST_TIMEOUT_SECONDS
 
     def log_message(self, format: str, *args: Any) -> None:
         sys.stderr.write(
@@ -11173,11 +11178,39 @@ def ensure_certificate(cert_path: Path, key_path: Path) -> bool:
 
 class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False
+    daemon_threads = True
+
+    def __init__(self, *args: Any, max_connections: int = DEFAULT_MAX_CONNECTIONS, **kwargs: Any) -> None:
+        self._conn_semaphore = threading.BoundedSemaphore(max(1, int(max_connections)))
+        super().__init__(*args, **kwargs)
 
     def server_bind(self) -> None:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+    def _acquire_slot(self) -> bool:
+        return self._conn_semaphore.acquire(blocking=False)
+
+    def _release_slot(self) -> None:
+        try:
+            self._conn_semaphore.release()
+        except ValueError:
+            pass
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._acquire_slot():
+            # At connection cap — refuse by closing the socket. A fronting
+            # proxy/LB will retry; we avoid spawning an unbounded thread.
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._release_slot()
 
 
 def local_port_probe_hosts(bind_host: str) -> list[str]:
@@ -11221,18 +11254,20 @@ def can_exclusively_bind_port(bind_host: str, port: int) -> bool:
         return False
 
 
-def bind_dashboard_server(bind_host: str, requested_port: int) -> tuple[ThreadingHTTPServer, int, bool]:
+def bind_dashboard_server(
+    bind_host: str, requested_port: int, max_connections: int = DEFAULT_MAX_CONNECTIONS
+) -> tuple[ThreadingHTTPServer, int, bool]:
     if requested_port != 0 and not can_exclusively_bind_port(bind_host, requested_port):
-        server = ExclusiveThreadingHTTPServer((bind_host, 0), DashboardHandler)
+        server = ExclusiveThreadingHTTPServer((bind_host, 0), DashboardHandler, max_connections=max_connections)
         return server, int(server.server_address[1]), True
     try:
-        server = ExclusiveThreadingHTTPServer((bind_host, requested_port), DashboardHandler)
+        server = ExclusiveThreadingHTTPServer((bind_host, requested_port), DashboardHandler, max_connections=max_connections)
         return server, int(server.server_address[1]), False
     except OSError as exc:
         if requested_port == 0:
             raise
         try:
-            server = ExclusiveThreadingHTTPServer((bind_host, 0), DashboardHandler)
+            server = ExclusiveThreadingHTTPServer((bind_host, 0), DashboardHandler, max_connections=max_connections)
         except OSError:
             raise exc
         return server, int(server.server_address[1]), True
@@ -11377,13 +11412,35 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Enable verbose REST API diagnostics without logging passwords or Authorization headers.",
     )
+    parser.add_argument(
+        "--request-timeout",
+        type=int,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        help="Per-request socket timeout in seconds. Drops idle/slowloris connections.",
+    )
+    parser.add_argument(
+        "--max-connections",
+        type=int,
+        default=DEFAULT_MAX_CONNECTIONS,
+        help="Maximum concurrent connections before new ones are refused.",
+    )
+    parser.add_argument(
+        "--max-sse",
+        type=int,
+        default=DEFAULT_MAX_SSE_CLIENTS,
+        help="Maximum concurrent live-stream (SSE) viewers.",
+    )
     return parser.parse_args(argv)
 
 
 def run(argv: list[str] | None = None) -> int:
-    global APP_DEBUG
+    global APP_DEBUG, REQUEST_TIMEOUT_SECONDS, MAX_CONNECTIONS, MAX_SSE_CLIENTS
     args = parse_args(argv or sys.argv[1:])
     APP_DEBUG = bool(args.debug)
+    REQUEST_TIMEOUT_SECONDS = max(5, int(args.request_timeout))
+    MAX_CONNECTIONS = max(1, int(args.max_connections))
+    MAX_SSE_CLIENTS = max(1, int(args.max_sse))
+    DashboardHandler.timeout = REQUEST_TIMEOUT_SECONDS
     cert_path = Path(args.cert).expanduser().resolve()
     key_path = Path(args.key).expanduser().resolve()
 
@@ -11398,7 +11455,9 @@ def run(argv: list[str] | None = None) -> int:
         raise SystemExit("HTTPS port must be between 0 and 65535.")
 
     print(port_self_test_script_block(args.bind, int(args.port)))
-    server, selected_port, used_random_port = bind_dashboard_server(args.bind, int(args.port))
+    server, selected_port, used_random_port = bind_dashboard_server(
+        args.bind, int(args.port), max_connections=MAX_CONNECTIONS
+    )
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))

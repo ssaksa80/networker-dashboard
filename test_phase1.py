@@ -114,5 +114,24 @@ class SseTests(unittest.TestCase):
         nd.SSE_CLIENTS.clear()
 
 
+class ConnectionCapTests(unittest.TestCase):
+    def test_connection_slot_cap(self):
+        srv = nd.ExclusiveThreadingHTTPServer(
+            ("127.0.0.1", 0), nd.DashboardHandler, max_connections=2
+        )
+        try:
+            self.assertTrue(srv._acquire_slot())
+            self.assertTrue(srv._acquire_slot())
+            self.assertFalse(srv._acquire_slot())
+            srv._release_slot()
+            self.assertTrue(srv._acquire_slot())
+        finally:
+            srv.server_close()
+
+    def test_config_constants_exist(self):
+        self.assertIsInstance(nd.DEFAULT_REQUEST_TIMEOUT_SECONDS, int)
+        self.assertIsInstance(nd.DEFAULT_MAX_CONNECTIONS, int)
+
+
 if __name__ == "__main__":
     unittest.main()
