@@ -15,6 +15,8 @@ import concurrent.futures
 import email.utils
 import html as html_lib
 import json
+import logging
+import logging.handlers
 import ctypes
 import hashlib
 import hmac
@@ -141,6 +143,50 @@ PBKDF2_ITERATIONS = 200_000
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_WINDOW_SECONDS = 300
 AUTH_ENABLED = False  # set in run() once a password is configured
+
+# ── Logging ────────────────────────────────────────────────────────────────
+LOG_DIR = APP_BASE_DIR / "logs"
+LOG_FILE = LOG_DIR / "networker_dashboard.log"
+PROCESS_START_TIME = time.time()
+LOG = logging.getLogger("networker_dashboard")
+_LOG_EXTRA_KEYS = ("request_id", "client", "status", "path", "event")
+
+
+class _JsonLogFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        obj = {
+            "ts": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        for key in _LOG_EXTRA_KEYS:
+            val = getattr(record, key, None)
+            if val is not None:
+                obj[key] = val
+        if record.exc_info:
+            obj["exc"] = self.formatException(record.exc_info)
+        return json.dumps(obj, ensure_ascii=True, default=str)
+
+
+def configure_logging(debug: bool) -> None:
+    LOG.setLevel(logging.DEBUG if debug else logging.INFO)
+    for handler in list(LOG.handlers):
+        LOG.removeHandler(handler)
+    formatter = _JsonLogFormatter()
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        file_handler.setFormatter(formatter)
+        LOG.addHandler(file_handler)
+    except OSError:
+        pass
+    stream_handler = logging.StreamHandler(sys.stderr)
+    stream_handler.setFormatter(formatter)
+    LOG.addHandler(stream_handler)
+    LOG.propagate = False
 
 
 _PROFILE_PW_SENTINEL = "__profile_password__"
