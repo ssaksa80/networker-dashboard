@@ -15,8 +15,10 @@ import concurrent.futures
 import email.utils
 import html as html_lib
 import json
+import ctypes
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import shutil
@@ -5781,6 +5783,88 @@ def parse_port(value: Any, default: int, field_name: str) -> int:
     if not 1 <= port <= 65535:
         raise BadRequest(f"{field_name} must be between 1 and 65535.")
     return port
+
+
+ALLOWED_HOST_NAMES: set[str] = set()
+ALLOWED_NETWORKS: list[Any] = []
+ALLOWED_PINNED_IPS: set[str] = set()
+ALLOWLIST_ENABLED = False
+
+
+def _normalize_host(host: str) -> str:
+    return (host or "").strip().lower().strip("[]")
+
+
+def _resolve_ips(host: str) -> set[str]:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, OSError, UnicodeError):
+        return set()
+    ips: set[str] = set()
+    for info in infos:
+        sockaddr = info[4]
+        if sockaddr and sockaddr[0]:
+            ips.add(sockaddr[0])
+    return ips
+
+
+def configure_allowed_hosts(raw: str) -> None:
+    """Parse a comma-separated allowlist of hostnames / IPs / CIDRs.
+    Hostname entries are resolved once here and their IPs pinned (rebinding guard).
+    """
+    global ALLOWLIST_ENABLED
+    ALLOWED_HOST_NAMES.clear()
+    ALLOWED_NETWORKS.clear()
+    ALLOWED_PINNED_IPS.clear()
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            ALLOWED_NETWORKS.append(ipaddress.ip_network(entry, strict=False))
+            continue
+        except ValueError:
+            pass
+        name = _normalize_host(entry)
+        if name:
+            ALLOWED_HOST_NAMES.add(name)
+            for ip in _resolve_ips(name):
+                ALLOWED_PINNED_IPS.add(ip)
+    ALLOWLIST_ENABLED = bool(ALLOWED_HOST_NAMES or ALLOWED_NETWORKS)
+
+
+def _ip_in_networks(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in ALLOWED_NETWORKS)
+
+
+def _host_allowed(host: str) -> bool:
+    if not ALLOWLIST_ENABLED:
+        return True
+    h = _normalize_host(host)
+    if not h:
+        return False
+    try:
+        literal_ip = ipaddress.ip_address(h)
+    except ValueError:
+        literal_ip = None
+    if literal_ip is not None:
+        return _ip_in_networks(h)
+    if h not in ALLOWED_HOST_NAMES:
+        return False
+    resolved = _resolve_ips(h)
+    if not resolved:
+        return False
+    return all(ip in ALLOWED_PINNED_IPS or _ip_in_networks(ip) for ip in resolved)
+
+
+def _assert_host_allowed(config: "ApiConfig") -> None:
+    for host in {config.rest_api_host, config.backup_server_host or config.rest_api_host}:
+        if host and not _host_allowed(host):
+            raise BadRequest(f"Host '{host}' is not in the configured allow-list.")
 
 
 def parse_host(value: Any, field_name: str) -> tuple[str, int | None]:
