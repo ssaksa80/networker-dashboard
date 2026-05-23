@@ -11361,6 +11361,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._require_https():
             return
+        self.request_id = uuid.uuid4().hex[:8]
         try:
             path = urlparse(self.path).path
 
@@ -11486,8 +11487,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
         except Exception as exc:  # noqa: BLE001
-            ref = uuid.uuid4().hex[:8]
-            debug_log(f"do_GET unhandled error ref={ref}: {safe_log_text(exc)}")
+            ref = getattr(self, "request_id", "-")
+            LOG.error(f"do_GET unhandled error: {safe_log_text(exc)}", extra={"request_id": ref}, exc_info=True)
             try:
                 self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
             except Exception:  # noqa: BLE001 — headers may already be sent
@@ -11496,6 +11497,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._require_https():
             return
+        self.request_id = uuid.uuid4().hex[:8]
         path = urlparse(self.path).path
         # Always-open auth endpoints
         if path == "/api/login":
@@ -11683,8 +11685,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_error_json(HTTPStatus.BAD_REQUEST, "Request body must be valid JSON.")
         except Exception as exc:
-            ref = uuid.uuid4().hex[:8]
-            debug_log(f"do_POST unhandled error ref={ref}: {safe_log_text(exc)}")
+            ref = getattr(self, "request_id", "-")
+            LOG.error(f"do_POST unhandled error: {safe_log_text(exc)}", extra={"request_id": ref}, exc_info=True)
             self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
 
 
@@ -11987,6 +11989,8 @@ def run(argv: list[str] | None = None) -> int:
     global APP_DEBUG, REQUEST_TIMEOUT_SECONDS, MAX_CONNECTIONS, MAX_SSE_CLIENTS, AUTH_ENABLED
     args = parse_args(argv or sys.argv[1:])
     APP_DEBUG = bool(args.debug)
+    configure_logging(APP_DEBUG)
+    LOG.info(f"{APP_NAME} {APP_VERSION} starting", extra={"event": "startup"})
     REQUEST_TIMEOUT_SECONDS = max(5, int(args.request_timeout))
     MAX_CONNECTIONS = max(1, int(args.max_connections))
     MAX_SSE_CLIENTS = max(1, int(args.max_sse))
@@ -12044,14 +12048,17 @@ def run(argv: list[str] | None = None) -> int:
         print("NetWorker host allow-list is disabled (the server may connect to any host you enter). Set --allowed-hosts to restrict.")
     if AUTH_ENABLED:
         print("Dashboard authentication is ENABLED (gateway password required).")
+        LOG.info("authentication enabled", extra={"event": "auth"})
     elif not _is_loopback_bind(args.bind):
         print("=" * 72)
         print("WARNING: Bound to a non-loopback address with NO authentication.")
         print("Anyone who can reach this port can view all backup data.")
         print("Set DASHBOARD_AUTH_PASSWORD (or --auth-password), or bind to 127.0.0.1.")
         print("=" * 72)
+        LOG.warning("exposed to non-loopback with no authentication", extra={"event": "auth"})
     else:
         print("Dashboard authentication is disabled (local loopback bind).")
+        LOG.info("authentication disabled (loopback bind)", extra={"event": "auth"})
 
     def _handle_term(_signum: int, _frame: Any) -> None:
         raise KeyboardInterrupt
