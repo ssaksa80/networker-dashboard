@@ -23,7 +23,7 @@ The working directory is **not** a git repository, but the plan uses commits per
 Run:
 ```bash
 git init
-git add networker_dashboard.py smb_terminal_v4_Enc2.py docs
+git add networker_dashboard.py docs
 git commit -m "chore: baseline before phase 1 stability hardening"
 ```
 Expected: repo created, baseline commit recorded.

@@ -166,7 +166,6 @@ SSRF allow-list matching, DPAPI wrap/migration (Windows), and logging.
 
 ```
 networker_dashboard.py   # the application (single file)
-smb_terminal_v4_Enc2.py  # companion utility
 test_phase1.py           # concurrency / lifecycle tests
 test_phase2.py           # auth tests
 test_phase2b.py          # SSRF + DPAPI tests
