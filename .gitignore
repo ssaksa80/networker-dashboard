@@ -1,0 +1,16 @@
+# Runtime data — contains secrets (master key, auth key, encrypted credentials, sessions)
+data/
+
+# TLS certificate + private key
+.certs/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor/agent local state
+.claude/
+
+# Stray temp/atomic-write artifacts
+*.tmp
