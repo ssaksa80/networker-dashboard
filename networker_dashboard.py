@@ -5920,6 +5920,11 @@ def validate_payload(payload: dict[str, Any]) -> ApiConfig:
         "AuthC port",
     )
 
+    if ALLOWLIST_ENABLED:
+        for host in {rest_api_host, backup_server_host}:
+            if host and not _host_allowed(host):
+                raise BadRequest(f"Host '{host}' is not in the configured allow-list.")
+
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
     if not username:
@@ -8490,6 +8495,11 @@ def restore_sessions_from_disk() -> int:
                 use_authc_header=bool(cfg_raw.get("use_authc_header", True)),
             )
             if not config.rest_api_host or not config.username:
+                continue
+            if ALLOWLIST_ENABLED and not (
+                _host_allowed(config.rest_api_host)
+                and _host_allowed(config.backup_server_host or config.rest_api_host)
+            ):
                 continue
 
             context = ssl_context_for_api(config.verify_tls)
@@ -11833,6 +11843,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="",
         help="Dashboard access password. May also be supplied via the DASHBOARD_AUTH_PASSWORD environment variable. Stored only as a salted hash.",
     )
+    parser.add_argument(
+        "--allowed-hosts",
+        default="",
+        help="Comma-separated allow-list of NetWorker hosts/IPs/CIDRs the server may connect to (e.g. nw1.corp.local,10.0.0.0/24). May also be set via DASHBOARD_ALLOWED_HOSTS. If unset, any host is permitted.",
+    )
     return parser.parse_args(argv)
 
 
@@ -11848,6 +11863,7 @@ def run(argv: list[str] | None = None) -> int:
     if auth_password:
         set_auth_password(auth_password)
     AUTH_ENABLED = auth_password_configured()
+    configure_allowed_hosts(args.allowed_hosts or os.environ.get("DASHBOARD_ALLOWED_HOSTS") or "")
     cert_path = Path(args.cert).expanduser().resolve()
     key_path = Path(args.key).expanduser().resolve()
 
@@ -11890,6 +11906,10 @@ def run(argv: list[str] | None = None) -> int:
     if APP_DEBUG:
         print("Debug logging is enabled. Passwords and Authorization headers are not logged.")
     print("Credentials are encrypted at rest in the data directory and are never stored in plaintext or placed in URLs.")
+    if ALLOWLIST_ENABLED:
+        print(f"NetWorker host allow-list ENABLED ({len(ALLOWED_HOST_NAMES) + len(ALLOWED_NETWORKS)} entr(y/ies)).")
+    else:
+        print("NetWorker host allow-list is disabled (the server may connect to any host you enter). Set --allowed-hosts to restrict.")
     if AUTH_ENABLED:
         print("Dashboard authentication is ENABLED (gateway password required).")
     elif not _is_loopback_bind(args.bind):

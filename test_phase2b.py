@@ -73,5 +73,22 @@ class SsrfAllowlistTests(unittest.TestCase):
             nd._assert_host_allowed(cfg)
 
 
+class SsrfValidateTests(unittest.TestCase):
+    def setUp(self):
+        import socket
+        self._orig = socket.getaddrinfo
+        socket.getaddrinfo = lambda host, *a, **k: [(None, None, None, "", ("9.9.9.9", 0))]
+        nd.configure_allowed_hosts("10.0.0.0/24")
+
+    def tearDown(self):
+        import socket
+        socket.getaddrinfo = self._orig
+        nd.configure_allowed_hosts("")
+
+    def test_validate_payload_blocks_disallowed_host(self):
+        with self.assertRaises(nd.BadRequest):
+            nd.validate_payload({"restApiHost": "8.8.8.8", "username": "u", "password": "p"})
+
+
 if __name__ == "__main__":
     unittest.main()
