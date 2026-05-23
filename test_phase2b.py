@@ -90,5 +90,40 @@ class SsrfValidateTests(unittest.TestCase):
             nd.validate_payload({"restApiHost": "8.8.8.8", "username": "u", "password": "p"})
 
 
+class DpapiHelperTests(unittest.TestCase):
+    def test_read_plaintext_passthrough(self):
+        import tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        p = d / ".somekey"
+        p.write_bytes(b"raw-legacy-key-bytes")
+        self.assertEqual(nd._read_protected_key(p), b"raw-legacy-key-bytes")
+        self.assertFalse(nd._key_file_is_wrapped(p))
+
+    def test_read_missing_returns_none(self):
+        from pathlib import Path
+        import tempfile
+        self.assertIsNone(nd._read_protected_key(Path(tempfile.mkdtemp()) / "nope"))
+
+
+@unittest.skipUnless(sys.platform == "win32", "DPAPI is Windows-only")
+class DpapiWindowsTests(unittest.TestCase):
+    def test_protect_unprotect_roundtrip(self):
+        data = b"\x00\x01secret-key-bytes\xff\x0a"
+        blob = nd._dpapi_protect(data)
+        self.assertNotEqual(blob, data)
+        self.assertEqual(nd._dpapi_unprotect(blob), data)
+
+    def test_write_then_read_wrapped(self):
+        import tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        p = d / ".wrapkey"
+        nd._write_protected_key(p, b"the-key")
+        self.assertTrue(p.read_bytes().startswith(nd.DPAPI_MARKER))
+        self.assertTrue(nd._key_file_is_wrapped(p))
+        self.assertEqual(nd._read_protected_key(p), b"the-key")
+
+
 if __name__ == "__main__":
     unittest.main()

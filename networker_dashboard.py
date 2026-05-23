@@ -147,6 +147,91 @@ _PROFILE_PW_SENTINEL = "__profile_password__"
 _PROFILE_PW_SAVED    = "(saved)"
 
 
+DPAPI_MARKER = b"DPAPI1\n"
+_CRYPTPROTECT_LOCAL_MACHINE = 0x4
+
+
+def _dpapi_available() -> bool:
+    return sys.platform == "win32"
+
+
+if sys.platform == "win32":
+    class _DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.c_uint), ("pbData", ctypes.c_void_p)]
+
+
+def _dpapi_protect(data: bytes) -> bytes:
+    buf = ctypes.create_string_buffer(data, len(data))
+    blob_in = _DATA_BLOB(len(data), ctypes.cast(buf, ctypes.c_void_p))
+    blob_out = _DATA_BLOB()
+    ok = ctypes.windll.crypt32.CryptProtectData(
+        ctypes.byref(blob_in), None, None, None, None,
+        _CRYPTPROTECT_LOCAL_MACHINE, ctypes.byref(blob_out),
+    )
+    if not ok:
+        raise OSError("CryptProtectData failed")
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(ctypes.c_void_p(blob_out.pbData))
+
+
+def _dpapi_unprotect(blob: bytes) -> bytes:
+    buf = ctypes.create_string_buffer(blob, len(blob))
+    blob_in = _DATA_BLOB(len(blob), ctypes.cast(buf, ctypes.c_void_p))
+    blob_out = _DATA_BLOB()
+    ok = ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(blob_in), None, None, None, None,
+        _CRYPTPROTECT_LOCAL_MACHINE, ctypes.byref(blob_out),
+    )
+    if not ok:
+        raise OSError("CryptUnprotectData failed")
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(ctypes.c_void_p(blob_out.pbData))
+
+
+def _key_file_is_wrapped(path: Path) -> bool:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(len(DPAPI_MARKER)) == DPAPI_MARKER
+    except OSError:
+        return False
+
+
+def _write_protected_key(path: Path, key: bytes) -> None:
+    payload = key
+    if _dpapi_available():
+        try:
+            payload = DPAPI_MARKER + _dpapi_protect(key)
+        except OSError as exc:
+            sys.stderr.write(f"DPAPI protect failed; storing key unwrapped: {exc}\n")
+            payload = key
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / (path.name + ".tmp")
+        tmp.write_bytes(payload)
+        tmp.replace(path)
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _read_protected_key(path: Path) -> bytes | None:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if raw.startswith(DPAPI_MARKER):
+        try:
+            return _dpapi_unprotect(raw[len(DPAPI_MARKER):])
+        except OSError as exc:
+            sys.stderr.write(f"DPAPI unprotect failed for {path.name}: {exc}\n")
+            return None
+    return raw
+
+
 def _load_or_create_stable_key() -> bytes:
     """Load persisted Fernet key from disk; create and save if absent.
     A stable key means encrypted passwords survive process restarts.
