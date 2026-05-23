@@ -12,8 +12,6 @@ implementation plan (`docs/superpowers/`), unit tests, and a live smoke test.
 
 > **Breaking:** the default bind changed from `0.0.0.0` to `127.0.0.1`. To
 > expose on the network, pass `--bind 0.0.0.0` and set an auth password.
-> (The in-code `APP_VERSION` constant remains `1.1.15`; bump it to `2.0.0` if a
-> matching runtime version string is desired.)
 
 ### Added
 - **Authentication** — shared gateway password (`--auth-password` /
