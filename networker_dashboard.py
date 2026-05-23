@@ -252,7 +252,7 @@ def _write_protected_key(path: Path, key: bytes) -> None:
         try:
             payload = DPAPI_MARKER + _dpapi_protect(key)
         except OSError as exc:
-            sys.stderr.write(f"DPAPI protect failed; storing key unwrapped: {exc}\n")
+            LOG.warning(f"DPAPI protect failed; storing key unwrapped: {exc}")
             payload = key
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,7 +273,7 @@ def _read_protected_key(path: Path) -> bytes | None:
         try:
             return _dpapi_unprotect(raw[len(DPAPI_MARKER):])
         except OSError as exc:
-            sys.stderr.write(f"DPAPI unprotect failed for {path.name}: {exc}\n")
+            LOG.warning(f"DPAPI unprotect failed for {path.name}: {exc}")
             return None
     return raw
 
@@ -11196,20 +11196,19 @@ def safe_log_text(value: Any, max_len: int = 600) -> str:
 
 
 def debug_log(message: str) -> None:
-    if APP_DEBUG:
-        now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-        sys.stderr.write(f"[DEBUG {now}] {safe_log_text(message, 520)}\n")
+    LOG.debug(safe_log_text(message, 520))
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = f"NetWorkerDashboard/{APP_VERSION}"
     protocol_version = "HTTP/1.1"
     timeout = REQUEST_TIMEOUT_SECONDS
+    request_id = "-"
 
     def log_message(self, format: str, *args: Any) -> None:
-        sys.stderr.write(
-            "%s - - [%s] %s\n"
-            % (self.client_address[0], self.log_date_time_string(), format % args)
+        LOG.info(
+            format % args,
+            extra={"request_id": getattr(self, "request_id", "-"), "client": self.client_address[0]},
         )
 
     def log_dashboard_failure(self, status: int, body: dict[str, Any]) -> None:
@@ -11218,18 +11217,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         rest_base = safe_log_text(target.get("restApiBase", "unknown"))
         api_mode = safe_log_text(target.get("apiMode", "rest"))
         authc_header = "enabled" if target.get("authcHeaderEnabled") else "disabled"
-        sys.stderr.write(
-            f"NetWorker dashboard upstream failure: status={status} "
-            f"apiMode={api_mode} apiBase={rest_base} authcHeader={authc_header}\n"
+        rid = getattr(self, "request_id", "-")
+        LOG.warning(
+            f"NetWorker dashboard upstream failure: apiMode={api_mode} apiBase={rest_base} authcHeader={authc_header}",
+            extra={"request_id": rid, "status": status},
         )
         for name, item in sources.items():
             if isinstance(item, dict) and not item.get("ok"):
                 path = safe_log_text(item.get("path", name))
                 error = safe_log_text(item.get("error", "failed"))
                 upstream_status = item.get("status", "n/a")
-                sys.stderr.write(
-                    f"  source={safe_log_text(name)} upstreamStatus={upstream_status} "
-                    f"path={path} error={error}\n"
+                LOG.warning(
+                    f"  source={safe_log_text(name)} upstreamStatus={upstream_status} path={path} error={error}",
+                    extra={"request_id": rid, "status": status},
                 )
 
     def _is_https(self) -> bool:
