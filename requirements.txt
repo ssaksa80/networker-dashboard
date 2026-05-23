@@ -1,0 +1,12 @@
+# NetWorker Backup & Recovery Dashboard
+#
+# The dashboard runs on the Python 3.9+ standard library alone.
+# Authentication, signed cookies, SSRF allow-list, Windows DPAPI key wrapping,
+# JSON logging, snapshots, and Excel export all work with NO third-party packages.
+#
+# The single OPTIONAL dependency below enables credential-at-rest encryption of
+# the master key, WMI passwords, and saved connection-profile passwords (Fernet
+# + AES-256-GCM). Without it, those credential paths degrade gracefully; the
+# auth/cookie path is unaffected.
+
+cryptography>=42.0.0
