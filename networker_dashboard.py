@@ -11426,6 +11426,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.UNAUTHORIZED, "Authentication required.")
                 return
 
+            if path == "/api/status":
+                with SHARED_DASHBOARD_LOCK:
+                    updated = float(SHARED_DASHBOARD_STATE.get("updatedAt") or 0)
+                    last_refresh = SHARED_DASHBOARD_STATE.get("lastRefresh") or ""
+                    last_error = SHARED_DASHBOARD_STATE.get("lastError") or ""
+                with SSE_CLIENTS_LOCK:
+                    sse_count = len(SSE_CLIENTS)
+                age = int(time.time() - updated) if updated else None
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "version": APP_VERSION,
+                        "uptimeSeconds": int(time.time() - PROCESS_START_TIME),
+                        "threads": threading.active_count(),
+                        "sessions": len(_session_ids_snapshot()),
+                        "automations": len(_automation_keys_snapshot()),
+                        "sseClients": sse_count,
+                        "sharedDashboard": {
+                            "lastRefresh": last_refresh,
+                            "lastRefreshAgeSeconds": age,
+                            "lastError": last_error,
+                        },
+                        "authEnabled": AUTH_ENABLED,
+                        "allowlistEnabled": ALLOWLIST_ENABLED,
+                    },
+                )
+                return
             if path == "/api/current-dashboard":
                 self._send_json(HTTPStatus.OK, shared_dashboard_payload())
                 return
