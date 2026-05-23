@@ -1,6 +1,9 @@
 # Runtime data — contains secrets (master key, auth key, encrypted credentials, sessions)
 data/
 
+# Rotating application logs
+logs/
+
 # TLS certificate + private key
 .certs/
 
