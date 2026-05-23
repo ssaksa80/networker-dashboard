@@ -233,25 +233,27 @@ def _read_protected_key(path: Path) -> bytes | None:
 
 
 def _load_or_create_stable_key() -> bytes:
-    """Load persisted Fernet key from disk; create and save if absent.
-    A stable key means encrypted passwords survive process restarts.
+    """Load persisted Fernet key (DPAPI-wrapped on Windows); create if absent.
+    Legacy plaintext keys are migrated to wrapped form on first read.
     """
     if Fernet is None:
         return b""
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        if SESSION_KEY_FILE.exists():
-            candidate = SESSION_KEY_FILE.read_bytes().strip()
-            Fernet(candidate)   # raises if malformed
-            return candidate
-    except Exception:
-        pass
-    key = Fernet.generate_key()
-    try:
-        SESSION_KEY_FILE.write_bytes(key)
-        SESSION_KEY_FILE.chmod(0o600)
     except OSError:
         pass
+    raw = _read_protected_key(SESSION_KEY_FILE)
+    if raw is not None:
+        candidate = raw.strip()
+        try:
+            Fernet(candidate)  # raises if malformed
+            if _dpapi_available() and not _key_file_is_wrapped(SESSION_KEY_FILE):
+                _write_protected_key(SESSION_KEY_FILE, candidate)  # migrate
+            return candidate
+        except Exception:
+            pass
+    key = Fernet.generate_key()
+    _write_protected_key(SESSION_KEY_FILE, key)
     return key
 
 
@@ -260,21 +262,20 @@ WMI_CIPHER = Fernet(WMI_CREDENTIAL_KEY) if (Fernet and WMI_CREDENTIAL_KEY) else 
 
 
 def _load_or_create_auth_key() -> bytes:
-    """Stable 32-byte HMAC key for signing auth cookies. Stdlib only."""
+    """Stable 32-byte HMAC key for signing auth cookies (DPAPI-wrapped on Windows).
+    Legacy plaintext keys are migrated to wrapped form on first read.
+    """
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        if AUTH_KEY_FILE.exists():
-            data = AUTH_KEY_FILE.read_bytes()
-            if len(data) >= 32:
-                return data
     except OSError:
         pass
+    raw = _read_protected_key(AUTH_KEY_FILE)
+    if raw is not None and len(raw) >= 32:
+        if _dpapi_available() and not _key_file_is_wrapped(AUTH_KEY_FILE):
+            _write_protected_key(AUTH_KEY_FILE, raw)  # migrate
+        return raw
     key = os.urandom(32)
-    try:
-        AUTH_KEY_FILE.write_bytes(key)
-        AUTH_KEY_FILE.chmod(0o600)
-    except OSError:
-        pass
+    _write_protected_key(AUTH_KEY_FILE, key)
     return key
 
 
