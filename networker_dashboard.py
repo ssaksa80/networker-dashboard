@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.0.2"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -12143,14 +12143,29 @@ def run(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nStopping dashboard.")
     finally:
-        for automation_id in _automation_keys_snapshot():
-            cancel_alert_automation(automation_id)
-        SHARED_REFRESH_STOP.set()
-        if server_thread.is_alive():
-            server.shutdown()
-            server_thread.join(3.0)
-        shared_refresh_thread.join(3.0)
-        server.server_close()
+        try:
+            for automation_id in _automation_keys_snapshot():
+                cancel_alert_automation(automation_id)
+            SHARED_REFRESH_STOP.set()
+            if server_thread.is_alive():
+                server.shutdown()
+                server_thread.join(3.0)
+            shared_refresh_thread.join(3.0)
+            server.server_close()
+        except Exception:
+            pass
+        # Daemon worker/background threads may still be mid-write to stderr (via
+        # logging) when the interpreter finalizes — a normal shutdown can then
+        # deadlock on the stderr buffer lock (Fatal Python error:
+        # _enter_buffered_busy). Flush, then exit hard to skip finalization and
+        # avoid that race.
+        logging.shutdown()
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(0)
     return 0
 
 

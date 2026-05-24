@@ -4,6 +4,16 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.0.2] — 2026-05-24
+
+### Fixed
+- Ctrl+C / SIGINT shutdown could raise `Fatal Python error:
+  _enter_buffered_busy: could not acquire lock for <_io.BufferedWriter
+  name='<stderr>'> ... possibly due to daemon threads`. Shutdown now flushes
+  logging and exits via `os._exit(0)` after best-effort cleanup, skipping the
+  interpreter finalization that deadlocked against daemon threads still writing
+  to stderr.
+
 ## [2.0.1] — 2026-05-24
 
 ### Changed
