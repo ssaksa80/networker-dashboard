@@ -56,14 +56,13 @@ pip install -r requirements.txt   # installs the optional 'cryptography' package
 ## Quick start
 
 ```bash
-# Local only (loopback), no auth — for evaluation on your own machine
-python networker_dashboard.py
-
-# Network-exposed, production-style: set a password and restrict targets
+# Published on the server IP (binds all interfaces by default) — set a password
 python networker_dashboard.py \
-  --bind 0.0.0.0 \
   --auth-password "change-me" \
   --allowed-hosts "nw1.corp.local,10.0.0.0/24"
+
+# Local only (loopback)
+python networker_dashboard.py --bind 127.0.0.1
 ```
 
 On first run a self-signed development certificate is written to `.certs/`
@@ -79,7 +78,7 @@ variable, and the allow-list via `DASHBOARD_ALLOWED_HOSTS`.
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--bind` | `127.0.0.1` | Interface to bind. Use `0.0.0.0` to expose on the network (set a password first). |
+| `--bind` | `0.0.0.0` | Interface to bind. All interfaces — reachable on the server IP for publishing. Use `127.0.0.1` to restrict to local only. |
 | `--port` | `8443` | HTTPS port. Falls back to a random free port if busy. |
 | `--cert` / `--key` | `.certs/...` | TLS certificate / private key (PEM). |
 | `--no-auto-cert` | off | Require an existing cert instead of writing the dev cert. |

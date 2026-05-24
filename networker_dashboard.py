@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -11948,8 +11948,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument(
         "--bind",
-        default="127.0.0.1",
-        help="Interface to bind. Defaults to 127.0.0.1 (local only). Use 0.0.0.0 to expose on the network (set an auth password first).",
+        default="0.0.0.0",
+        help="Interface to bind. Defaults to 0.0.0.0 (all interfaces, reachable on the server IP for publishing). Use 127.0.0.1 to restrict to local only.",
     )
     parser.add_argument(
         "--port",

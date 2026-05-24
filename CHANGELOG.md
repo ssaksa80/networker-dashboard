@@ -4,6 +4,14 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-05-24
+
+### Changed
+- Default `--bind` is now `0.0.0.0` (all interfaces) so the dashboard is
+  reachable on the server IP for publishing without an extra flag. Use
+  `--bind 127.0.0.1` to restrict to local only. Binding non-loopback without an
+  auth password still prints the startup warning.
+
 ## [2.0.0] — 2026-05-22 — Security & Stability Hardening
 
 A four-phase hardening pass turning the dashboard into an enterprise-grade,
