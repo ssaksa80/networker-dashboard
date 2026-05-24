@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.1.1"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -11323,9 +11323,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if extra_headers:
             for name, value in extra_headers.items():
                 self.send_header(name, value)
-        self.end_headers()
-        self.wfile.write(body)
-        self.wfile.flush()
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+        except OSError as exc:
+            # Client disconnected mid-response (TLS EOF / reset / broken pipe).
+            # ssl.SSLError is an OSError subclass, so this covers SSLEOFError too.
+            # Nothing to recover; abort this connection quietly instead of letting
+            # the failure bubble into a second (also-failing) error write.
+            self.close_connection = True
+            LOG.debug(
+                f"client disconnected during response: {exc}",
+                extra={"request_id": getattr(self, "request_id", "-"), "client": self.client_address[0]},
+            )
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
@@ -11843,6 +11854,16 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self._release_slot()
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        # Replace socketserver's raw stderr traceback dump. Client-side transport
+        # errors (disconnects, TLS EOF, resets) are benign -> DEBUG; anything else
+        # is a real server fault -> ERROR with traceback, as structured JSON.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, OSError):
+            LOG.debug(f"client {client_address} connection error: {exc}")
+        else:
+            LOG.error(f"request error from {client_address}: {exc}", extra={"client": client_address[0] if client_address else "-"}, exc_info=True)
 
 
 def local_port_probe_hosts(bind_host: str) -> list[str]:

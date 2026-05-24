@@ -4,6 +4,18 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.1] — 2026-05-24
+
+### Fixed
+- Client disconnecting mid-response (e.g. browser/auto-refresh aborting the TLS
+  connection) raised `ssl.SSLEOFError` during the response write; the 500
+  handler then tried to write to the dead socket, raising `ssl.SSLError
+  [SSL: BAD_LENGTH]`, which escaped and made `socketserver` dump a raw multi-line
+  traceback to stderr. `_send_bytes` now swallows transport errors (OSError /
+  SSL) and aborts the connection quietly, and the server's `handle_error` logs
+  benign client disconnects at DEBUG (real faults at ERROR with traceback) as
+  structured JSON instead of stderr dumps.
+
 ## [2.1.0] — 2026-05-24
 
 ### Added
