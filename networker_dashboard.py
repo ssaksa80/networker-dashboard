@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.0.2"
+APP_VERSION = "2.1.0"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -1088,9 +1088,9 @@ HTML_PAGE = r"""<!doctype html>
 
     .dashboard-toolbar {
       display: none;
-      align-items: end;
-      justify-content: space-between;
-      gap: 14px;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 12px;
       padding: 14px;
       background: var(--surface);
       border: 1px solid var(--line);
@@ -1124,6 +1124,34 @@ HTML_PAGE = r"""<!doctype html>
     .toolbar-actions button {
       white-space: nowrap;
     }
+
+    /* Collapsible control groups (clean TV view) */
+    .topbar-actions { position: relative; }
+    .collapse-bar {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+    }
+    .collapse-toggle {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--surface2); color: var(--ink);
+      border: 1px solid var(--line); border-radius: 8px;
+      padding: 6px 12px; font-size: 13px; font-weight: 700; cursor: pointer;
+    }
+    .collapse-toggle:hover { border-color: var(--brand); }
+    .collapse-toggle .caret { font-size: 11px; transition: transform .2s ease; }
+    .collapse-toggle[aria-expanded="true"] .caret { transform: rotate(90deg); }
+    .collapsible {
+      overflow: hidden; max-height: 0; opacity: 0;
+      transition: max-height .25s ease, opacity .2s ease;
+    }
+    .collapsible.open { max-height: 1200px; opacity: 1; }
+    .account-menu {
+      position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
+      display: flex; flex-direction: column; gap: 6px;
+      background: var(--surface); border: 1px solid var(--line);
+      border-radius: 10px; padding: 10px; box-shadow: var(--shadow);
+      min-width: 170px;
+    }
+    .account-menu .topbar-button { width: 100%; justify-content: center; }
 
     .automation-grid {
       display: grid;
@@ -2553,11 +2581,16 @@ HTML_PAGE = r"""<!doctype html>
     </div>
     <div class="topbar-actions">
       <div id="topStatus" class="status-pill">Not connected</div>
-      <button id="showConnectionBtn" class="topbar-button" type="button">Connection</button>
-      <button id="addServerBtn" class="topbar-button" type="button">+ Server</button>
-      <button id="shareBtn" class="topbar-button hidden" type="button">Share</button>
-      <button id="logoutBtn" class="topbar-button danger hidden" type="button">Logout</button>
-      <button id="alertConfigBtn" class="topbar-button" type="button">Email</button>
+      <button class="collapse-toggle" type="button" data-toggle-target="accountMenu" aria-expanded="false">
+        <span class="caret">&#9656;</span> Account
+      </button>
+      <div id="accountMenu" class="account-menu collapsible">
+        <button id="showConnectionBtn" class="topbar-button" type="button">Connection</button>
+        <button id="addServerBtn" class="topbar-button" type="button">+ Server</button>
+        <button id="shareBtn" class="topbar-button hidden" type="button">Share</button>
+        <button id="logoutBtn" class="topbar-button danger hidden" type="button">Logout</button>
+        <button id="alertConfigBtn" class="topbar-button" type="button">Email</button>
+      </div>
     </div>
   </header>
 
@@ -2695,7 +2728,15 @@ HTML_PAGE = r"""<!doctype html>
 
     <section class="dashboard">
       <section id="dashboardToolbar" class="dashboard-toolbar" aria-label="Dashboard controls">
-        <div class="toolbar-controls">
+        <div class="collapse-bar">
+          <button class="collapse-toggle" type="button" data-toggle-target="viewControls" aria-expanded="false">
+            <span class="caret">&#9656;</span> View settings
+          </button>
+          <div class="toolbar-actions">
+            <button id="manualRefreshBtn" class="ghost" type="button">Refresh now</button>
+          </div>
+        </div>
+        <div id="viewControls" class="toolbar-controls collapsible">
           <label>
             Report range
             <select id="dashReportRange">
@@ -2745,9 +2786,6 @@ HTML_PAGE = r"""<!doctype html>
             Export
             <button id="exportBtn" class="primary" type="button">Excel report</button>
           </label>
-        </div>
-        <div class="toolbar-actions">
-          <button id="manualRefreshBtn" class="ghost" type="button">Refresh now</button>
         </div>
       </section>
 
@@ -2904,7 +2942,10 @@ HTML_PAGE = r"""<!doctype html>
             <div id="slaGaugeInline"></div>
           </div>
         </div>
-        <div class="snapshot-controls">
+        <button class="collapse-toggle" type="button" data-toggle-target="snapshotControls" aria-expanded="false" style="margin:0 16px 4px">
+          <span class="caret">&#9656;</span> Snapshots
+        </button>
+        <div id="snapshotControls" class="snapshot-controls collapsible">
           <div class="snap-range-tabs" id="snapRangeTabs">
             <button class="snap-tab active" data-range="7d" type="button">7 days</button>
             <button class="snap-tab" data-range="30d" type="button">30 days</button>
@@ -3132,6 +3173,27 @@ HTML_PAGE = r"""<!doctype html>
         return resp;
       };
     })();
+    function initCollapsibles(){
+      var toggles = document.querySelectorAll('[data-toggle-target]');
+      for (var i = 0; i < toggles.length; i++){
+        (function(btn){
+          var panel = document.getElementById(btn.getAttribute('data-toggle-target'));
+          if (!panel) return;
+          var key = 'collapse:' + btn.getAttribute('data-toggle-target');
+          var open = false;
+          try { open = localStorage.getItem(key) === 'open'; } catch (_e) {}
+          panel.classList.toggle('open', open);
+          btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+          btn.addEventListener('click', function(){
+            var now = !panel.classList.contains('open');
+            panel.classList.toggle('open', now);
+            btn.setAttribute('aria-expanded', now ? 'true' : 'false');
+            try { localStorage.setItem(key, now ? 'open' : 'closed'); } catch (_e) {}
+          });
+        })(toggles[i]);
+      }
+    }
+    initCollapsibles();
     const form = document.getElementById("connectionForm");
     const topStatus = document.getElementById("topStatus");
     const discoverBtn = document.getElementById("discoverBtn");

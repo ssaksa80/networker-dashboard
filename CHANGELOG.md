@@ -4,6 +4,19 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] — 2026-05-24
+
+### Added
+- Collapsible toolbar groups for a clean command-central / TV view. The
+  controls are now three caret dropdowns that slide open/closed:
+  **View settings** (range, auto-refresh, interval, theme, Excel export),
+  **Snapshots** (7d/30d/90d, auto-save, save/compare/manage/CSV), and
+  **Account** (Connection, +Server, Share, Logout, Email). Connection status,
+  range/last-refresh, and Refresh now stay always visible. Each group defaults
+  collapsed and remembers its open/closed state per browser (localStorage).
+  Pure CSS slide + small vanilla JS; all existing control IDs/handlers
+  unchanged.
+
 ## [2.0.2] — 2026-05-24
 
 ### Fixed
