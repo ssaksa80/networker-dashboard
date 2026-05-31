@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.1.4"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -1151,7 +1151,19 @@ HTML_PAGE = r"""<!doctype html>
       border-radius: 10px; padding: 10px; box-shadow: var(--shadow);
       min-width: 170px;
     }
-    .account-menu .topbar-button { width: 100%; justify-content: center; }
+    .account-menu .topbar-button {
+      width: 100%; justify-content: center;
+      color: var(--ink);
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+    }
+    .account-menu .topbar-button:hover { background: var(--line); }
+    .account-menu .topbar-button.danger {
+      color: var(--red);
+      border-color: rgba(200, 60, 60, 0.5);
+      background: rgba(200, 60, 60, 0.08);
+    }
+    .account-menu .topbar-button.danger:hover { background: rgba(200, 60, 60, 0.16); }
 
     .automation-grid {
       display: grid;
@@ -3700,7 +3712,10 @@ HTML_PAGE = r"""<!doctype html>
       const missed = Math.max(0, numberValue(summary.slaMissedJobs ?? (total - met)));
       if (!total) {
         mgmtSlaPie.className = "chart-empty";
-        mgmtSlaPie.textContent = "No backup jobs ran in this range";
+        const running = numberValue(summary.activeJobs);
+        mgmtSlaPie.textContent = running
+          ? `${running} job${running > 1 ? "s" : ""} currently running — SLA pending`
+          : "No backup jobs ran in this range";
         mgmtSlaMeta.textContent = "Jobs ran";
         return;
       }
@@ -9141,7 +9156,7 @@ def build_dashboard_nwui(
         },
         "summary": add_sla_summary({
             "totalClients": len(clients),
-            "totalJobs": backup_activity["completed"],
+            "totalJobs": backup_activity["completed"] + backup_activity["active"],
             "completedJobs": backup_activity["completed"],
             "successfulJobs": successful_jobs,
             "failedJobs": failed_count,

@@ -200,5 +200,60 @@ class StaleDashboardNoticeTests(unittest.TestCase):
         self.assertNotIn("last-successful-dashboard", nd.HTML_PAGE)
 
 
+class AccountMenuContrastTests(unittest.TestCase):
+    def test_account_menu_buttons_use_ink_color_not_white(self):
+        """Account dropdown buttons must override the white header-button color
+        so they are visible on the white dropdown surface."""
+        self.assertIn(".account-menu .topbar-button", nd.HTML_PAGE)
+        self.assertIn("color: var(--ink)", nd.HTML_PAGE)
+        # The dropdown buttons must NOT keep the header's white-on-dark styling
+        self.assertIn(".account-menu .topbar-button.danger", nd.HTML_PAGE)
+
+
+class ActiveJobsSlaTests(unittest.TestCase):
+    def test_nwui_totalJobs_includes_active_jobs(self):
+        """NWUI path: totalJobs must count running jobs, not just completed."""
+        activity = nd.nwui_backup_activity_counts([
+            {"status": "running"},
+            {"status": "running"},
+        ])
+        self.assertEqual(activity["completed"], 0)
+        self.assertEqual(activity["active"], 2)
+        # Simulate the summary build
+        summary = nd.add_sla_summary({
+            "totalJobs": activity["completed"] + activity["active"],
+            "completedJobs": activity["completed"],
+            "successfulJobs": activity["successful"],
+            "failedJobs": activity["failed"],
+            "activeJobs": activity["active"],
+        })
+        self.assertEqual(summary["totalJobs"], 2)
+        self.assertEqual(summary["slaTotalJobs"], 0)   # SLA only counts finished
+        self.assertEqual(summary["activeJobs"], 2)
+
+    def test_frontend_sla_pie_shows_running_message_not_no_jobs(self):
+        """When slaTotalJobs=0 but activeJobs>0 the SLA pie must NOT say 'No backup jobs ran'."""
+        self.assertIn("currently running", nd.HTML_PAGE)
+        self.assertIn("SLA pending", nd.HTML_PAGE)
+
+    def test_add_sla_summary_with_only_running_jobs(self):
+        summary = nd.add_sla_summary({
+            "successfulJobs": 0,
+            "failedJobs": 0,
+            "activeJobs": 2,
+        })
+        self.assertEqual(summary["slaTotalJobs"], 0)
+        self.assertEqual(summary["slaPercent"], 0)
+
+    def test_add_sla_summary_mixed(self):
+        summary = nd.add_sla_summary({
+            "successfulJobs": 5,
+            "failedJobs": 2,
+            "activeJobs": 3,
+        })
+        self.assertEqual(summary["slaTotalJobs"], 7)   # only finished count for SLA
+        self.assertAlmostEqual(summary["slaPercent"], 71.43, places=1)
+
+
 if __name__ == "__main__":
     unittest.main()
