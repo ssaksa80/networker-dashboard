@@ -4,6 +4,18 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.6] — 2026-05-31
+
+### Fixed
+- The Local Snapshot Growth panel stayed stuck on the disconnected "Waiting —
+  Connect to NetWorker, then save a local snapshot" placeholder even while
+  connected and even when snapshots were already saved on disk. `renderDashboard`
+  enabled the Save button but never refreshed the panel. A new
+  `refreshSnapshotStatus()` now loads saved snapshots and renders the growth
+  comparison (or a "Ready / N snapshot(s) saved" status) on connect, on page
+  load, and right after an auto-save — so the panel reflects real snapshot state
+  instead of the placeholder.
+
 ## [2.2.5] — 2026-05-31
 
 ### Fixed

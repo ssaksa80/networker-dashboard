@@ -217,6 +217,13 @@ class EmailConfigTests(unittest.TestCase):
         self.assertEqual(pub["smtp"]["from"], "dash@example.com")
 
 
+class SnapshotPanelRefreshTests(unittest.TestCase):
+    def test_refresh_snapshot_status_present_and_wired(self):
+        self.assertIn("function refreshSnapshotStatus", nd.HTML_PAGE)
+        # Called on connect (inside renderDashboard) and on init.
+        self.assertGreaterEqual(nd.HTML_PAGE.count("refreshSnapshotStatus()"), 2)
+
+
 class AutoSnapshotTests(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()

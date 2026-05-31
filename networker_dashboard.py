@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.5"
+APP_VERSION = "2.2.6"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -4090,6 +4090,7 @@ HTML_PAGE = r"""<!doctype html>
       exportBtn.disabled = false;
       snapshotSaveBtn.disabled = false;
       snapshotCompareBtn.disabled = false;
+      refreshSnapshotStatus();
       scheduleAutoRefresh();
       scheduleServerHealthRefresh();
     }
@@ -4396,6 +4397,38 @@ HTML_PAGE = r"""<!doctype html>
         alertStopBtn.disabled = false;
         emailSaveConfigBtn.disabled = false;
       }
+    }
+
+    // Quietly load saved snapshots and render the growth/status panel. Called on
+    // connect and on page load so the panel reflects stored snapshots instead of
+    // staying on the disconnected "Waiting" placeholder.
+    async function refreshSnapshotStatus() {
+      try {
+        if (!snapshotHistoryCache) { await loadSnapshotHistory(); }
+        const r = await fetch(`/api/snapshots?range=${encodeURIComponent(activeSnapshotRange)}`, {cache: "no-store"});
+        const data = await r.json();
+        const count = snapshotHistoryCache?.dates?.length
+          ?? (snapshotHistoryCache?.history ? Object.keys(snapshotHistoryCache.history).length : 0);
+        if (data && data.ok && Array.isArray(data.metrics) && data.metrics.length) {
+          renderSnapshotComparison(data);
+        } else if (count > 0) {
+          snapshotMeta.textContent = `${count} local snapshot(s) saved`;
+          snapshotGrid.innerHTML = `
+            <div class="snapshot-cell snapshot-empty">
+              <span>Snapshot status</span>
+              <strong style="font-size:15px">${count} snapshot(s) saved</strong>
+              <small>Save another (or wait for tomorrow's auto-save) to compare growth.</small>
+            </div>`;
+        } else {
+          snapshotMeta.textContent = latestDashboard ? "No local snapshots yet" : "No local snapshots loaded";
+          snapshotGrid.innerHTML = `
+            <div class="snapshot-cell snapshot-empty">
+              <span>Snapshot status</span>
+              <strong style="font-size:15px">${latestDashboard ? "Ready — no snapshots yet" : "Waiting"}</strong>
+              <small>${latestDashboard ? "Use <strong>Save snapshot</strong> or enable Auto-save daily to start tracking growth." : "Connect to NetWorker, then save a local snapshot."}</small>
+            </div>`;
+        }
+      } catch (e) { /* leave existing panel content */ }
     }
 
     async function saveLocalSnapshot() {
@@ -4705,7 +4738,7 @@ HTML_PAGE = r"""<!doctype html>
           };
           showToast(messages[data.result] || "Auto-snapshot enabled");
           if (data.summary) snapshotMeta.textContent = data.summary;
-          if (data.result === "saved") { snapshotHistoryCache = null; }
+          if (data.result === "saved") { snapshotHistoryCache = null; refreshSnapshotStatus(); }
         }
       } catch (e) { showToast("Failed to update auto-snapshot setting"); }
     });
@@ -4788,6 +4821,9 @@ HTML_PAGE = r"""<!doctype html>
       .then((r) => r.json())
       .then((j) => { if (j.ok) autoSnapshotToggle.checked = !!j.enabled; })
       .catch(() => {});
+
+    // Show any already-saved snapshots on load (independent of connection state).
+    refreshSnapshotStatus();
 
     document.getElementById("snapRangeTabs").addEventListener("click", (e) => {
       const btn = e.target.closest(".snap-tab");
