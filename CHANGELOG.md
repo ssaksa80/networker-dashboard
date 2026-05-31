@@ -4,6 +4,16 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.10] — 2026-05-31
+
+### Added
+- `--debug` diagnostic that dumps a raw `/global/jobs` record (all field
+  names + values for the first 3 jobs) and a `completionStatus` breakdown of
+  the full set, before projection. This reveals the exact NetWorker job field
+  names needed to reconcile counts against DPA and to restore the backed-up
+  size metric (the original `saveBytes`/`transferredBytes` names were rejected
+  by NetWorker). Logs on a jobs-history cache miss.
+
 ## [2.1.9] — 2026-05-31
 
 Completed-job history now loads end-to-end (verified on a live server:

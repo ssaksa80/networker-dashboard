@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.9"
+APP_VERSION = "2.1.10"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -8447,6 +8447,24 @@ def nwui_rest_fallback_items(
                     preferred_key = "jobs" if target == "actions" else "policies"
                     items = collection_from(data, preferred_key)
                     if target == "actions":
+                        if APP_DEBUG:
+                            total_raw = len(items)
+                            raw_completion = Counter(
+                                str(job.get("completionStatus") or "").lower()
+                                for job in items
+                                if isinstance(job, dict)
+                            )
+                            debug_log(
+                                f"REST jobs raw diagnostic source={source_name} version={version} "
+                                f"totalRaw={total_raw} completionStatus={dict(raw_completion)}"
+                            )
+                            for idx, job in enumerate(items[:3]):
+                                if isinstance(job, dict):
+                                    fields = {k: job.get(k) for k in sorted(job.keys())}
+                                    debug_log(
+                                        f"REST jobs raw sample[{idx}] keys={sorted(job.keys())} "
+                                        f"values={safe_log_text(json.dumps(fields, default=str), 900)}"
+                                    )
                         items = [
                             rest_job_as_nwui_action(job)
                             for job in sort_jobs(items)
