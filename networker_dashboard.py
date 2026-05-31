@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.10"
+APP_VERSION = "2.1.11"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -6780,12 +6780,18 @@ def endpoint(path: str, query: dict[str, str] | None = None) -> str:
 # elapsedTime/policyName/saveBytes/transferredBytes are NOT valid job query
 # fields on NetWorker and were removed. nwui_rest_fallback_items() still
 # auto-strips any field a given NetWorker version rejects, as a safety net.
+#
+# `message` is deliberately EXCLUDED from the bulk list: it carries multi-KB of
+# job-log text per record and on a busy server the jobs DB holds tens of
+# thousands of jobs (observed: 36,031 jobs / 11.5 MB, almost entirely message
+# text). Dropping it cuts the response by ~10x and removes the per-record log
+# cleaning that was making each refresh time out. Failure detail still comes
+# from the small, completionStatus:"Failed"-filtered failedJobs query below.
 JOB_QUERY_FIELDS = (
     "clientHostname",
     "startTime",
     "completionStatus",
     "name",
-    "message",
     "policyActionName",
     "workflowName",
     "level",
@@ -6800,6 +6806,9 @@ def dashboard_endpoints(config: ApiConfig | None = None) -> dict[str, str]:
     # job retention, and the exact report window is enforced client-side by
     # in_report_window(). `config` is accepted for signature stability.
     job_fields = ",".join(JOB_QUERY_FIELDS)
+    # The failed set is small (filtered to completionStatus:"Failed"), so it can
+    # afford to include the verbose `message` field for failure detail.
+    failed_fields = ",".join((*JOB_QUERY_FIELDS, "message"))
     return {
         "clients": endpoint(
             "/global/clients",
@@ -6812,7 +6821,7 @@ def dashboard_endpoints(config: ApiConfig | None = None) -> dict[str, str]:
             "/global/jobs",
             {
                 "q": 'completionStatus:"Failed"',
-                "fl": job_fields,
+                "fl": failed_fields,
             },
         ),
         "alerts": endpoint("/global/alerts"),
@@ -8465,11 +8474,16 @@ def nwui_rest_fallback_items(
                                         f"REST jobs raw sample[{idx}] keys={sorted(job.keys())} "
                                         f"values={safe_log_text(json.dumps(fields, default=str), 900)}"
                                     )
-                        items = [
-                            rest_job_as_nwui_action(job)
-                            for job in sort_jobs(items)
+                        # Filter to the report window FIRST (cheap timestamp
+                        # check), then sort and project only the survivors. The
+                        # jobs DB can hold tens of thousands of records; sorting
+                        # and converting the whole set wastes CPU on a busy server.
+                        in_window = [
+                            job
+                            for job in items
                             if in_report_window(first_value(job, "startTime", "started", "start"), config)
                         ]
+                        items = [rest_job_as_nwui_action(job) for job in sort_jobs(in_window)]
                     return items, f"https://{endpoint_host}/nwrestapi/{version}{compact_path_for_log(path)}"
                 except RestApiError as exc:
                     invalid_field = invalid_rest_query_field(exc.message, exc.body)

@@ -246,6 +246,15 @@ class JobsQueryFieldsTests(unittest.TestCase):
         for good in ("clientHostname", "startTime", "completionStatus", "name", "workflowName"):
             self.assertIn(good, nd.JOB_QUERY_FIELDS)
 
+    def test_bulk_jobs_excludes_message_but_failed_keeps_it(self):
+        # message is multi-KB per record; excluded from the bulk jobs query to
+        # avoid the ~11 MB payload, but kept for the small failed-jobs query.
+        self.assertNotIn("message", nd.JOB_QUERY_FIELDS)
+        eps = nd.dashboard_endpoints()
+        from urllib.parse import unquote
+        self.assertNotIn("message", unquote(eps["jobs"]))
+        self.assertIn("message", unquote(eps["failedJobs"]))
+
     def test_strip_query_param_removes_only_q(self):
         path = '/global/jobs?q=completionStatus%3A%22Failed%22&fl=name,startTime'
         stripped = nd.strip_query_param(path, "q")
