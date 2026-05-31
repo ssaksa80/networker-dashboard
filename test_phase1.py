@@ -352,6 +352,31 @@ class UiThemePersistenceTests(unittest.TestCase):
         self.assertEqual(chosen, "ocean")
 
 
+class BrandCardColorTests(unittest.TestCase):
+    def _dashboard(self, theme="midnight"):
+        return {
+            "theme": theme,
+            "scheduledReport": True,
+            "summary": {"successfulJobs": 5, "failedJobs": 1, "slaTotalJobs": 6},
+            "target": {}, "serverHealth": {}, "serverProtectionJob": {},
+        }
+
+    def test_email_brand_card_matches_dashboard_gradient(self):
+        _, html = nd.dashboard_report_email(self._dashboard())
+        # Solid fallback for Outlook + gradient for modern clients.
+        self.assertIn(nd.BRAND_CARD_SOLID, html)
+        self.assertIn("linear-gradient(135deg", html)
+
+    def test_png_snapshot_brand_card_uses_gradient(self):
+        html = nd.dashboard_snapshot_html(self._dashboard())
+        self.assertIn("linear-gradient(135deg", html)
+
+    def test_brand_card_constant_matches_dashboard_css(self):
+        # The shared gradient must equal the live dashboard .brand-card gradient.
+        self.assertIn("rgba(11, 32, 42, 0.98)", nd.BRAND_CARD_GRADIENT)
+        self.assertIn("rgba(18, 110, 130, 0.96)", nd.BRAND_CARD_GRADIENT)
+
+
 class ScheduledReportThemeTests(unittest.TestCase):
     def _dashboard(self, theme):
         return {

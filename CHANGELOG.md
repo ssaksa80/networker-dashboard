@@ -4,6 +4,18 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.8] — 2026-05-31
+
+### Fixed
+- The email report's brand/header card color did not match the live dashboard.
+  The dashboard brand card uses a fixed navy→teal gradient over the brand color,
+  but the email and PNG snapshot used a flat theme-brand color. Both now reuse
+  the dashboard's exact brand-card styling (shared `BRAND_CARD_GRADIENT` /
+  `BRAND_CARD_SOLID` constants): the PNG snapshot (rendered by Chrome) applies
+  the gradient directly, and the email applies the gradient via
+  `background-image` for modern clients plus a solid dark-teal `bgcolor`
+  fallback for Outlook. The body cards continue to follow the selected theme.
+
 ## [2.2.7] — 2026-05-31
 
 ### Fixed
