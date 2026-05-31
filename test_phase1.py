@@ -221,39 +221,36 @@ def _make_config(report_range="24h"):
     )
 
 
-class JobsWindowQueryTests(unittest.TestCase):
-    def test_endpoints_without_config_have_no_time_filter(self):
-        eps = nd.dashboard_endpoints()
-        self.assertNotIn("q=", eps["jobs"])  # backward compatible
+class JobsQueryFieldsTests(unittest.TestCase):
+    def test_jobs_query_has_no_nql_range_operator(self):
+        # NetWorker NQL has no range operators; jobs query must NOT carry a
+        # startTime>=... filter (rejected with HTTP 400 by NetWorker).
+        from urllib.parse import unquote
+        for eps in (nd.dashboard_endpoints(), nd.dashboard_endpoints(_make_config("24h"))):
+            jobs = unquote(eps["jobs"])
+            self.assertNotIn(">=", jobs)
+            self.assertNotIn("startTime>", jobs)
+            self.assertNotIn("q=", eps["jobs"])
 
-    def test_endpoints_with_config_inject_starttime_floor(self):
-        eps = nd.dashboard_endpoints(_make_config("24h"))
-        self.assertIn("startTime", eps["jobs"])
-        self.assertIn("q=", eps["jobs"])
-        # failedJobs keeps the completionStatus filter AND the time floor
-        self.assertIn("completionStatus", eps["failedJobs"])
-        self.assertIn("startTime", eps["failedJobs"])
+    def test_failed_jobs_uses_valid_equality_query(self):
+        eps = nd.dashboard_endpoints()
+        from urllib.parse import unquote
+        self.assertIn('completionStatus:"Failed"', unquote(eps["failedJobs"]))
+
+    def test_fl_excludes_invalid_netimworker_fields(self):
+        # These were rejected by NetWorker as "not valid" job query fields.
+        for bad in ("elapsedTime", "policyName", "saveBytes", "transferredBytes"):
+            self.assertNotIn(bad, nd.JOB_QUERY_FIELDS)
+
+    def test_fl_keeps_core_fields(self):
+        for good in ("clientHostname", "startTime", "completionStatus", "name", "workflowName"):
+            self.assertIn(good, nd.JOB_QUERY_FIELDS)
 
     def test_strip_query_param_removes_only_q(self):
-        path = '/global/jobs?q=startTime%3E%3D%222026-05-29T00%3A00%3A00%22&fl=name,startTime'
+        path = '/global/jobs?q=completionStatus%3A%22Failed%22&fl=name,startTime'
         stripped = nd.strip_query_param(path, "q")
         self.assertNotIn("q=", stripped)
         self.assertIn("fl=", stripped)
-
-    def test_nql_query_time_format(self):
-        import re as _re
-        ts = nd.time.time()
-        s = nd.nql_query_time(ts)
-        self.assertRegex(s, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
-
-    def test_floor_is_before_window_start(self):
-        from urllib.parse import unquote
-        cfg = _make_config("24h")
-        start_ts, _, _ = nd.report_window(cfg)
-        eps = nd.dashboard_endpoints(cfg)
-        # floor must be earlier than the exact window start (margin applied)
-        floor_ts = start_ts - nd.JOBS_QUERY_FLOOR_MARGIN_SECONDS
-        self.assertIn(nd.nql_query_time(floor_ts), unquote(eps["jobs"]))
 
 
 class ActionHistoryMergeTests(unittest.TestCase):

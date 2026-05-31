@@ -4,6 +4,35 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.7] — 2026-05-31
+
+### Fixed
+- Completed jobs still did not appear; `--debug` on the live server revealed
+  two concrete causes in the `/global/jobs` history query, now fixed:
+  1. **Invalid NetWorker query syntax.** The 2.1.6 server-side time window sent
+     `q=startTime>="..."`. NetWorker Query Language supports only
+     `field:value` equality and rejected it with HTTP 400
+     ("A query should be in form of <field>:<value>"). NetWorker has no range
+     operator, so the report window cannot be applied server-side. The window
+     is now enforced entirely client-side by `in_report_window()`; the jobs
+     database is naturally bounded by NetWorker's completed-job retention.
+  2. **Invalid field-list fields.** The `fl` parameter requested
+     `elapsedTime`, `policyName`, `saveBytes`, and `transferredBytes`, which
+     NetWorker rejects as not-valid job fields (HTTP 400), forcing several
+     wasted retry round-trips. `fl` is now limited to the validated set
+     (`clientHostname, startTime, completionStatus, name, message,
+     policyActionName, workflowName, level`); the per-version auto-strip
+     remains as a safety net.
+  With a valid query and field list, `/global/jobs` on the NetWorker server
+  returns the completed-job history, which is merged into the dashboard so the
+  last-24h / week / month job counts populate instead of showing only the
+  live running actions.
+
+### Note
+- nwrestapi is served by the NetWorker server (e.g. `198.51.100.11:9090`), not the
+  NWUI front end (`192.0.2.10:9090`), which returns 404 for `/nwrestapi`. The
+  REST fallback already tries the backup-server host first.
+
 ## [2.1.6] — 2026-05-31
 
 ### Fixed

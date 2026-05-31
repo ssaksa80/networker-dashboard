@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.6"
+APP_VERSION = "2.1.7"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -6769,46 +6769,32 @@ def endpoint(path: str, query: dict[str, str] | None = None) -> str:
     return path
 
 
-def nql_query_time(ts: float) -> str:
-    """Format an epoch timestamp as a NetWorker Query Language datetime literal
-    (server-local, no timezone suffix). Used to bound /global/jobs server-side."""
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%S")
-
-
-# Generous server-side lower-bound margin (hours) applied to the jobs query.
-# NetWorker returns ALL jobs when unfiltered; on a busy server that overruns the
-# response safety limit and the query hard-fails. We bound the volume with a
-# wide startTime floor, then trim to the exact window client-side with
-# in_report_window() (epoch-based, timezone-safe). The margin absorbs any
-# timezone/clock skew between this host and the NetWorker server.
-JOBS_QUERY_FLOOR_MARGIN_SECONDS = 36 * 60 * 60
+# NetWorker /global/jobs field list (the `fl` query param). NetWorker rejects
+# unknown fields with HTTP 400 ("The <field> field is not valid"), so this set
+# is limited to fields the jobs resource actually exposes. Fields such as
+# elapsedTime/policyName/saveBytes/transferredBytes are NOT valid job query
+# fields on NetWorker and were removed. nwui_rest_fallback_items() still
+# auto-strips any field a given NetWorker version rejects, as a safety net.
+JOB_QUERY_FIELDS = (
+    "clientHostname",
+    "startTime",
+    "completionStatus",
+    "name",
+    "message",
+    "policyActionName",
+    "workflowName",
+    "level",
+)
 
 
 def dashboard_endpoints(config: ApiConfig | None = None) -> dict[str, str]:
-    job_fields = ",".join(
-        [
-            "clientHostname",
-            "startTime",
-            "completionStatus",
-            "name",
-            "message",
-            "policyActionName",
-            "policyName",
-            "workflowName",
-            "level",
-            "elapsedTime",
-            "saveBytes",
-            "transferredBytes",
-        ]
-    )
-    job_query: dict[str, str] = {"fl": job_fields}
-    failed_query: dict[str, str] = {"q": 'completionStatus:"Failed"', "fl": job_fields}
-    if config is not None:
-        start_ts, _, _ = report_window(config)
-        floor_ts = start_ts - JOBS_QUERY_FLOOR_MARGIN_SECONDS
-        window_q = f'startTime>="{nql_query_time(floor_ts)}"'
-        job_query = {"q": window_q, "fl": job_fields}
-        failed_query = {"q": f'{window_q} and completionStatus:"Failed"', "fl": job_fields}
+    # NOTE: NetWorker Query Language (the `q` param) supports only field:value
+    # equality — it has NO range/comparison operators, so the report-time window
+    # CANNOT be applied server-side (a startTime>=... query is rejected with
+    # HTTP 400). The jobs database is naturally bounded by NetWorker's completed-
+    # job retention, and the exact report window is enforced client-side by
+    # in_report_window(). `config` is accepted for signature stability.
+    job_fields = ",".join(JOB_QUERY_FIELDS)
     return {
         "clients": endpoint(
             "/global/clients",
@@ -6816,8 +6802,14 @@ def dashboard_endpoints(config: ApiConfig | None = None) -> dict[str, str]:
                 "fl": "hostname,backupType,saveSets,protectionGroups,enabled,aliases",
             },
         ),
-        "jobs": endpoint("/global/jobs", job_query),
-        "failedJobs": endpoint("/global/jobs", failed_query),
+        "jobs": endpoint("/global/jobs", {"fl": job_fields}),
+        "failedJobs": endpoint(
+            "/global/jobs",
+            {
+                "q": 'completionStatus:"Failed"',
+                "fl": job_fields,
+            },
+        ),
         "alerts": endpoint("/global/alerts"),
         "policies": endpoint("/global/protectionpolicies"),
     }
