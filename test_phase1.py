@@ -1,3 +1,4 @@
+import json
 import shutil
 import tempfile
 import threading
@@ -156,6 +157,64 @@ class SnapshotWriteTests(unittest.TestCase):
         tmp = nd.DASHBOARD_SNAPSHOT_FILE.with_suffix(".tmp")
         self.assertFalse(tmp.exists())
         self.assertEqual(nd.load_dashboard_snapshots(), data)
+
+
+class EmailConfigTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._orig_dir = nd.DATA_DIR
+        self._orig_file = nd.EMAIL_CONFIG_FILE
+        nd.DATA_DIR = Path(self._tmpdir)
+        nd.EMAIL_CONFIG_FILE = nd.DATA_DIR / "email_config.json"
+
+    def tearDown(self):
+        nd.DATA_DIR = self._orig_dir
+        nd.EMAIL_CONFIG_FILE = self._orig_file
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _payload(self, schedule_type, recipients, **extra):
+        base = {
+            "smtpHost": "smtp.example.com",
+            "smtpPort": "587",
+            "smtpSecurity": "starttls",
+            "smtpUsername": "user",
+            "smtpPassword": "secret",
+            "smtpFrom": "dash@example.com",
+            "smtpTo": recipients,
+            "scheduleType": schedule_type,
+        }
+        base.update(extra)
+        return base
+
+    def test_alert_and_daily_recipients_stay_separate(self):
+        nd.save_email_config_from_payload(self._payload("alert", "alert@x.com"))
+        nd.save_email_config_from_payload(self._payload("daily_report", "report@x.com"))
+        pub = nd.email_config_public()
+        self.assertIn("alert@x.com", pub["alert"]["recipients"])
+        self.assertIn("report@x.com", pub["dailyReport"]["recipients"])
+        # Saving the daily report must NOT wipe the alert recipients.
+        self.assertNotIn("report@x.com", pub["alert"]["recipients"])
+
+    def test_public_config_never_returns_password(self):
+        nd.save_email_config_from_payload(self._payload("alert", "a@x.com"))
+        pub = nd.email_config_public()
+        self.assertTrue(pub["smtp"]["passwordSaved"])
+        self.assertNotIn("password", pub["smtp"])
+        self.assertNotIn("secret", json.dumps(pub))
+
+    def test_blank_password_preserves_saved_password(self):
+        nd.save_email_config_from_payload(self._payload("alert", "a@x.com"))
+        # Re-save with blank password -> keep the previously stored one.
+        p = self._payload("alert", "a@x.com")
+        p["smtpPassword"] = ""
+        nd.save_email_config_from_payload(p)
+        self.assertEqual(nd.saved_email_smtp_password(), "secret")
+
+    def test_shared_smtp_transport(self):
+        nd.save_email_config_from_payload(self._payload("alert", "a@x.com"))
+        pub = nd.email_config_public()
+        self.assertEqual(pub["smtp"]["host"], "smtp.example.com")
+        self.assertEqual(pub["smtp"]["from"], "dash@example.com")
 
 
 class StaleDashboardNoticeTests(unittest.TestCase):

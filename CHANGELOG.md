@@ -4,6 +4,25 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-05-31
+
+### Added
+- **Saveable email notification configuration.** The email automation popup now
+  has a **Save configuration** button that persists the setup to disk
+  (`data/email_config.json`) so it survives restarts and pre-fills the form on
+  next open. The SMTP password is encrypted at rest and never returned to the
+  browser (only a "saved" indicator); leaving the password blank keeps the
+  previously saved one.
+- **Separate Alert and Daily-report configuration.** The two notification types
+  (**Alert check** and **Daily backup/SLA report**) now keep their own
+  **separate recipient lists** and per-type settings (alert trigger/interval vs
+  report time/theme). The shared SMTP transport is stored once; switching the
+  *Email type* swaps to that type's saved recipients without disturbing the
+  other. Saving or scheduling one type never overwrites the other's recipients.
+- `GET /api/email-config` (UI-safe, password-masked) and a `save` action on
+  `POST /api/alert-automation`. Scheduling a notification also persists its
+  configuration. Saved SMTP password is used as a fallback when scheduling.
+
 ## [2.1.11] — 2026-05-31
 
 ### Performance
