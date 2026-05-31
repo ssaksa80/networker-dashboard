@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.4"
+APP_VERSION = "2.1.5"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -8253,6 +8253,49 @@ def rest_job_as_nwui_action(job: Any) -> dict[str, Any]:
     }
 
 
+def action_dedup_key(item: Any) -> tuple[str, str, int] | None:
+    """Stable identity for a workflow-action run, used to merge the live
+    monitoringactions feed with completed jobs from the NetWorker jobs DB.
+    Normalizes startTime to epoch seconds so ISO/epoch format differences
+    between the two sources collapse to the same key."""
+    if not isinstance(item, dict):
+        return None
+    workflow = str(item.get("workflowName") or item.get("groupName") or "").strip().lower()
+    action = str(item.get("actionName") or item.get("jobType") or item.get("name") or "").strip().lower()
+    start = int(timestamp(first_value(item, "startTime", "started", "start")) or 0)
+    if not workflow and not action and not start:
+        return None
+    return (workflow, action, start)
+
+
+def merge_action_history(live: list[Any], history: list[Any]) -> list[Any]:
+    """Merge live monitoringactions (running set) with completed job history.
+    When the same run appears in both, prefer the terminal (completed) record
+    over the live "running" one so finished jobs are counted correctly."""
+    by_key: dict[tuple[str, str, int], Any] = {}
+    extras: list[Any] = []
+    for item in live:
+        key = action_dedup_key(item)
+        if key is None:
+            extras.append(item)
+            continue
+        by_key[key] = item
+    for item in history:
+        key = action_dedup_key(item)
+        if key is None:
+            extras.append(item)
+            continue
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = item
+            continue
+        existing_running = normalize_nwui_status(existing.get("status")) in ("running", "queued")
+        incoming_running = normalize_nwui_status(item.get("status")) in ("running", "queued")
+        if existing_running and not incoming_running:
+            by_key[key] = item
+    return list(by_key.values()) + extras
+
+
 def rest_fallback_versions(config: ApiConfig) -> tuple[str, ...]:
     if config.api_version != "auto":
         return (config.api_version,)
@@ -9062,11 +9105,55 @@ def build_dashboard_nwui(
                 ),
             }
 
+    # /nwui/api/monitoringactions is the LIVE activity monitor: it returns only
+    # the currently-active workflow actions (status="Running"), not completed
+    # historical runs, and it ignores the requested time window. Completed jobs
+    # for the selected range live in the NetWorker jobs database, reachable via
+    # nwrestapi /global/jobs. Merge that history in so finished backups show up.
+    # Best-effort: a failure here must never break the live dashboard.
+    live_action_count = len(raw_actions)
+    history_action_count = 0
+    if config.password:
+        try:
+            rest_history, history_path = nwui_rest_fallback_items(config, "actions", context)
+            # The live monitor already provides the running/queued set. Keep only
+            # completed/terminal runs from the jobs DB so the union is clean and
+            # currently-running jobs are not counted twice.
+            rest_history = [
+                item
+                for item in rest_history
+                if normalize_nwui_status(item.get("status")) not in ("running", "queued")
+            ]
+            history_action_count = len(rest_history)
+            raw_actions = merge_action_history(raw_actions, rest_history)
+            sources["monitoringActionsHistory"] = {
+                "ok": True,
+                "path": history_path,
+                "count": history_action_count,
+                "detail": "Completed job history merged from the NetWorker jobs database.",
+            }
+        except RestApiError as exc:
+            sources["monitoringActionsHistory"] = {
+                "ok": False,
+                "path": "/nwrestapi/global/jobs",
+                "status": exc.status_code,
+                "error": safe_log_text(exc.message, 300),
+                "userMessage": "Completed job history is unavailable; showing live backup activity only.",
+                "severity": "info",
+                "displayWarning": False,
+                "diagnosticOnly": True,
+            }
+
     jobs = [job for job in (project_nwui_job(item) for item in raw_actions) if job]
     jobs = sorted(jobs, key=lambda item: item.get("started") or "", reverse=True)
     clone_jobs = [job for job in jobs if is_clone_job(job)]
     backup_jobs = [job for job in jobs if not is_clone_job(job)]
     if APP_DEBUG:
+        debug_log(
+            "NWUI action merge: "
+            f"liveActions={live_action_count} historyActions={history_action_count} "
+            f"mergedActions={len(raw_actions)}"
+        )
         raw_status = Counter(
             str(item.get("status") or "").lower()
             for item in raw_actions
@@ -9131,7 +9218,9 @@ def build_dashboard_nwui(
     warning_source_errors = sum(
         1
         for name, item in sources.items()
-        if name not in {"nwuiLogin", "monitoringActions"} and not item.get("ok")
+        if name not in {"nwuiLogin", "monitoringActions"}
+        and not item.get("ok")
+        and not item.get("diagnosticOnly")
     )
     health = (
         "critical"

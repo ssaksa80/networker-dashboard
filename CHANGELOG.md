@@ -4,6 +4,29 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.5] — 2026-05-31
+
+### Fixed
+- Last-24h (and other ranges) showed only currently-running jobs and no
+  completed backups. Root cause: `/nwui/api/monitoringactions` is the live
+  Activity Monitor — it returns only the currently-active workflow actions
+  (all `status=Running`, `completionTime=None`) and ignores the requested time
+  window, so finished daily runs never appeared. The NWUI dashboard now also
+  pulls completed job history from the NetWorker jobs database
+  (`nwrestapi /global/jobs`) and merges it with the live action set:
+  - completed/terminal runs come from the jobs DB (window-honored),
+  - running/queued runs come from the live monitor,
+  - the two are de-duplicated by workflow+action+normalized-start-time, with
+    terminal records preferred over a stale "running" record on collision.
+  Best-effort and fully guarded: if the jobs-DB query fails, the dashboard
+  falls back to live-activity-only (recorded as an info-level diagnostic
+  source, never a visible warning) exactly as before.
+
+### Added
+- `--debug` instrumentation for the NWUI activity pipeline: logs the report
+  window, live vs history vs merged action counts, raw/normalized status
+  breakdowns, and field samples of the first raw action records.
+
 ## [2.1.4] — 2026-05-31
 
 ### Fixed
