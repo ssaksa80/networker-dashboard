@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.11"
+APP_VERSION = "2.2.0"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -141,6 +141,7 @@ SESSION_KEY_FILE = DATA_DIR / ".session_key"
 SESSION_PERSISTENCE_FILE = DATA_DIR / "sessions.json"
 LAST_GOOD_DASHBOARD_FILE = DATA_DIR / "last_good_dashboard.json"
 PROFILES_FILE = DATA_DIR / "profiles.json"
+EMAIL_CONFIG_FILE = DATA_DIR / "email_config.json"
 AUTH_KEY_FILE = DATA_DIR / ".auth_key"
 AUTH_CONFIG_FILE = DATA_DIR / "auth.json"
 COOKIE_NAME = "nwdash_auth"
@@ -3064,9 +3065,16 @@ HTML_PAGE = r"""<!doctype html>
           </div>
           <div class="automation-actions">
             <button id="alertScheduleBtn" class="primary" type="button">Schedule selected report</button>
+            <button id="emailSaveConfigBtn" class="ghost" type="button">Save configuration</button>
             <button id="alertTestBtn" class="ghost" type="button">Send test</button>
             <button id="alertStopBtn" class="ghost" type="button">Stop selected schedule</button>
           </div>
+          <p class="automation-hint" style="margin:0 16px 12px;color:var(--muted);font-size:12px">
+            SMTP settings are shared. <strong>Alert check</strong> and
+            <strong>Daily backup/SLA report</strong> keep separate recipients and
+            settings — switch <em>Email type</em> to edit each. Save configuration
+            stores both independently and survives restarts.
+          </p>
         </div>
       </div>
 
@@ -3234,6 +3242,8 @@ HTML_PAGE = r"""<!doctype html>
     const alertScheduleBtn = document.getElementById("alertScheduleBtn");
     const alertTestBtn = document.getElementById("alertTestBtn");
     const alertStopBtn = document.getElementById("alertStopBtn");
+    const emailSaveConfigBtn = document.getElementById("emailSaveConfigBtn");
+    const emailScheduleType = document.getElementById("emailScheduleType");
     const alertAutomationStatus = document.getElementById("alertAutomationStatus");
     const smtpSecurity = document.getElementById("smtpSecurity");
     const smtpPort = document.getElementById("smtpPort");
@@ -4218,10 +4228,53 @@ HTML_PAGE = r"""<!doctype html>
       smtpPassword.placeholder = isPlainSmtp ? "Disabled for SMTP without authentication" : "";
     }
 
+    let emailConfigCache = null;
+
+    function applyEmailTypeBlock() {
+      const c = emailConfigCache;
+      if (!c) return;
+      const smtpToEl = document.getElementById("smtpTo");
+      if (emailScheduleType.value === "daily_report") {
+        smtpToEl.value = c.dailyReport.recipients || "";
+        document.getElementById("dailyReportTime").value = c.dailyReport.reportTime || "08:00";
+        if (c.dailyReport.theme) themeSelect.value = c.dailyReport.theme;
+      } else {
+        smtpToEl.value = c.alert.recipients || "";
+        document.getElementById("alertTrigger").value = c.alert.trigger || "critical";
+        document.getElementById("alertIntervalMinutes").value = c.alert.intervalMinutes || 60;
+      }
+    }
+
+    function applyEmailConfig() {
+      const c = emailConfigCache;
+      if (!c) return;
+      document.getElementById("smtpHost").value = c.smtp.host || "";
+      smtpPort.value = c.smtp.port || "587";
+      smtpSecurity.value = c.smtp.security || "starttls";
+      smtpUsername.value = c.smtp.username || "";
+      document.getElementById("smtpFrom").value = c.smtp.from || "";
+      smtpPassword.value = "";
+      smtpPassword.placeholder = c.smtp.passwordSaved ? "Saved — leave blank to keep" : "";
+      applyEmailTypeBlock();
+      syncSmtpSecurityFields();
+    }
+
+    async function loadEmailConfigIntoForm() {
+      try {
+        const r = await fetch("/api/email-config", {cache: "no-store"});
+        const d = await r.json();
+        if (r.ok && d.ok) {
+          emailConfigCache = d;
+          applyEmailConfig();
+        }
+      } catch (_) { /* keep current form values */ }
+    }
+
     function openAlertAutomationModal() {
       alertAutomationModal.classList.add("open");
       alertAutomationModal.setAttribute("aria-hidden", "false");
       syncSmtpSecurityFields();
+      loadEmailConfigIntoForm();
       setTimeout(() => document.getElementById("smtpHost").focus(), 0);
     }
 
@@ -4276,7 +4329,8 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     async function submitAlertAutomation(action) {
-      if (!sessionId && action !== "stop") {
+      // Saving config does not need a live session; scheduling/testing does.
+      if (!sessionId && action !== "stop" && action !== "save") {
         alertAutomationStatus.textContent = "Connect before scheduling email automations";
         setStatus("Connect first", "warn");
         return;
@@ -4285,6 +4339,7 @@ HTML_PAGE = r"""<!doctype html>
       alertScheduleBtn.disabled = true;
       alertTestBtn.disabled = true;
       alertStopBtn.disabled = true;
+      emailSaveConfigBtn.disabled = true;
       try {
         const response = await fetch("/api/alert-automation", {
           method: "POST",
@@ -4298,11 +4353,15 @@ HTML_PAGE = r"""<!doctype html>
           const message = data.error || `Alert automation failed with HTTP ${response.status}`;
           throw new Error(debugText ? `${message}\\n${debugText}` : message);
         }
+        // Persisting (save, or start which also saves) returns the refreshed
+        // config — update the cache so the per-type recipients stay in sync.
+        if (data.config) emailConfigCache = data.config;
         const successDebug = action === "test" ? smtpDebugSummary(data.smtpDebug) : "";
         alertAutomationStatus.textContent = successDebug
           ? `${data.message || "Alert automation updated"}\\n${successDebug}`
           : data.message || "Alert automation updated";
         if (action === "test") setStatus("Test email sent", "ok");
+        if (action === "save") setStatus("Email configuration saved", "ok");
         if (action === "start") setStatus(payload.scheduleType === "daily_report" ? "Report scheduled" : "Alerts scheduled", "ok");
         if (action === "stop") setStatus("Schedule stopped", "neutral");
       } catch (error) {
@@ -4313,6 +4372,7 @@ HTML_PAGE = r"""<!doctype html>
         alertScheduleBtn.disabled = false;
         alertTestBtn.disabled = false;
         alertStopBtn.disabled = false;
+        emailSaveConfigBtn.disabled = false;
       }
     }
 
@@ -4571,6 +4631,14 @@ HTML_PAGE = r"""<!doctype html>
     alertStopBtn.addEventListener("click", () => {
       submitAlertAutomation("stop");
     });
+
+    emailSaveConfigBtn.addEventListener("click", () => {
+      submitAlertAutomation("save");
+    });
+
+    // Switching Email type swaps to that type's separately-saved recipients and
+    // settings without losing the other type's values.
+    emailScheduleType.addEventListener("change", applyEmailTypeBlock);
 
     snapshotSaveBtn.addEventListener("click", () => { saveLocalSnapshot(); });
     snapshotCompareBtn.addEventListener("click", () => { compareLocalSnapshots(); });
@@ -9791,6 +9859,108 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Persisted email-notification configuration. The SMTP transport is shared, but
+# the "alert" and "daily_report" notification types keep SEPARATE recipient
+# lists and per-type settings so configuring one never overwrites the other.
+EMAIL_CONFIG_LOCK = threading.Lock()
+
+
+def load_email_config() -> dict[str, Any]:
+    try:
+        raw = json.loads(EMAIL_CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def write_email_config(cfg: dict[str, Any]) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = EMAIL_CONFIG_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cfg, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(EMAIL_CONFIG_FILE)
+    except OSError:
+        pass
+
+
+def email_config_public() -> dict[str, Any]:
+    """UI-facing config. Never returns the SMTP password — only whether one is
+    saved. Recipients are returned per-type as a '; '-joined string."""
+    cfg = load_email_config()
+    smtp = cfg.get("smtp") if isinstance(cfg.get("smtp"), dict) else {}
+    types = cfg.get("types") if isinstance(cfg.get("types"), dict) else {}
+    alert = types.get("alert") if isinstance(types.get("alert"), dict) else {}
+    daily = types.get("daily_report") if isinstance(types.get("daily_report"), dict) else {}
+    return {
+        "ok": True,
+        "smtp": {
+            "host": str(smtp.get("host") or ""),
+            "port": int(smtp.get("port") or 587),
+            "security": str(smtp.get("security") or "starttls"),
+            "username": str(smtp.get("username") or ""),
+            "from": str(smtp.get("from") or ""),
+            "passwordSaved": bool(smtp.get("encrypted_password")),
+        },
+        "alert": {
+            "recipients": "; ".join(alert.get("recipients") or []),
+            "trigger": str(alert.get("trigger") or "critical"),
+            "intervalMinutes": int(alert.get("interval_minutes") or 60),
+        },
+        "dailyReport": {
+            "recipients": "; ".join(daily.get("recipients") or []),
+            "reportTime": str(daily.get("report_time") or "08:00"),
+            "theme": str(daily.get("theme") or "default"),
+        },
+    }
+
+
+def saved_email_smtp_password() -> str:
+    smtp = load_email_config().get("smtp")
+    if isinstance(smtp, dict) and smtp.get("encrypted_password"):
+        return decrypt_process_secret(str(smtp.get("encrypted_password")))
+    return ""
+
+
+def save_email_config_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist the shared SMTP transport plus the selected notification type's
+    recipients/settings, preserving the OTHER type's saved recipients."""
+    settings = parse_smtp_settings(payload)
+    schedule_type = settings["schedule_type"]
+    with EMAIL_CONFIG_LOCK:
+        cfg = load_email_config()
+        prev_smtp = cfg.get("smtp") if isinstance(cfg.get("smtp"), dict) else {}
+        # Keep the previously saved password if the form left it blank.
+        encrypted = str(prev_smtp.get("encrypted_password") or "")
+        if settings["smtp_password"]:
+            encrypted = encrypt_process_secret(settings["smtp_password"])
+        smtp = {
+            "host": settings["smtp_host"],
+            "port": settings["smtp_port"],
+            "security": settings["smtp_security"],
+            "username": settings["smtp_username"],
+            "from": settings["smtp_from"],
+            "encrypted_password": encrypted,
+        }
+        types = cfg.get("types") if isinstance(cfg.get("types"), dict) else {}
+        if not isinstance(types, dict):
+            types = {}
+        if schedule_type == "daily_report":
+            types["daily_report"] = {
+                "recipients": settings["recipients"],
+                "report_time": settings["report_time"],
+                "theme": settings["theme"],
+            }
+        else:
+            types["alert"] = {
+                "recipients": settings["recipients"],
+                "trigger": settings["trigger"],
+                "interval_minutes": settings["interval_minutes"],
+            }
+        new_cfg = {"smtp": smtp, "types": types}
+        write_email_config(new_cfg)
+    return email_config_public()
+
+
 def dashboard_alert_lines(dashboard: dict[str, Any]) -> tuple[str, list[str]]:
     summary = dashboard.get("summary") or {}
     protection = dashboard.get("serverProtectionJob") or {}
@@ -10923,8 +11093,15 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
             ),
             "activeAutomations": active_automation_summary(session_id),
         }
+    if action == "save":
+        config = save_email_config_from_payload(payload)
+        return HTTPStatus.OK, {
+            "ok": True,
+            "message": "Email notification configuration saved.",
+            "config": config,
+        }
     if action not in ("start", "test"):
-        raise BadRequest("Alert automation action must be start, test, or stop.")
+        raise BadRequest("Alert automation action must be start, test, save, or stop.")
     if not session_id or not _session_exists(session_id):
         raise BadRequest("A live dashboard session is required before scheduling email alerts.")
     settings = parse_smtp_settings(payload)
@@ -10932,7 +11109,14 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
     existing = existing_smtp_automation(session_id, settings["schedule_type"])
     smtp_password = settings["smtp_password"] or (
         decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
-    )
+    ) or saved_email_smtp_password()
+    # Scheduling a notification also persists its configuration so it survives a
+    # restart and pre-fills the form next time.
+    if action == "start":
+        try:
+            save_email_config_from_payload(payload)
+        except BadRequest:
+            pass
     automation = AlertAutomation(
         automation_id=automation_id,
         session_id=session_id,
@@ -11831,6 +12015,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if path == "/api/profiles":
                 with PROFILES_LOCK:
                     self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(load_profiles())})
+                return
+            if path == "/api/email-config":
+                self._send_json(HTTPStatus.OK, email_config_public())
                 return
             if path == "/api/stream":
                 wfile = self.wfile
