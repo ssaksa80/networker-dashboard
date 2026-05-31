@@ -4,6 +4,17 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.1] — 2026-05-31
+
+### Fixed
+- Scheduled dashboard report emails ignored the selected theme color on the
+  brand/header card. Scheduled reports forced a fixed dark-green header
+  (`#003b24`) while the body cards and the PNG attachment followed the theme —
+  so the header never matched. The emailed report now uses the chosen theme's
+  brand color throughout (`dashboard_report_email` and `report_status_model`),
+  consistent with the attached snapshot. Removed the now-unused
+  `SCHEDULED_REPORT_DARK_GREEN` constant.
+
 ## [2.2.0] — 2026-05-31
 
 ### Added

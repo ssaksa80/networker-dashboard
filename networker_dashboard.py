@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -126,7 +126,6 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
     "harbor": {"bg": "#eef3f4", "surface": "#ffffff", "surface2": "#f5f8f9", "ink": "#17242a", "muted": "#5e7077", "line": "#d0dce0", "brand": "#235f73", "brandInk": "#ffffff", "green": "#24764f", "red": "#b63548", "amber": "#9d6e08", "blue": "#335fa3"},
     "ember": {"bg": "#f6f1ee", "surface": "#ffffff", "surface2": "#fbf7f4", "ink": "#2a1f1a", "muted": "#75665f", "line": "#e2d4cd", "brand": "#8d4a36", "brandInk": "#ffffff", "green": "#26734a", "red": "#b23545", "amber": "#9b6a10", "blue": "#3c67a2"},
 }
-SCHEDULED_REPORT_DARK_GREEN = "#003b24"
 CUSTOM_REPORT_RANGE = "custom"
 DEFAULT_REPORT_RANGE = "24h"
 SESSION_TTL_SECONDS = 365 * 24 * 60 * 60  # 1 year — sessions persist until server restart or explicit clear
@@ -10277,8 +10276,8 @@ def report_status_model(dashboard: dict[str, Any]) -> dict[str, Any]:
         "health": health,
         "protection": protection,
         "palette": palette,
-        "brand_background": SCHEDULED_REPORT_DARK_GREEN if dashboard.get("scheduledReport") else palette["brand"],
-        "brand_ink": "#ffffff" if dashboard.get("scheduledReport") else palette["brandInk"],
+        "brand_background": palette["brand"],
+        "brand_ink": palette["brandInk"],
         "successful": successful,
         "failed": failed,
         "active": active,
@@ -10605,8 +10604,10 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
     health = dashboard.get("serverHealth") or {}
     protection = dashboard.get("serverProtectionJob") or dashboard.get("maintenanceBackup") or {}
     palette = report_theme_palette(dashboard.get("theme") or target.get("theme"))
-    brand_background = SCHEDULED_REPORT_DARK_GREEN if dashboard.get("scheduledReport") else palette["brand"]
-    brand_ink = "#ffffff" if dashboard.get("scheduledReport") else palette["brandInk"]
+    # The brand/header card follows the selected theme — including scheduled
+    # reports, so the emailed report matches the chosen dashboard theme color.
+    brand_background = palette["brand"]
+    brand_ink = palette["brandInk"]
     rows = dashboard_report_rows(dashboard)
     plain = "\n".join(f"{label}: {value}" for label, value in rows)
     total_jobs = report_int(summary.get("slaTotalJobs", summary.get("totalJobs")))

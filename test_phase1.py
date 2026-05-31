@@ -217,6 +217,32 @@ class EmailConfigTests(unittest.TestCase):
         self.assertEqual(pub["smtp"]["from"], "dash@example.com")
 
 
+class ScheduledReportThemeTests(unittest.TestCase):
+    def _dashboard(self, theme):
+        return {
+            "theme": theme,
+            "scheduledReport": True,
+            "summary": {"successfulJobs": 5, "failedJobs": 1, "slaTotalJobs": 6},
+            "target": {},
+            "serverHealth": {},
+            "serverProtectionJob": {},
+        }
+
+    def test_scheduled_email_uses_theme_brand_not_forced_green(self):
+        _, html = nd.dashboard_report_email(self._dashboard("midnight"))
+        brand = nd.THEME_PALETTES["midnight"]["brand"]
+        self.assertIn(brand, html)
+        self.assertNotIn("#003b24", html)  # old forced dark green
+
+    def test_default_theme_brand(self):
+        _, html = nd.dashboard_report_email(self._dashboard("default"))
+        self.assertIn(nd.THEME_PALETTES["default"]["brand"], html)
+
+    def test_status_model_brand_follows_palette(self):
+        model = nd.report_status_model(self._dashboard("ocean"))
+        self.assertEqual(model["brand_background"], nd.THEME_PALETTES["ocean"]["brand"])
+
+
 class StaleDashboardNoticeTests(unittest.TestCase):
     def test_stale_dashboard_uses_info_diagnostic_not_source_warning(self):
         cached = {
