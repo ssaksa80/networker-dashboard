@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.1.2"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -3924,8 +3924,12 @@ HTML_PAGE = r"""<!doctype html>
       ].join("");
     }
 
+    function sourceNeedsVisibleWarning(item) {
+      return item && !item.ok && item.displayWarning !== false && item.severity !== "info";
+    }
+
     function failedSourceSummary(sources) {
-      const failed = Object.entries(sources || {}).filter(([, item]) => !item.ok);
+      const failed = Object.entries(sources || {}).filter(([, item]) => sourceNeedsVisibleWarning(item));
       if (!failed.length) return "";
       return failed.map(([name, item]) => {
         const path = item.path || name;
@@ -4012,8 +4016,11 @@ HTML_PAGE = r"""<!doctype html>
       const rangeLabel = data.summary?.rangeLabel ? ` - ${data.summary.rangeLabel}` : "";
       generatedAt.textContent = data.generatedAt ? `Updated ${data.generatedAt}${rangeLabel}` : `Updated now${rangeLabel}`;
 
-      const failedSources = Object.values(data.sources || {}).filter((item) => !item.ok);
-      if (failedSources.length) {
+      const failedSources = Object.values(data.sources || {}).filter((item) => sourceNeedsVisibleWarning(item));
+      if (data.stale && data.reportNotice) {
+        notice.textContent = data.reportNotice;
+        notice.classList.add("show");
+      } else if (failedSources.length) {
         notice.textContent = `Backup data loaded with ${failedSources.length} source warning(s): ${failedSourceSummary(data.sources)}`;
         notice.classList.add("show");
       } else {
@@ -4022,7 +4029,8 @@ HTML_PAGE = r"""<!doctype html>
       }
 
       const health = data.summary?.health || "unknown";
-      if (health === "critical") setStatus("Attention required", "bad");
+      if (data.stale) setStatus("Using cached dashboard", "warn");
+      else if (health === "critical") setStatus("Attention required", "bad");
       else if (health === "warning") setStatus("Connected with warnings", "warn");
       else setStatus("Connected", "ok");
 
@@ -5827,9 +5835,12 @@ def stale_dashboard_from_cache(
         **sources,
         "liveRefresh": {
             "ok": False,
-            "path": "last-successful-dashboard",
+            "path": "live-refresh",
             "error": safe_log_text(detail, 500),
             "userMessage": stale["reportNotice"],
+            "severity": "info",
+            "displayWarning": False,
+            "diagnosticOnly": True,
         },
     }
     summary = stale.get("summary") if isinstance(stale.get("summary"), dict) else {}
