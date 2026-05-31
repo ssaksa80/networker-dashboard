@@ -4,6 +4,25 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.4] — 2026-05-31
+
+### Fixed
+- Account dropdown menu rendered as an empty white box. The buttons inherited
+  the top bar's white-on-dark styling (`color:#fff`) but the dropdown surface
+  is white, making them invisible. Dropdown buttons now use `var(--ink)` text
+  on `var(--surface-2)` with themed hover/danger states, so they are readable
+  in every theme. Regression from the 2.1.0 collapsible-toolbar refactor.
+
+## [2.1.3] — 2026-05-31
+
+### Fixed
+- Backup SLA panel no longer shows "No backup jobs ran in this range" when
+  backup jobs are actively running. The panel now reads
+  "N job(s) currently running — SLA pending" until jobs complete.
+- NWUI path: `totalJobs` in the dashboard summary now includes active/running
+  jobs (previously only counted completed jobs), fixing snapshot metrics and
+  report totals when jobs are mid-flight.
+
 ## [2.1.2] — 2026-05-31
 
 ### Fixed
