@@ -217,6 +217,19 @@ class EmailConfigTests(unittest.TestCase):
         self.assertEqual(pub["smtp"]["from"], "dash@example.com")
 
 
+class SeparateFailedMetricsTests(unittest.TestCase):
+    def test_failed_metric_tiles_present(self):
+        for el in ("metricFailed", "metricFailedRestores", "metricFailedClones"):
+            self.assertIn(el, nd.HTML_PAGE)
+        self.assertIn("Failed Backups", nd.HTML_PAGE)
+        self.assertIn("Failed Restores", nd.HTML_PAGE)
+        self.assertIn("Failed Clones", nd.HTML_PAGE)
+
+    def test_update_metrics_wires_failed_breakdown(self):
+        self.assertIn("summary.recoveryFailed", nd.HTML_PAGE)
+        self.assertIn("summary.cloneFailed", nd.HTML_PAGE)
+
+
 class UiThemePersistenceTests(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
