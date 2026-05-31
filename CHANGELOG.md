@@ -4,6 +4,24 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.6] — 2026-05-31
+
+### Fixed
+- Completed jobs from the selected range still did not appear on busy
+  NetWorker servers. Root cause: the `/global/jobs` query had **no
+  server-side time filter**, so NetWorker returned its entire jobs database.
+  On an active server (e.g. ~1,979 jobs/24h, hundreds of thousands all-time)
+  the response overran the 8 MB safety guard in `read_limited()` and the whole
+  query hard-failed with HTTP 502, leaving the dashboard with live activity
+  only. The jobs query is now bounded server-side with a NetWorker Query
+  Language `startTime>=` floor derived from the report window (with a generous
+  36 h margin for timezone/clock skew); the exact range is still trimmed
+  client-side by `in_report_window()`. This makes "last 24 h / week / month"
+  return the full completed-job history the way NetWorker (and DPA) report it.
+- If a NetWorker version rejects the time-window query syntax (HTTP 400), the
+  REST fallback now drops the `q` filter once and retries unfiltered, so
+  smaller deployments keep working unchanged.
+
 ## [2.1.5] — 2026-05-31
 
 ### Fixed

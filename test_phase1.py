@@ -210,6 +210,52 @@ class AccountMenuContrastTests(unittest.TestCase):
         self.assertIn(".account-menu .topbar-button.danger", nd.HTML_PAGE)
 
 
+def _make_config(report_range="24h"):
+    return nd.ApiConfig(
+        rest_api_host="10.0.0.1", rest_api_port=9090,
+        backup_server_host="10.0.0.2", backup_server_port=9090,
+        username="u", password="p", api_mode="nwui", api_version="auto",
+        report_range=report_range, custom_start_date="", custom_end_date="",
+        use_wmi_health=False, wmi_username="", wmi_password="",
+        timeout_seconds=30, verify_tls=False, use_authc_header=False,
+    )
+
+
+class JobsWindowQueryTests(unittest.TestCase):
+    def test_endpoints_without_config_have_no_time_filter(self):
+        eps = nd.dashboard_endpoints()
+        self.assertNotIn("q=", eps["jobs"])  # backward compatible
+
+    def test_endpoints_with_config_inject_starttime_floor(self):
+        eps = nd.dashboard_endpoints(_make_config("24h"))
+        self.assertIn("startTime", eps["jobs"])
+        self.assertIn("q=", eps["jobs"])
+        # failedJobs keeps the completionStatus filter AND the time floor
+        self.assertIn("completionStatus", eps["failedJobs"])
+        self.assertIn("startTime", eps["failedJobs"])
+
+    def test_strip_query_param_removes_only_q(self):
+        path = '/global/jobs?q=startTime%3E%3D%222026-05-29T00%3A00%3A00%22&fl=name,startTime'
+        stripped = nd.strip_query_param(path, "q")
+        self.assertNotIn("q=", stripped)
+        self.assertIn("fl=", stripped)
+
+    def test_nql_query_time_format(self):
+        import re as _re
+        ts = nd.time.time()
+        s = nd.nql_query_time(ts)
+        self.assertRegex(s, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+
+    def test_floor_is_before_window_start(self):
+        from urllib.parse import unquote
+        cfg = _make_config("24h")
+        start_ts, _, _ = nd.report_window(cfg)
+        eps = nd.dashboard_endpoints(cfg)
+        # floor must be earlier than the exact window start (margin applied)
+        floor_ts = start_ts - nd.JOBS_QUERY_FLOOR_MARGIN_SECONDS
+        self.assertIn(nd.nql_query_time(floor_ts), unquote(eps["jobs"]))
+
+
 class ActionHistoryMergeTests(unittest.TestCase):
     def test_dedup_key_normalizes_time_formats(self):
         iso = {"workflowName": "WF", "actionName": "backup", "startTime": "2026-05-21T17:00:02.000Z"}
