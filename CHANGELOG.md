@@ -4,6 +4,27 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.8] — 2026-05-31
+
+### Fixed
+- Job history still came back empty even after the query/field fixes. With a
+  valid query, NetWorker returned the **entire** jobs database (it has no
+  server-side time filter), and the response blew past the 8 MB safety guard in
+  `read_limited()`, which raised `502 "REST API response exceeded dashboard
+  safety limit."` *inside* the download — silently, before any success/error
+  log line — so each version attempt aborted and `historyActions` stayed 0.
+  The jobs-history fetch now uses a much higher response ceiling
+  (`MAX_JOBS_RESPONSE_BYTES`, 64 MB) and a longer read timeout (≥120 s), and
+  logs a clear `REST GET too-large` line if a response still overruns it. The
+  full set is trimmed to the report window client-side as before. This applies
+  to both the NWUI history merge and the REST-mode jobs/failedJobs fetches.
+
+### Known limitation
+- Because NetWorker cannot filter `/global/jobs` by time, very large windows on
+  very busy servers (e.g. a year of history) can still exceed even the 64 MB
+  ceiling. Day/week/month ranges are unaffected. A future enhancement may add
+  incremental/streamed parsing if NetWorker exposes job pagination.
+
 ## [2.1.7] — 2026-05-31
 
 ### Fixed

@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.7"
+APP_VERSION = "2.1.8"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -72,6 +72,11 @@ MAX_CONNECTIONS = DEFAULT_MAX_CONNECTIONS
 SERVER_HEALTH_REFRESH_SECONDS = 60
 MAX_POST_BYTES = 128 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# NetWorker has no server-side time filter for /global/jobs, so the whole jobs
+# database (bounded only by NetWorker's completed-job retention) is returned and
+# trimmed to the report window client-side. On busy servers that easily exceeds
+# the default response guard, so the jobs-history fetch gets a higher ceiling.
+MAX_JOBS_RESPONSE_BYTES = 64 * 1024 * 1024
 TABLE_LIMIT = 80
 HOST_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]+$")
 API_VERSION_PATTERN = re.compile(r"^v[0-9]+$")
@@ -6964,13 +6969,22 @@ def fetch_json(
     timeout: int,
     context: ssl.SSLContext,
     label: str,
+    max_bytes: int = MAX_RESPONSE_BYTES,
 ) -> Any:
     request = Request(url, headers=headers, method="GET")
     started = time.monotonic()
     debug_log(f"REST GET start source={label} url={compact_url_for_log(url)} timeout={timeout}s")
     try:
         with urlopen(request, timeout=timeout, context=context) as response:
-            raw = read_limited(response, MAX_RESPONSE_BYTES)
+            try:
+                raw = read_limited(response, max_bytes)
+            except RestApiError:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                debug_log(
+                    f"REST GET too-large source={label} limitBytes={max_bytes} "
+                    f"elapsedMs={elapsed_ms}"
+                )
+                raise
             elapsed_ms = int((time.monotonic() - started) * 1000)
             debug_log(
                 f"REST GET ok source={label} status={response.status} "
@@ -7633,7 +7647,12 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
     sources: dict[str, dict[str, Any]] = {}
 
     def load(name: str, path: str) -> tuple[str, Any]:
-        return name, fetch_json(base_url + path, headers, config.timeout_seconds, context, name)
+        is_jobs = name in ("jobs", "failedJobs")
+        load_timeout = max(config.timeout_seconds, 120) if is_jobs else config.timeout_seconds
+        load_max_bytes = MAX_JOBS_RESPONSE_BYTES if is_jobs else MAX_RESPONSE_BYTES
+        return name, fetch_json(
+            base_url + path, headers, load_timeout, context, name, max_bytes=load_max_bytes
+        )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(paths))) as executor:
         futures = {
@@ -8359,12 +8378,19 @@ def nwui_rest_fallback_items(
             url = api_base_url_for_version(fallback_config, version) + path
             while True:
                 try:
+                    # The jobs database has no server-side time filter and can be
+                    # large on busy servers; allow a higher response ceiling and a
+                    # longer read timeout for it than for small resources.
+                    is_jobs = target == "actions"
+                    fetch_timeout = max(fallback_config.timeout_seconds, 120) if is_jobs else fallback_config.timeout_seconds
+                    fetch_max_bytes = MAX_JOBS_RESPONSE_BYTES if is_jobs else MAX_RESPONSE_BYTES
                     data = fetch_json(
                         url,
                         headers,
-                        fallback_config.timeout_seconds,
+                        fetch_timeout,
                         context,
                         f"nwuiFallback:{source_name}:{endpoint_host}:{version}",
+                        max_bytes=fetch_max_bytes,
                     )
                     preferred_key = "jobs" if target == "actions" else "policies"
                     items = collection_from(data, preferred_key)
