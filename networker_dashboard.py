@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -136,6 +136,7 @@ APP_BASE_DIR = Path(sys.executable).parent.resolve() if getattr(sys, "frozen", F
 DATA_DIR = APP_BASE_DIR / "data"
 DASHBOARD_SNAPSHOT_FILE = DATA_DIR / "networker_snapshots.json"
 AUTO_SNAPSHOT_FILE = DATA_DIR / "auto_snapshot_config.json"
+UI_PREFS_FILE = DATA_DIR / "ui_prefs.json"
 SESSION_KEY_FILE = DATA_DIR / ".session_key"
 SESSION_PERSISTENCE_FILE = DATA_DIR / "sessions.json"
 LAST_GOOD_DASHBOARD_FILE = DATA_DIR / "last_good_dashboard.json"
@@ -4209,6 +4210,16 @@ HTML_PAGE = r"""<!doctype html>
       themeSelect.value = value;
       try {
         localStorage.setItem("nw_dashboard_theme", value);
+      } catch (error) {}
+      // Persist the current theme server-side so background-scheduled report
+      // emails use the live theme dynamically (fire-and-forget).
+      try {
+        fetch("/api/ui-theme", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({theme: value}),
+          cache: "no-store",
+        }).catch(() => {});
       } catch (error) {}
     }
 
@@ -9717,6 +9728,28 @@ def save_auto_snapshot_config(enabled: bool) -> None:
     AUTO_SNAPSHOT_FILE.write_text(json.dumps({"enabled": enabled}), encoding="utf-8")
 
 
+# Current dashboard theme, persisted server-side so background-scheduled report
+# emails use whatever theme the dashboard is currently set to (dynamic), rather
+# than the theme frozen at schedule time.
+UI_THEME_LOCK = threading.Lock()
+
+
+def load_ui_theme() -> str:
+    try:
+        raw = UI_PREFS_FILE.read_text(encoding="utf-8").strip()
+        return parse_theme(json.loads(raw).get("theme"))
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return ""
+
+
+def save_ui_theme(theme: str) -> str:
+    resolved = parse_theme(theme)
+    with UI_THEME_LOCK:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        UI_PREFS_FILE.write_text(json.dumps({"theme": resolved}), encoding="utf-8")
+    return resolved
+
+
 def _auto_snapshot_once() -> None:
     if not load_auto_snapshot_config():
         return
@@ -11018,7 +11051,10 @@ def run_alert_automation(automation_id: str) -> None:
                     "Live scheduled refresh could not load backup job data; this email uses the last successful "
                     f"dashboard snapshot. Refresh error: {source_error}"
                 )
-            dashboard["theme"] = automation.theme
+            # Use the current dashboard theme (dynamic) so the report matches
+            # whatever theme is set now, falling back to the theme captured when
+            # the schedule was created.
+            dashboard["theme"] = load_ui_theme() or automation.theme
             dashboard["scheduledReport"] = True
             plain, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
             report_password = decrypt_process_secret(automation.encrypted_smtp_password)
@@ -12020,6 +12056,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if path == "/api/email-config":
                 self._send_json(HTTPStatus.OK, email_config_public())
                 return
+            if path == "/api/ui-theme":
+                self._send_json(HTTPStatus.OK, {"ok": True, "theme": load_ui_theme() or "default"})
+                return
             if path == "/api/stream":
                 wfile = self.wfile
                 if not _sse_register(wfile):
@@ -12099,13 +12138,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         allowed = {"/api/dashboard", "/api/export", "/api/server-health",
                    "/api/alert-automation", "/api/snapshots",
-                   "/api/share", "/api/multi-server", "/api/profiles"}
+                   "/api/share", "/api/multi-server", "/api/profiles",
+                   "/api/ui-theme"}
         if path not in allowed:
             self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
             return
 
         try:
             payload = self._read_json_body()
+            if path == "/api/ui-theme":
+                theme = save_ui_theme(payload.get("theme"))
+                self._send_json(HTTPStatus.OK, {"ok": True, "theme": theme})
+                return
             if path == "/api/snapshots":
                 snap_action = str(payload.get("action") or "save").strip().lower()
                 if snap_action == "delete":

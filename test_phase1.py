@@ -217,6 +217,36 @@ class EmailConfigTests(unittest.TestCase):
         self.assertEqual(pub["smtp"]["from"], "dash@example.com")
 
 
+class UiThemePersistenceTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._orig_dir = nd.DATA_DIR
+        self._orig_file = nd.UI_PREFS_FILE
+        nd.DATA_DIR = Path(self._tmpdir)
+        nd.UI_PREFS_FILE = nd.DATA_DIR / "ui_prefs.json"
+
+    def tearDown(self):
+        nd.DATA_DIR = self._orig_dir
+        nd.UI_PREFS_FILE = self._orig_file
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_roundtrip(self):
+        nd.save_ui_theme("midnight")
+        self.assertEqual(nd.load_ui_theme(), "midnight")
+
+    def test_invalid_theme_falls_back_to_default(self):
+        self.assertEqual(nd.save_ui_theme("not-a-theme"), "default")
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(nd.load_ui_theme(), "")
+
+    def test_scheduled_report_prefers_live_theme(self):
+        # The scheduled report picks the persisted live theme over the frozen one.
+        nd.save_ui_theme("ocean")
+        chosen = nd.load_ui_theme() or "default"
+        self.assertEqual(chosen, "ocean")
+
+
 class ScheduledReportThemeTests(unittest.TestCase):
     def _dashboard(self, theme):
         return {
