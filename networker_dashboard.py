@@ -37,6 +37,7 @@ import uuid
 import webbrowser
 import zipfile
 import xml.etree.ElementTree as ET
+from collections import Counter
 from http.cookiejar import CookieJar
 from http.cookies import SimpleCookie
 from dataclasses import dataclass, field, replace
@@ -9065,6 +9066,30 @@ def build_dashboard_nwui(
     jobs = sorted(jobs, key=lambda item: item.get("started") or "", reverse=True)
     clone_jobs = [job for job in jobs if is_clone_job(job)]
     backup_jobs = [job for job in jobs if not is_clone_job(job)]
+    if APP_DEBUG:
+        raw_status = Counter(
+            str(item.get("status") or "").lower()
+            for item in raw_actions
+            if isinstance(item, dict)
+        )
+        norm_status = Counter(str(job.get("status") or "unknown") for job in jobs)
+        debug_log(
+            "NWUI monitoringactions diagnostic: "
+            f"window={display_datetime(start_ts)}..{display_datetime(end_ts)} "
+            f"rawActions={len(raw_actions)} jobs={len(jobs)} "
+            f"backup={len(backup_jobs)} clone={len(clone_jobs)} "
+            f"rawStatus={dict(raw_status)} normalizedStatus={dict(norm_status)}"
+        )
+        for idx, sample in enumerate(raw_actions[:3]):
+            if isinstance(sample, dict):
+                debug_log(
+                    f"NWUI raw action sample[{idx}] keys={sorted(sample.keys())} "
+                    f"status={sample.get('status')!r} "
+                    f"startTime={sample.get('startTime')!r} "
+                    f"completionTime={sample.get('completionTime')!r} "
+                    f"actionName={sample.get('actionName')!r} "
+                    f"workflowName={sample.get('workflowName')!r}"
+                )
     failed_jobs = [job for job in backup_jobs if str(job.get("status", "")).lower() in ("failed", "warning")]
     clients = build_nwui_clients(backup_jobs)
     alerts = [project_nwui_alert(item) for item in raw_alerts if isinstance(item, dict)]
