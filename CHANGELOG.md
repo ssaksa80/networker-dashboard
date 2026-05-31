@@ -4,6 +4,20 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.5] — 2026-05-31
+
+### Fixed
+- Auto-save daily snapshot appeared not to work: enabling it did nothing visible
+  because the background worker only ticks every 10 minutes and skips silently
+  when a snapshot already exists for the day or no dashboard is loaded.
+  - Enabling auto-save now captures a snapshot **immediately** (instead of
+    waiting up to 10 minutes for the next worker tick).
+  - `_auto_snapshot_once()` returns a status (`saved` / `exists` /
+    `no-dashboard` / `disabled`) and logs each outcome; the toggle's POST
+    response reports it, and the UI shows a precise toast ("snapshot saved now",
+    "today already captured", or "will capture once connected") plus refreshes
+    the snapshot meta line.
+
 ## [2.2.4] — 2026-05-31
 
 ### Fixed
