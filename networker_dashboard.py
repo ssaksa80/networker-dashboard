@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.7"
+APP_VERSION = "2.2.8"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -126,6 +126,13 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
     "harbor": {"bg": "#eef3f4", "surface": "#ffffff", "surface2": "#f5f8f9", "ink": "#17242a", "muted": "#5e7077", "line": "#d0dce0", "brand": "#235f73", "brandInk": "#ffffff", "green": "#24764f", "red": "#b63548", "amber": "#9d6e08", "blue": "#335fa3"},
     "ember": {"bg": "#f6f1ee", "surface": "#ffffff", "surface2": "#fbf7f4", "ink": "#2a1f1a", "muted": "#75665f", "line": "#e2d4cd", "brand": "#8d4a36", "brandInk": "#ffffff", "green": "#26734a", "red": "#b23545", "amber": "#9b6a10", "blue": "#3c67a2"},
 }
+# The dashboard brand/header card uses a fixed navy->teal gradient over the
+# brand color (see the in-page .brand-card CSS). Email reports and the PNG
+# snapshot reuse these so the brand card looks identical to the live dashboard.
+# Outlook ignores CSS gradients, so the email also carries a solid fallback.
+BRAND_CARD_GRADIENT = "linear-gradient(135deg, rgba(11, 32, 42, 0.98), rgba(18, 110, 130, 0.96)), #126e82"
+BRAND_CARD_SOLID = "#103a47"
+BRAND_CARD_INK = "#ffffff"
 CUSTOM_REPORT_RANGE = "custom"
 DEFAULT_REPORT_RANGE = "24h"
 SESSION_TTL_SECONDS = 365 * 24 * 60 * 60  # 1 year — sessions persist until server restart or explicit clear
@@ -10482,8 +10489,10 @@ def snapshot_health_card(label: str, value: str, detail: str, color: str, percen
 def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
     model = report_status_model(dashboard)
     palette = model["palette"]
-    model["brand_background"] = palette["brand"]
-    model["brand_ink"] = palette["brandInk"]
+    # Match the live dashboard brand card exactly (fixed navy->teal gradient).
+    # Chrome renders this PNG, so the CSS gradient works here.
+    model["brand_background"] = BRAND_CARD_GRADIENT
+    model["brand_ink"] = BRAND_CARD_INK
     successful = model["successful"]
     failed = model["failed"]
     active = model["active"]
@@ -10714,10 +10723,12 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
     health = dashboard.get("serverHealth") or {}
     protection = dashboard.get("serverProtectionJob") or dashboard.get("maintenanceBackup") or {}
     palette = report_theme_palette(dashboard.get("theme") or target.get("theme"))
-    # The brand/header card follows the selected theme — including scheduled
-    # reports, so the emailed report matches the chosen dashboard theme color.
-    brand_background = palette["brand"]
-    brand_ink = palette["brandInk"]
+    # Match the live dashboard brand card. It uses a fixed navy->teal gradient,
+    # not the theme brand color. Email clients (Outlook) ignore CSS gradients, so
+    # every bgcolor uses the solid dark-teal fallback; the outer brand container
+    # additionally carries the gradient via background-image for modern clients.
+    brand_background = BRAND_CARD_SOLID
+    brand_ink = BRAND_CARD_INK
     rows = dashboard_report_rows(dashboard)
     plain = "\n".join(f"{label}: {value}" for label, value in rows)
     total_jobs = report_int(summary.get("slaTotalJobs", summary.get("totalJobs")))
@@ -10808,7 +10819,7 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
       <table role="presentation" style="width:100%;min-width:1680px;border-collapse:collapse;">
         <tr>
           <td bgcolor="{brand_background}" style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;background:{brand_background};background-color:{brand_background};color:{brand_ink};">
-            <div style="background:{brand_background};background-color:{brand_background};border-radius:8px;padding:16px;color:{brand_ink};min-height:252px;">
+            <div style="background:{brand_background};background-color:{brand_background};background-image:{BRAND_CARD_GRADIENT};border-radius:8px;padding:16px;color:{brand_ink};min-height:252px;">
               <table role="presentation" bgcolor="{brand_background}" style="width:100%;border-collapse:collapse;background:{brand_background};background-color:{brand_background};color:{brand_ink};">
                 <tr>
                   <td bgcolor="{brand_background}" style="width:68px;vertical-align:top;background:{brand_background};background-color:{brand_background};color:{brand_ink};">
