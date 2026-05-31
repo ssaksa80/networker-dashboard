@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.6"
+APP_VERSION = "2.2.7"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -4260,7 +4260,9 @@ HTML_PAGE = r"""<!doctype html>
       if (emailScheduleType.value === "daily_report") {
         smtpToEl.value = c.dailyReport.recipients || "";
         document.getElementById("dailyReportTime").value = c.dailyReport.reportTime || "08:00";
-        if (c.dailyReport.theme) themeSelect.value = c.dailyReport.theme;
+        // NOTE: do NOT touch themeSelect here. The report theme is dynamic and
+        // follows the current dashboard theme (persisted server-side); the email
+        // modal must never override the shared dashboard theme control.
       } else {
         smtpToEl.value = c.alert.recipients || "";
         document.getElementById("alertTrigger").value = c.alert.trigger || "critical";

@@ -217,6 +217,17 @@ class EmailConfigTests(unittest.TestCase):
         self.assertEqual(pub["smtp"]["from"], "dash@example.com")
 
 
+class EmailModalThemeTests(unittest.TestCase):
+    def test_email_modal_does_not_override_dashboard_theme(self):
+        # Opening the email modal must not write into the shared themeSelect;
+        # the report theme is dynamic (current dashboard theme).
+        self.assertNotIn("themeSelect.value = c.dailyReport.theme", nd.HTML_PAGE)
+
+    def test_payload_sends_current_theme(self):
+        # The send/test payload still captures the live theme for the report.
+        self.assertIn("theme: themeSelect.value", nd.HTML_PAGE)
+
+
 class SnapshotPanelRefreshTests(unittest.TestCase):
     def test_refresh_snapshot_status_present_and_wired(self):
         self.assertIn("function refreshSnapshotStatus", nd.HTML_PAGE)

@@ -4,6 +4,17 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.7] — 2026-05-31
+
+### Fixed
+- Opening the email notification popup reset the dashboard theme back to default.
+  The modal wrote the email config's saved per-type theme into the **shared**
+  `themeSelect` control (`themeSelect.value = c.dailyReport.theme`), overriding
+  the dashboard theme. Since the report theme is dynamic (it follows the current
+  dashboard theme, persisted server-side), the modal no longer touches
+  `themeSelect` at all. The send/test payload still captures the live theme, so
+  report emails keep following the currently selected theme.
+
 ## [2.2.6] — 2026-05-31
 
 ### Fixed
