@@ -295,6 +295,64 @@ class ActionHistoryMergeTests(unittest.TestCase):
         self.assertEqual(len(merged), 1)
 
 
+class StatusNormalizationTests(unittest.TestCase):
+    def test_missed_the_schedule_maps_to_warning(self):
+        self.assertEqual(nd.normalize_nwui_status("MissedTheSchedule"), "warning")
+        self.assertEqual(nd.normalize_nwui_status("missed the schedule"), "warning")
+
+    def test_empty_status_is_unknown(self):
+        self.assertEqual(nd.normalize_nwui_status(""), "unknown")
+        self.assertEqual(nd.normalize_nwui_status(None), "unknown")
+
+    def test_core_statuses(self):
+        self.assertEqual(nd.normalize_nwui_status("Succeeded"), "succeeded")
+        self.assertEqual(nd.normalize_nwui_status("Failed"), "failed")
+        self.assertEqual(nd.normalize_nwui_status("Running"), "running")
+        self.assertEqual(nd.normalize_nwui_status("skipped"), "warning")
+
+
+class JobsHistoryCacheTests(unittest.TestCase):
+    def setUp(self):
+        nd._JOBS_HISTORY_CACHE.clear()
+        self._orig = nd.nwui_rest_fallback_items
+        self.calls = []
+
+        def fake(config, target, context):
+            self.calls.append(target)
+            return [{"status": "Succeeded"}], "https://host/nwrestapi/v3/global/jobs"
+
+        nd.nwui_rest_fallback_items = fake
+
+    def tearDown(self):
+        nd.nwui_rest_fallback_items = self._orig
+        nd._JOBS_HISTORY_CACHE.clear()
+
+    def test_second_call_uses_cache(self):
+        cfg = _make_config("24h")
+        items1, _, cached1 = nd.cached_nwui_job_history(cfg, None)
+        items2, _, cached2 = nd.cached_nwui_job_history(cfg, None)
+        self.assertFalse(cached1)
+        self.assertTrue(cached2)
+        self.assertEqual(len(self.calls), 1)   # underlying fetch only once
+        self.assertEqual(items1, items2)
+
+    def test_different_range_is_separate_cache_entry(self):
+        nd.cached_nwui_job_history(_make_config("24h"), None)
+        nd.cached_nwui_job_history(_make_config("7d"), None)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_expired_ttl_refetches(self):
+        cfg = _make_config("24h")
+        nd.cached_nwui_job_history(cfg, None)
+        # Force expiry by ageing the cache entry past the TTL.
+        key = next(iter(nd._JOBS_HISTORY_CACHE))
+        ts, items, path = nd._JOBS_HISTORY_CACHE[key]
+        nd._JOBS_HISTORY_CACHE[key] = (ts - nd.JOBS_HISTORY_TTL_SECONDS - 1, items, path)
+        _, _, cached = nd.cached_nwui_job_history(cfg, None)
+        self.assertFalse(cached)
+        self.assertEqual(len(self.calls), 2)
+
+
 class ActiveJobsSlaTests(unittest.TestCase):
     def test_nwui_totalJobs_includes_active_jobs(self):
         """NWUI path: totalJobs must count running jobs, not just completed."""

@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.1.8"
+APP_VERSION = "2.1.9"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -8104,6 +8104,51 @@ def nwui_monitoring_all_pages(
     return []
 
 
+# Short-TTL cache for the completed-job history pulled from the NetWorker jobs
+# database. The /global/jobs response is large (NetWorker has no server-side
+# time filter, so the whole retained set is returned — ~11 MB / thousands of
+# jobs on a busy server) and barely changes between rapid refreshes. Without
+# caching, every dashboard build — for every restored session and the shared
+# refresh loop — re-downloads and re-parses it, starving the request workers
+# and causing unrelated endpoints to time out. Cache keyed by server+range.
+_JOBS_HISTORY_CACHE: dict[tuple[Any, ...], tuple[float, list[Any], str]] = {}
+_JOBS_HISTORY_LOCK = threading.Lock()
+JOBS_HISTORY_TTL_SECONDS = 180
+JOBS_HISTORY_CACHE_MAX = 16
+
+
+def cached_nwui_job_history(
+    config: ApiConfig, context: ssl.SSLContext
+) -> tuple[list[Any], str, bool]:
+    """Return (items, path, from_cache) for the NetWorker completed-job history,
+    served from a process-wide short-TTL cache shared across sessions and the
+    shared refresh loop."""
+    key = (
+        str(config.backup_server_host or "").lower(),
+        int(config.backup_server_port or 0),
+        str(config.rest_api_host or "").lower(),
+        int(config.rest_api_port or 0),
+        str(config.username or ""),
+        str(config.report_range or ""),
+        str(config.custom_start_date or ""),
+        str(config.custom_end_date or ""),
+    )
+    now = time.time()
+    with _JOBS_HISTORY_LOCK:
+        entry = _JOBS_HISTORY_CACHE.get(key)
+        if entry and now - entry[0] < JOBS_HISTORY_TTL_SECONDS:
+            return entry[1], entry[2], True
+    items, path = nwui_rest_fallback_items(config, "actions", context)
+    with _JOBS_HISTORY_LOCK:
+        _JOBS_HISTORY_CACHE[key] = (now, items, path)
+        if len(_JOBS_HISTORY_CACHE) > JOBS_HISTORY_CACHE_MAX:
+            for old_key in sorted(
+                _JOBS_HISTORY_CACHE, key=lambda k: _JOBS_HISTORY_CACHE[k][0]
+            )[:-JOBS_HISTORY_CACHE_MAX]:
+                _JOBS_HISTORY_CACHE.pop(old_key, None)
+    return items, path, False
+
+
 def cmd_flag_value(command: str, flag: str) -> str:
     if not command:
         return ""
@@ -8143,14 +8188,21 @@ def normalize_nwui_status(value: Any, failed_sessions: int = 0) -> str:
         "aborted": "failed",
         "failure": "failed",
         "warnings": "warning",
+        "interrupted": "warning",
+        "missed": "warning",
+        "missedtheschedule": "warning",
+        "missed_the_schedule": "warning",
+        "skipped": "warning",
+        "never_started": "warning",
+        "notstarted": "warning",
     }
     status = mapping.get(raw, raw)
     if status not in ("succeeded", "failed", "warning", "running", "queued"):
         if "succ" in raw or "complet" in raw:
             status = "succeeded"
-        elif "fail" in raw or "error" in raw:
+        elif "fail" in raw or "error" in raw or "abort" in raw:
             status = "failed"
-        elif "warn" in raw:
+        elif "warn" in raw or "miss" in raw or "skip" in raw or "interrupt" in raw:
             status = "warning"
         elif "run" in raw or "progress" in raw:
             status = "running"
@@ -9180,16 +9232,19 @@ def build_dashboard_nwui(
     # Best-effort: a failure here must never break the live dashboard.
     live_action_count = len(raw_actions)
     history_action_count = 0
+    history_from_cache = False
     if config.password:
         try:
-            rest_history, history_path = nwui_rest_fallback_items(config, "actions", context)
-            # The live monitor already provides the running/queued set. Keep only
-            # completed/terminal runs from the jobs DB so the union is clean and
-            # currently-running jobs are not counted twice.
+            rest_history, history_path, history_from_cache = cached_nwui_job_history(config, context)
+            # Keep only completed/terminal runs (succeeded/failed/warning) from
+            # the jobs DB. This drops running/queued (the live monitor already
+            # provides those) and status-less records (empty completionStatus),
+            # which are not real completed backups and would otherwise inflate
+            # the totals as "unknown".
             rest_history = [
                 item
                 for item in rest_history
-                if normalize_nwui_status(item.get("status")) not in ("running", "queued")
+                if normalize_nwui_status(item.get("status")) in ("succeeded", "failed", "warning")
             ]
             history_action_count = len(rest_history)
             raw_actions = merge_action_history(raw_actions, rest_history)
@@ -9197,7 +9252,11 @@ def build_dashboard_nwui(
                 "ok": True,
                 "path": history_path,
                 "count": history_action_count,
-                "detail": "Completed job history merged from the NetWorker jobs database.",
+                "cached": history_from_cache,
+                "detail": (
+                    "Completed job history merged from the NetWorker jobs database"
+                    + (" (cached)." if history_from_cache else ".")
+                ),
             }
         except RestApiError as exc:
             sources["monitoringActionsHistory"] = {
@@ -9219,7 +9278,7 @@ def build_dashboard_nwui(
         debug_log(
             "NWUI action merge: "
             f"liveActions={live_action_count} historyActions={history_action_count} "
-            f"mergedActions={len(raw_actions)}"
+            f"mergedActions={len(raw_actions)} historyCached={history_from_cache}"
         )
         raw_status = Counter(
             str(item.get("status") or "").lower()

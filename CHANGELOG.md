@@ -4,6 +4,35 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.9] — 2026-05-31
+
+Completed-job history now loads end-to-end (verified on a live server:
+`historyActions=2417`, ~2,248 succeeded in 24 h). This release fixes the
+fallout from pulling that large dataset on every refresh and cleans up the
+status accounting.
+
+### Added
+- **Short-TTL cache for the NetWorker jobs-history fetch.** The `/global/jobs`
+  response is large (~11 MB / thousands of jobs — NetWorker has no server-side
+  time filter) and changes little between refreshes. It is now cached
+  process-wide for 180 s, keyed by server + report range, and shared across all
+  dashboard sessions and the shared refresh loop. Previously every build for
+  every restored session re-downloaded and re-parsed the full set, starving the
+  request workers and timing out unrelated endpoints
+  (`/api/current-dashboard`, `/api/snapshots`).
+
+### Fixed
+- Status-less job records (empty `completionStatus`) are no longer merged as
+  bogus "unknown" completed jobs. The history merge now keeps only terminal
+  statuses (succeeded / failed / warning), so totals match what actually ran.
+- `MissedTheSchedule` (and `skipped` / `interrupted` / `never started`) now
+  normalize to a `warning` instead of leaking the raw status string; `aborted`
+  variants normalize to `failed`.
+
+### Changed
+- `fetch_json()` accepts a `max_bytes` ceiling and logs a `REST GET too-large`
+  line when a response is capped (from 2.1.8).
+
 ## [2.1.8] — 2026-05-31
 
 ### Fixed
