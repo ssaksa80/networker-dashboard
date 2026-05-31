@@ -4,6 +4,20 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.4] — 2026-05-31
+
+### Fixed
+- A failed **clone** job from the NetWorker jobs database was counted under
+  **Failed Backups** instead of **Failed Clones**. When converting a jobs-DB
+  record to an action (`rest_job_as_nwui_action`), the job `name` (often a
+  save-set string) took priority over `policyActionName` (the NetWorker action
+  type: backup/clone/...), so after projection the clone signal was lost and
+  `is_clone_job` mis-classified the run as a backup. The action type now takes
+  priority (matching the live monitoringactions feed), is carried through
+  projection as `_action_type`, and `is_clone_job` also inspects
+  `policyActionName`/`_action_type`. Clone failures now land in Failed Clones
+  and are excluded from the backup failed count.
+
 ## [2.2.3] — 2026-05-31
 
 ### Changed
