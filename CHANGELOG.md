@@ -4,6 +4,16 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.2] — 2026-05-31
+
+### Changed
+- Scheduled dashboard report emails now follow the **current** dashboard theme
+  dynamically, instead of the theme frozen when the schedule was created. The
+  selected theme is persisted server-side (`data/ui_prefs.json`) whenever it
+  changes, and the background report job reads it at send time (falling back to
+  the schedule's captured theme, then default). New `GET`/`POST /api/ui-theme`;
+  the dashboard posts the theme on every apply.
+
 ## [2.2.1] — 2026-05-31
 
 ### Fixed
