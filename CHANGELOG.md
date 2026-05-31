@@ -4,6 +4,14 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.2] — 2026-05-31
+
+### Fixed
+- Cached fallback dashboards no longer render as a failed backup source named
+  `last-successful-dashboard`. Live refresh failures are kept as backend
+  diagnostics, while the UI shows a clean cached-dashboard notice until current
+  NetWorker backup activity is available again.
+
 ## [2.1.1] — 2026-05-24
 
 ### Fixed

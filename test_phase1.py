@@ -158,5 +158,47 @@ class SnapshotWriteTests(unittest.TestCase):
         self.assertEqual(nd.load_dashboard_snapshots(), data)
 
 
+class StaleDashboardNoticeTests(unittest.TestCase):
+    def test_stale_dashboard_uses_info_diagnostic_not_source_warning(self):
+        cached = {
+            "ok": True,
+            "summary": {"health": "ok", "totalJobs": 10},
+            "sources": {"monitoringActions": {"ok": True, "path": "/nwui/api/monitoringactions"}},
+        }
+        refresh_body = {
+            "ok": True,
+            "sources": {
+                "monitoringActions": {
+                    "ok": False,
+                    "path": "/nwui/api/monitoringactions",
+                    "status": 500,
+                    "error": "temporary upstream failure",
+                }
+            },
+        }
+        original = nd.cached_reliable_dashboard_for_session
+        nd.cached_reliable_dashboard_for_session = lambda session_id: cached
+        try:
+            stale = nd.stale_dashboard_from_cache("session-1", refresh_body)
+        finally:
+            nd.cached_reliable_dashboard_for_session = original
+
+        self.assertIsNotNone(stale)
+        self.assertTrue(stale["stale"])
+        self.assertIn("last successful dashboard snapshot", stale["reportNotice"])
+        live_refresh = stale["sources"]["liveRefresh"]
+        self.assertEqual(live_refresh["path"], "live-refresh")
+        self.assertEqual(live_refresh["severity"], "info")
+        self.assertFalse(live_refresh["displayWarning"])
+        self.assertTrue(live_refresh["diagnosticOnly"])
+        self.assertNotIn("last-successful-dashboard", str(stale))
+
+    def test_frontend_has_separate_stale_notice_path(self):
+        self.assertIn("function sourceNeedsVisibleWarning", nd.HTML_PAGE)
+        self.assertIn("data.stale && data.reportNotice", nd.HTML_PAGE)
+        self.assertIn('setStatus("Using cached dashboard", "warn")', nd.HTML_PAGE)
+        self.assertNotIn("last-successful-dashboard", nd.HTML_PAGE)
+
+
 if __name__ == "__main__":
     unittest.main()
