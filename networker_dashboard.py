@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.4"
+APP_VERSION = "2.2.5"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -4689,12 +4689,24 @@ HTML_PAGE = r"""<!doctype html>
     autoSnapshotToggle.addEventListener("change", async () => {
       const enabled = autoSnapshotToggle.checked;
       try {
-        await fetch("/api/snapshots", {
+        const resp = await fetch("/api/snapshots", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({action: "auto-config", enabled}),
         });
-        showToast(enabled ? "Auto-snapshot enabled" : "Auto-snapshot disabled");
+        const data = await resp.json().catch(() => ({}));
+        if (!enabled) {
+          showToast("Auto-snapshot disabled");
+        } else {
+          const messages = {
+            saved: "Auto-snapshot enabled — snapshot saved now",
+            exists: "Auto-snapshot enabled — today already captured",
+            "no-dashboard": "Auto-snapshot enabled — will capture once connected",
+          };
+          showToast(messages[data.result] || "Auto-snapshot enabled");
+          if (data.summary) snapshotMeta.textContent = data.summary;
+          if (data.result === "saved") { snapshotHistoryCache = null; }
+        }
       } catch (e) { showToast("Failed to update auto-snapshot setting"); }
     });
 
@@ -9770,20 +9782,27 @@ def save_ui_theme(theme: str) -> str:
     return resolved
 
 
-def _auto_snapshot_once() -> None:
+def _auto_snapshot_once() -> str:
+    """Save today's snapshot if auto-save is on and not already captured.
+    Returns a status code for observability: disabled / exists / no-dashboard /
+    saved."""
     if not load_auto_snapshot_config():
-        return
+        return "disabled"
     today = snapshot_date_key()
     with SNAPSHOTS_LOCK:
         existing = load_dashboard_snapshots()
     if today in existing:
-        return
+        debug_log(f"auto_snapshot: snapshot for {today} already exists; skipping")
+        return "exists"
     with SHARED_DASHBOARD_LOCK:
         dashboard = dict(SHARED_DASHBOARD_STATE.get("dashboard") or {})
     if not isinstance(dashboard, dict) or not dashboard.get("ok"):
-        return
+        debug_log("auto_snapshot: no shared dashboard available yet; will retry")
+        return "no-dashboard"
     with SNAPSHOTS_LOCK:
         save_dashboard_snapshot(dashboard)
+    debug_log(f"auto_snapshot: saved snapshot for {today}")
+    return "saved"
 
 
 def auto_snapshot_worker() -> None:
@@ -12193,7 +12212,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if snap_action == "auto-config":
                     enabled = bool(payload.get("enabled", False))
                     save_auto_snapshot_config(enabled)
-                    self._send_json(HTTPStatus.OK, {"ok": True, "enabled": enabled})
+                    # Capture immediately on enable so the first snapshot does not
+                    # wait up to 10 minutes for the next worker tick, and report
+                    # the outcome so the UI can confirm it actually saved.
+                    result = _auto_snapshot_once() if enabled else "disabled"
+                    self._send_json(HTTPStatus.OK, {
+                        "ok": True,
+                        "enabled": enabled,
+                        "result": result,
+                        "summary": snapshot_summary_text(),
+                    })
                     return
                 # default: save
                 dashboard = payload.get("dashboard") if isinstance(payload.get("dashboard"), dict) else None

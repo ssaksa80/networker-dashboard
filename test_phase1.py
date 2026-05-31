@@ -217,6 +217,49 @@ class EmailConfigTests(unittest.TestCase):
         self.assertEqual(pub["smtp"]["from"], "dash@example.com")
 
 
+class AutoSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._orig = (nd.DATA_DIR, nd.AUTO_SNAPSHOT_FILE, nd.DASHBOARD_SNAPSHOT_FILE)
+        nd.DATA_DIR = Path(self._tmpdir)
+        nd.AUTO_SNAPSHOT_FILE = nd.DATA_DIR / "auto_snapshot_config.json"
+        nd.DASHBOARD_SNAPSHOT_FILE = nd.DATA_DIR / "networker_snapshots.json"
+        with nd.SHARED_DASHBOARD_LOCK:
+            self._orig_shared = nd.SHARED_DASHBOARD_STATE.get("dashboard")
+            nd.SHARED_DASHBOARD_STATE["dashboard"] = None
+
+    def tearDown(self):
+        nd.DATA_DIR, nd.AUTO_SNAPSHOT_FILE, nd.DASHBOARD_SNAPSHOT_FILE = self._orig
+        with nd.SHARED_DASHBOARD_LOCK:
+            nd.SHARED_DASHBOARD_STATE["dashboard"] = self._orig_shared
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _set_dashboard(self):
+        with nd.SHARED_DASHBOARD_LOCK:
+            nd.SHARED_DASHBOARD_STATE["dashboard"] = {
+                "ok": True,
+                "summary": {"slaPercent": 99, "successfulJobs": 10, "failedJobs": 0},
+                "serverHealth": {},
+                "target": {"backupServer": "srv"},
+                "generatedAt": nd.generated_at(),
+            }
+
+    def test_disabled_returns_disabled(self):
+        self.assertEqual(nd._auto_snapshot_once(), "disabled")
+
+    def test_enabled_without_dashboard(self):
+        nd.save_auto_snapshot_config(True)
+        self.assertEqual(nd._auto_snapshot_once(), "no-dashboard")
+
+    def test_enabled_saves_then_exists(self):
+        nd.save_auto_snapshot_config(True)
+        self._set_dashboard()
+        self.assertEqual(nd._auto_snapshot_once(), "saved")
+        self.assertIn(nd.snapshot_date_key(), nd.load_dashboard_snapshots())
+        # Second call same day must not duplicate.
+        self.assertEqual(nd._auto_snapshot_once(), "exists")
+
+
 class CloneClassificationTests(unittest.TestCase):
     def _projected(self, policy_action, name="saveset_data"):
         rest = {
