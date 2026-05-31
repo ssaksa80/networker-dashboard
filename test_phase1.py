@@ -210,6 +210,37 @@ class AccountMenuContrastTests(unittest.TestCase):
         self.assertIn(".account-menu .topbar-button.danger", nd.HTML_PAGE)
 
 
+class ActionHistoryMergeTests(unittest.TestCase):
+    def test_dedup_key_normalizes_time_formats(self):
+        iso = {"workflowName": "WF", "actionName": "backup", "startTime": "2026-05-21T17:00:02.000Z"}
+        epoch_ms = {"workflowName": "WF", "actionName": "backup", "startTime": 1779382802000}
+        self.assertEqual(nd.action_dedup_key(iso), nd.action_dedup_key(epoch_ms))
+
+    def test_merge_adds_completed_history(self):
+        live = [{"workflowName": "WF1", "actionName": "backup", "startTime": "2026-05-31T04:00:00Z", "status": "Running"}]
+        history = [
+            {"workflowName": "WF1", "actionName": "backup", "startTime": "2026-05-30T04:00:00Z", "status": "Succeeded"},
+            {"workflowName": "WF2", "actionName": "backup", "startTime": "2026-05-30T05:00:00Z", "status": "Failed"},
+        ]
+        merged = nd.merge_action_history(live, history)
+        self.assertEqual(len(merged), 3)
+        statuses = sorted(nd.normalize_nwui_status(m["status"]) for m in merged)
+        self.assertEqual(statuses, ["failed", "running", "succeeded"])
+
+    def test_merge_prefers_terminal_over_running_on_collision(self):
+        key = {"workflowName": "WF", "actionName": "backup", "startTime": "2026-05-31T04:00:00Z"}
+        live = [{**key, "status": "Running"}]
+        history = [{**key, "status": "Succeeded"}]
+        merged = nd.merge_action_history(live, history)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(nd.normalize_nwui_status(merged[0]["status"]), "succeeded")
+
+    def test_merge_keeps_unkeyable_extras(self):
+        live = [{"status": "Running"}]   # no workflow/action/time -> extra
+        merged = nd.merge_action_history(live, [])
+        self.assertEqual(len(merged), 1)
+
+
 class ActiveJobsSlaTests(unittest.TestCase):
     def test_nwui_totalJobs_includes_active_jobs(self):
         """NWUI path: totalJobs must count running jobs, not just completed."""
