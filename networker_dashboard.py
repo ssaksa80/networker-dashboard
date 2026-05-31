@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.3"
+APP_VERSION = "2.2.4"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -7511,8 +7511,10 @@ def is_clone_job(job: Any) -> bool:
         first_value(job, "jobType"),
         first_value(job, "type"),
         first_value(job, "recoverType"),
+        first_value(job, "policyActionName"),
         first_value(job, "message"),
         first_value(job, "jobCmd"),
+        job.get("_action_type"),
         job.get("_workflow"),
         job.get("_group"),
         job.get("_save_set"),
@@ -8367,6 +8369,7 @@ def project_nwui_job(item: Any) -> dict[str, Any]:
             "total": total_sessions,
         },
         "_save_set": session_summary,
+        "_action_type": str(item.get("policyActionName") or item.get("jobType") or action or ""),
     }
 
 
@@ -8427,7 +8430,12 @@ def rest_job_as_nwui_action(job: Any) -> dict[str, Any]:
         "duration": first_value(job, "elapsedTime", "duration", "elapsed"),
         "status": status,
         "workflowName": first_value(job, "clientHostname", "client", "hostname", "workflowName"),
-        "actionName": first_value(job, "name", "policyActionName", "actionName"),
+        # policyActionName is the NetWorker action TYPE (backup/clone/...), the
+        # same thing the live monitoringactions feed exposes as actionName. It
+        # must take priority over the job `name` (often a save-set string) so
+        # clone/recovery jobs are classified correctly after projection.
+        "actionName": first_value(job, "policyActionName", "actionName", "name"),
+        "policyActionName": first_value(job, "policyActionName"),
         "policyName": first_value(job, "policyName", "policy", "workflowName", "protectionPolicyName"),
         "message": first_value(job, "message", "messages", "statusMessage", "errorMessage"),
         "jobData": {

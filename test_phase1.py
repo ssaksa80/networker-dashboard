@@ -217,6 +217,37 @@ class EmailConfigTests(unittest.TestCase):
         self.assertEqual(pub["smtp"]["from"], "dash@example.com")
 
 
+class CloneClassificationTests(unittest.TestCase):
+    def _projected(self, policy_action, name="saveset_data"):
+        rest = {
+            "name": name,
+            "policyActionName": policy_action,
+            "completionStatus": "Failed",
+            "startTime": "2026-05-31T01:00:00Z",
+        }
+        return nd.project_nwui_job(nd.rest_job_as_nwui_action(rest))
+
+    def test_rest_clone_job_classified_as_clone(self):
+        # Regression: a failed clone from the jobs DB was counted as a failed
+        # backup because the action type (policyActionName) was lost.
+        self.assertTrue(nd.is_clone_job(self._projected("clone")))
+
+    def test_rest_backup_job_not_clone(self):
+        self.assertFalse(nd.is_clone_job(self._projected("backup")))
+
+    def test_failed_clone_not_in_backup_failed_count(self):
+        clone = self._projected("clone")
+        backup = self._projected("backup")
+        jobs = [clone, backup]
+        backup_jobs = [j for j in jobs if not nd.is_clone_job(j)]
+        clone_jobs = [j for j in jobs if nd.is_clone_job(j)]
+        self.assertEqual(len(backup_jobs), 1)
+        self.assertEqual(len(clone_jobs), 1)
+        # backup failed count must not include the clone
+        counts = nd.nwui_backup_activity_counts(backup_jobs)
+        self.assertEqual(counts["failed"], 1)  # only the real backup
+
+
 class SeparateFailedMetricsTests(unittest.TestCase):
     def test_failed_metric_tiles_present(self):
         for el in ("metricFailed", "metricFailedRestores", "metricFailedClones"):
