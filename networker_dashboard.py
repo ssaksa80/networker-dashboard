@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.2"
+APP_VERSION = "2.2.3"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -2906,8 +2906,16 @@ HTML_PAGE = r"""<!doctype html>
           <strong id="metricSuccess">--</strong>
         </div>
         <div class="metric" data-tone="red">
-          <span>Failed Jobs</span>
+          <span>Failed Backups</span>
           <strong id="metricFailed">--</strong>
+        </div>
+        <div class="metric" data-tone="red">
+          <span>Failed Restores</span>
+          <strong id="metricFailedRestores">--</strong>
+        </div>
+        <div class="metric" data-tone="red">
+          <span>Failed Clones</span>
+          <strong id="metricFailedClones">--</strong>
         </div>
         <div class="metric" data-tone="blue">
           <span>Active Jobs</span>
@@ -3287,6 +3295,8 @@ HTML_PAGE = r"""<!doctype html>
       clients: document.getElementById("metricClients"),
       success: document.getElementById("metricSuccess"),
       failed: document.getElementById("metricFailed"),
+      failedRestores: document.getElementById("metricFailedRestores"),
+      failedClones: document.getElementById("metricFailedClones"),
       active: document.getElementById("metricActive"),
       recovery: document.getElementById("metricRecovery"),
       alerts: document.getElementById("metricAlerts"),
@@ -3881,6 +3891,8 @@ HTML_PAGE = r"""<!doctype html>
       metrics.clients.textContent = text(summary.totalClients);
       metrics.success.textContent = text(summary.successfulJobs);
       metrics.failed.textContent = text(summary.failedJobs);
+      metrics.failedRestores.textContent = text(summary.recoveryFailed);
+      metrics.failedClones.textContent = text(summary.cloneFailed);
       metrics.active.textContent = text(summary.activeJobs);
       metrics.recovery.textContent = text(summary.recoveryJobs);
       metrics.alerts.textContent = text(summary.totalAlerts);

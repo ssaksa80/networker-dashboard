@@ -4,6 +4,16 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.3] — 2026-05-31
+
+### Changed
+- The single **Failed Jobs** metric tile is now split into three separate tiles
+  — **Failed Backups**, **Failed Restores**, and **Failed Clones** — so backup,
+  recovery, and clone failures are each shown distinctly. The values come from
+  the existing `failedJobs`, `recoveryFailed`, and `cloneFailed` summary fields
+  (both REST and NWUI paths already populate them); the responsive metric grid
+  flows the extra tiles automatically.
+
 ## [2.2.2] — 2026-05-31
 
 ### Changed
