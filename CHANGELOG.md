@@ -4,6 +4,32 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.11] — 2026-05-31
+
+### Performance
+- Dashboard refreshes were still timing out (`/api/dashboard`,
+  `/api/current-dashboard`, `/api/snapshots`). The raw `/global/jobs`
+  diagnostic showed why: the jobs database holds **36,031 jobs / 11.5 MB**, and
+  almost all of that volume is the per-record `message` field (multi-KB of job
+  log text each). Every cache-miss downloaded, JSON-parsed and log-cleaned all
+  36k records.
+  - `message` is now excluded from the bulk jobs field list, cutting the
+    response roughly 10x (~11.5 MB → ~1 MB) and removing the per-record log
+    cleaning. Failure detail is preserved via the small, `Failed`-filtered
+    `failedJobs` query, which keeps `message`.
+  - The completed-job history is now trimmed to the report window **before**
+    sorting and projection, so only the in-window jobs (~2.3k) are processed
+    instead of the full 36k.
+
+### Notes
+- **DPA parity:** the dashboard counts ~2,248 succeeded in 24 h vs DPA's 1,979.
+  Both read the same jobs DB; the difference is job granularity (NetWorker's
+  jobs DB records backups at multiple levels). The dashboard count is the raw
+  succeeded-job count in the window.
+- **Size (GB) metric:** not available from `/global/jobs` — the jobs resource
+  does not expose a byte field (NetWorker rejects `saveBytes`/`transferredBytes`
+  and the size lives in the media database). Not shown for NWUI-sourced data.
+
 ## [2.1.10] — 2026-05-31
 
 ### Added
