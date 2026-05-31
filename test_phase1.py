@@ -252,6 +252,17 @@ class JobsQueryFieldsTests(unittest.TestCase):
         self.assertNotIn("q=", stripped)
         self.assertIn("fl=", stripped)
 
+    def test_jobs_response_cap_is_larger_than_default(self):
+        # The jobs DB has no server-side time filter and can be large; its fetch
+        # must allow more than the default per-response ceiling.
+        self.assertGreater(nd.MAX_JOBS_RESPONSE_BYTES, nd.MAX_RESPONSE_BYTES)
+
+    def test_read_limited_raises_over_limit(self):
+        import io
+        big = io.BytesIO(b"x" * 100)
+        with self.assertRaises(nd.RestApiError):
+            nd.read_limited(big, 10)
+
 
 class ActionHistoryMergeTests(unittest.TestCase):
     def test_dedup_key_normalizes_time_formats(self):
