@@ -159,6 +159,49 @@ class SnapshotWriteTests(unittest.TestCase):
         self.assertEqual(nd.load_dashboard_snapshots(), data)
 
 
+class AutomationSchedulerTests(unittest.TestCase):
+    def setUp(self):
+        nd.ALERT_AUTOMATIONS.clear()
+        self._orig_run = nd.run_alert_automation
+        self.fired = []
+        nd.run_alert_automation = lambda aid: self.fired.append(aid)
+
+    def tearDown(self):
+        nd.run_alert_automation = self._orig_run
+        nd.ALERT_AUTOMATIONS.clear()
+
+    def _auto(self, next_at):
+        a = nd.AlertAutomation(
+            automation_id="s1:daily_report", session_id="s1", smtp_host="h",
+            smtp_port=587, smtp_username="", encrypted_smtp_password="",
+            smtp_from="a@x", recipients=["b@x"], smtp_security="none",
+            interval_minutes=60, trigger="critical", schedule_type="daily_report",
+            report_time="08:00", created_at=time.time(),
+        )
+        a.next_run_at = next_at
+        nd._put_automation(a.automation_id, a)
+        return a
+
+    def test_due_automation_fires(self):
+        a = self._auto(time.time() - 5)
+        nd.automation_scheduler_tick()
+        time.sleep(0.2)
+        self.assertEqual(self.fired, ["s1:daily_report"])
+        self.assertGreater(a.next_run_at, time.time())  # advanced, no double-fire
+
+    def test_future_automation_does_not_fire(self):
+        self._auto(time.time() + 3600)
+        nd.automation_scheduler_tick()
+        time.sleep(0.2)
+        self.assertEqual(self.fired, [])
+
+    def test_unscheduled_zero_next_run_does_not_fire(self):
+        self._auto(0)
+        nd.automation_scheduler_tick()
+        time.sleep(0.2)
+        self.assertEqual(self.fired, [])
+
+
 class AutomationPersistenceTests(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()

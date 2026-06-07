@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.9"
+APP_VERSION = "2.3.0"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -5693,6 +5693,7 @@ class AlertAutomation:
     last_result: str = "Scheduled"
     last_signature: str = ""
     timer: threading.Timer | None = None
+    next_run_at: float = 0.0  # epoch seconds; driven by the scheduler loop
 
 
 ALERT_AUTOMATIONS: dict[str, AlertAutomation] = {}
@@ -11097,6 +11098,10 @@ def seconds_until_daily_report(report_time: str, now: datetime | None = None) ->
 
 
 def schedule_alert_automation(automation: AlertAutomation) -> None:
+    """Compute the automation's next fire time. A single background scheduler
+    loop (automation_scheduler_loop) drives the actual firing — far more robust
+    than a per-automation long-lived threading.Timer, which could be lost on
+    restart, drift, or fail silently."""
     if _get_automation(automation.automation_id) is None:
         return
     delay = (
@@ -11104,10 +11109,43 @@ def schedule_alert_automation(automation: AlertAutomation) -> None:
         if automation.schedule_type == "daily_report"
         else automation.interval_minutes * 60
     )
-    timer = threading.Timer(delay, run_alert_automation, args=(automation.automation_id,))
-    timer.daemon = True
-    automation.timer = timer
-    timer.start()
+    automation.next_run_at = time.time() + delay
+    target = datetime.now().astimezone() + timedelta(seconds=delay)
+    debug_log(
+        f"automation scheduled id={automation.automation_id} "
+        f"type={automation.schedule_type} delaySeconds={int(delay)} "
+        f"nextRun={target.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+    )
+
+
+AUTOMATION_TICK_SECONDS = 30
+
+
+def _fire_automation_async(automation_id: str) -> None:
+    threading.Thread(
+        target=run_alert_automation, args=(automation_id,),
+        name=f"automation-fire-{automation_id[:12]}", daemon=True,
+    ).start()
+
+
+def automation_scheduler_tick() -> None:
+    now = time.time()
+    for key, automation in _automation_items_snapshot():
+        nxt = float(getattr(automation, "next_run_at", 0) or 0)
+        if nxt and now >= nxt:
+            # Push next_run_at forward to avoid a double-fire while this run is in
+            # flight; run_alert_automation reschedules the real next time when done.
+            automation.next_run_at = now + max(60, automation.interval_minutes * 60)
+            debug_log(f"automation firing id={key} type={automation.schedule_type}")
+            _fire_automation_async(key)
+
+
+def automation_scheduler_loop() -> None:
+    while not SHARED_REFRESH_STOP.wait(AUTOMATION_TICK_SECONDS):
+        try:
+            automation_scheduler_tick()
+        except Exception as exc:  # noqa: BLE001 — loop must never die.
+            debug_log(f"automation_scheduler_loop iteration failed: {exc}")
 
 
 def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
@@ -11202,11 +11240,17 @@ def scheduled_dashboard_email_payload(dashboard: dict[str, Any]) -> tuple[str, s
 def run_alert_automation(automation_id: str) -> None:
     automation = _get_automation(automation_id)
     if not automation:
+        debug_log(f"run_alert_automation: {automation_id} not found (cancelled?)")
         return
+    debug_log(
+        f"run_alert_automation start id={automation_id} type={automation.schedule_type} "
+        f"session={automation.session_id[:8]}… recipients={len(automation.recipients)}"
+    )
     try:
         status, dashboard = build_dashboard_from_session(automation.session_id)
+        debug_log(f"run_alert_automation build status={status} id={automation_id}")
         if status != HTTPStatus.OK:
-            raise RuntimeError(dashboard.get("error") or "Dashboard session refresh failed.")
+            raise RuntimeError(dashboard.get("error") or f"Dashboard session refresh failed (HTTP {status}).")
         if automation.schedule_type == "daily_report":
             if not dashboard_backup_source_available(dashboard):
                 source_error = dashboard_backup_source_error(dashboard)
@@ -11264,10 +11308,15 @@ def run_alert_automation(automation_id: str) -> None:
         automation.last_run = time.time()
     except SmtpDeliveryError as exc:
         automation.last_result = f"SMTP failed at {exc.stage}: {exc.detail}"
-    except Exception as exc:
+        LOG.warning(f"Scheduled email automation {automation_id} SMTP failure: {exc.stage}: {exc.detail}")
+    except Exception as exc:  # noqa: BLE001
         automation.last_result = f"Alert automation failed: {exc}"
+        LOG.warning(f"Scheduled email automation {automation_id} failed: {safe_log_text(exc, 300)}")
     finally:
+        debug_log(f"run_alert_automation done id={automation_id} result={safe_log_text(automation.last_result, 200)}")
+        # Recompute the next fire time (the scheduler loop drives the actual run).
         schedule_alert_automation(automation)
+        persist_automations()
 
 
 def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -12928,6 +12977,7 @@ def run(argv: list[str] | None = None) -> int:
 
     threading.Thread(target=_restore_sessions_bg, name="session-restore", daemon=True).start()
     threading.Thread(target=auto_snapshot_worker, name="auto-snapshot", daemon=True).start()
+    threading.Thread(target=automation_scheduler_loop, name="automation-scheduler", daemon=True).start()
 
     try:
         self_test_ok, self_test_message = self_test_dashboard_listener(launch_url)
