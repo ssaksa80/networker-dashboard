@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.3.1"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -11322,6 +11322,11 @@ def run_alert_automation(automation_id: str) -> None:
 def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     action = str(payload.get("action") or "").strip().lower()
     session_id = str(payload.get("sessionId") or "").strip()
+    debug_log(
+        f"alert-automation request action={action!r} "
+        f"scheduleType={str(payload.get('scheduleType') or '')!r} "
+        f"session={session_id[:8]}… recipients={len(parse_email_recipients(payload.get('smtpTo')))}"
+    )
     if action == "stop":
         raw_schedule_type = str(payload.get("scheduleType") or "").strip().lower()
         if raw_schedule_type in ("alert", "daily_report"):
