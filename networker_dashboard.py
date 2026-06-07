@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.2.8"
+APP_VERSION = "2.2.9"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -146,6 +146,7 @@ AUTO_SNAPSHOT_FILE = DATA_DIR / "auto_snapshot_config.json"
 UI_PREFS_FILE = DATA_DIR / "ui_prefs.json"
 SESSION_KEY_FILE = DATA_DIR / ".session_key"
 SESSION_PERSISTENCE_FILE = DATA_DIR / "sessions.json"
+AUTOMATIONS_FILE = DATA_DIR / "automations.json"
 LAST_GOOD_DASHBOARD_FILE = DATA_DIR / "last_good_dashboard.json"
 PROFILES_FILE = DATA_DIR / "profiles.json"
 EMAIL_CONFIG_FILE = DATA_DIR / "email_config.json"
@@ -11109,6 +11110,86 @@ def schedule_alert_automation(automation: AlertAutomation) -> None:
     timer.start()
 
 
+def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
+    return {
+        "automation_id": automation.automation_id,
+        "session_id": automation.session_id,
+        "smtp_host": automation.smtp_host,
+        "smtp_port": automation.smtp_port,
+        "smtp_username": automation.smtp_username,
+        "encrypted_smtp_password": automation.encrypted_smtp_password,
+        "smtp_from": automation.smtp_from,
+        "recipients": list(automation.recipients),
+        "smtp_security": automation.smtp_security,
+        "interval_minutes": automation.interval_minutes,
+        "trigger": automation.trigger,
+        "schedule_type": automation.schedule_type,
+        "report_time": automation.report_time,
+        "created_at": automation.created_at,
+        "theme": automation.theme,
+        "last_signature": automation.last_signature,
+    }
+
+
+def persist_automations() -> None:
+    """Write scheduled automations to disk so they survive a restart. Without a
+    stable encryption key the SMTP password cannot be persisted safely, so we
+    skip persistence entirely (matches the session-persistence policy)."""
+    if not WMI_CIPHER:
+        return
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        records = {key: _automation_to_dict(a) for key, a in _automation_items_snapshot()}
+        tmp = AUTOMATIONS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(records, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(AUTOMATIONS_FILE)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def restore_automations_from_disk() -> int:
+    """Recreate and reschedule automations saved by a previous run. Must be
+    called AFTER sessions are restored, since an automation needs its session."""
+    if not WMI_CIPHER or not AUTOMATIONS_FILE.exists():
+        return 0
+    try:
+        records = json.loads(AUTOMATIONS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(records, dict):
+        return 0
+    restored = 0
+    for aid, rec in records.items():
+        try:
+            session_id = str(rec.get("session_id") or "")
+            if not session_id or not _session_exists(session_id):
+                continue  # session gone; cannot refresh the dashboard for it
+            automation = AlertAutomation(
+                automation_id=str(rec.get("automation_id") or aid),
+                session_id=session_id,
+                smtp_host=str(rec.get("smtp_host") or ""),
+                smtp_port=int(rec.get("smtp_port") or DEFAULT_API_PORT),
+                smtp_username=str(rec.get("smtp_username") or ""),
+                encrypted_smtp_password=str(rec.get("encrypted_smtp_password") or ""),
+                smtp_from=str(rec.get("smtp_from") or ""),
+                recipients=[str(r) for r in (rec.get("recipients") or [])],
+                smtp_security=str(rec.get("smtp_security") or "starttls"),
+                interval_minutes=int(rec.get("interval_minutes") or 60),
+                trigger=str(rec.get("trigger") or "critical"),
+                schedule_type=str(rec.get("schedule_type") or "alert"),
+                report_time=str(rec.get("report_time") or "08:00"),
+                created_at=float(rec.get("created_at") or time.time()),
+                theme=str(rec.get("theme") or "default"),
+                last_signature=str(rec.get("last_signature") or ""),
+            )
+            _put_automation(automation.automation_id, automation)
+            schedule_alert_automation(automation)
+            restored += 1
+        except (TypeError, ValueError, KeyError) as exc:
+            debug_log(f"restore_automations: skipped {aid}: {exc}")
+    return restored
+
+
 def scheduled_dashboard_email_payload(dashboard: dict[str, Any]) -> tuple[str, str, dict[str, tuple[bytes, str, str]]]:
     snapshot_png = render_dashboard_snapshot_png(dashboard)
     attachments: dict[str, tuple[bytes, str, str]] = {}
@@ -11197,6 +11278,8 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         if raw_schedule_type in ("alert", "daily_report"):
             schedule_type = raw_schedule_type
             stopped = cancel_alert_automation(automation_key(session_id, schedule_type))
+            if stopped:
+                persist_automations()
             kind = "Daily dashboard report" if schedule_type == "daily_report" else "Alert automation"
             summary = active_automation_summary(session_id)
             return HTTPStatus.OK, {
@@ -11209,6 +11292,8 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 "activeAutomations": summary,
             }
         stopped_count = cancel_session_automations(session_id)
+        if stopped_count:
+            persist_automations()
         return HTTPStatus.OK, {
             "ok": True,
             "message": (
@@ -11299,6 +11384,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
     cancel_alert_automation(automation_id)
     _put_automation(automation_id, automation)
     schedule_alert_automation(automation)
+    persist_automations()
     active_summary = active_automation_summary(session_id)
     message = (
         f"Daily backup/SLA report scheduled for {automation.report_time}."
@@ -12835,6 +12921,10 @@ def run(argv: list[str] | None = None) -> int:
                     SHARED_DASHBOARD_STATE["sessionId"] = ids[0]
         else:
             print("No previous sessions to restore (connect via browser to begin monitoring).")
+        # Reschedule saved email automations now that their sessions exist again.
+        automations = restore_automations_from_disk()
+        if automations:
+            print(f"Restored {automations} scheduled email automation(s) from previous run.")
 
     threading.Thread(target=_restore_sessions_bg, name="session-restore", daemon=True).start()
     threading.Thread(target=auto_snapshot_worker, name="auto-snapshot", daemon=True).start()
