@@ -4,6 +4,22 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] — 2026-05-31
+
+### Changed
+- **Rebuilt the email-automation scheduler for reliability.** Scheduled reports
+  still weren't firing dependably. Each automation used its own long-lived
+  `threading.Timer` (up to 24 h), and any failure was captured only in memory —
+  invisible and fragile. Replaced this with a single background scheduler loop
+  (`automation_scheduler_loop`, 30 s tick) that stores each automation's
+  `next_run_at` and fires due ones, mirroring the proven shared-refresh loop.
+  - Every step is now logged: when an automation is scheduled (with the exact
+    next-run wall-clock time), when it fires, the dashboard build status, and
+    the final result. Send failures are logged at WARNING level (visible without
+    `--debug`); full step detail is at DEBUG.
+  - The next run time is recomputed after every run and automation state is
+    persisted, so the schedule self-heals and survives restarts.
+
 ## [2.2.9] — 2026-05-31
 
 ### Fixed
