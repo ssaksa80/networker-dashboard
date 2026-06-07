@@ -4,6 +4,15 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.3.1] — 2026-06-07
+
+### Added
+- `--debug` now logs the action of every `/api/alert-automation` request
+  (`action=start|save|test|stop`, scheduleType, recipient count) on entry. This
+  pinpoints whether a popup interaction actually scheduled a report
+  (`action=start`) or merely saved the configuration (`action=save`), which was
+  previously indistinguishable in the logs.
+
 ## [2.3.0] — 2026-05-31
 
 ### Changed
