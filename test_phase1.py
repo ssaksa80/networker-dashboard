@@ -159,6 +159,57 @@ class SnapshotWriteTests(unittest.TestCase):
         self.assertEqual(nd.load_dashboard_snapshots(), data)
 
 
+class AutomationPersistenceTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._orig = (nd.DATA_DIR, nd.AUTOMATIONS_FILE)
+        nd.DATA_DIR = Path(self._tmpdir)
+        nd.AUTOMATIONS_FILE = nd.DATA_DIR / "automations.json"
+        nd.ALERT_AUTOMATIONS.clear()
+        nd.DASHBOARD_SESSIONS.clear()
+
+    def tearDown(self):
+        for k in list(nd._automation_keys_snapshot()):
+            nd.cancel_alert_automation(k)
+        nd.ALERT_AUTOMATIONS.clear()
+        nd.DASHBOARD_SESSIONS.clear()
+        nd.DATA_DIR, nd.AUTOMATIONS_FILE = self._orig
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make(self, sid="sess-1", stype="daily_report"):
+        return nd.AlertAutomation(
+            automation_id=nd.automation_key(sid, stype), session_id=sid,
+            smtp_host="smtp.x", smtp_port=587, smtp_username="u",
+            encrypted_smtp_password=nd.encrypt_process_secret("pw"),
+            smtp_from="a@x.com", recipients=["b@x.com"], smtp_security="starttls",
+            interval_minutes=60, trigger="critical", schedule_type=stype,
+            report_time="08:00", created_at=time.time(), theme="midnight",
+        )
+
+    @unittest.skipIf(nd.WMI_CIPHER is None, "no stable encryption key available")
+    def test_persist_and_restore_reschedules(self):
+        sid = "sess-1"
+        nd._put_session(sid, object())
+        a = self._make(sid)
+        nd._put_automation(a.automation_id, a)
+        nd.persist_automations()
+        self.assertTrue(nd.AUTOMATIONS_FILE.exists())
+        nd.ALERT_AUTOMATIONS.clear()
+        self.assertEqual(len(nd._automation_keys_snapshot()), 0)
+        restored = nd.restore_automations_from_disk()
+        self.assertEqual(restored, 1)
+        self.assertIn(a.automation_id, nd._automation_keys_snapshot())
+
+    @unittest.skipIf(nd.WMI_CIPHER is None, "no stable encryption key available")
+    def test_restore_skips_when_session_missing(self):
+        a = self._make("ghost-session")
+        nd._put_automation(a.automation_id, a)
+        nd.persist_automations()
+        nd.ALERT_AUTOMATIONS.clear()
+        # session does not exist -> automation must not be rescheduled
+        self.assertEqual(nd.restore_automations_from_disk(), 0)
+
+
 class EmailConfigTests(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()

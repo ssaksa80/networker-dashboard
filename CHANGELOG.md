@@ -4,6 +4,19 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.2.9] — 2026-05-31
+
+### Fixed
+- Scheduled email notifications never fired (manual "Send test" worked). The
+  schedule was created with an in-memory `threading.Timer` only and was **not
+  persisted**, so any server restart wiped every scheduled alert/daily report —
+  and the daily report timer is set for a future time, so it almost never
+  survived to fire. Automations are now persisted to disk
+  (`data/automations.json`, SMTP password encrypted at rest) on schedule/stop
+  and **restored + rescheduled on startup**, right after their dashboard
+  sessions are restored. A daily report scheduled for 08:00 now still fires
+  after the server restarts.
+
 ## [2.2.8] — 2026-05-31
 
 ### Fixed
