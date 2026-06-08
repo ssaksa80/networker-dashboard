@@ -4,6 +4,21 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.3.2] — 2026-06-08
+
+### Fixed
+- **Scheduled email reports now arm on "Save configuration."** Debug logging
+  added in 2.3.1 revealed the real cause: users clicked **Save configuration**
+  (`action=save`, which only persisted recipients/theme/SMTP) and never the
+  separate **Schedule selected report** button (`action=start`, which actually
+  armed `next_run_at`). The schedule therefore stayed inactive and no report ever
+  fired. `handle_alert_automation` now also arms the schedule on `action=save`
+  when a live session is connected and the config is schedulable (alert, or
+  daily_report with a report time and recipients), matching the user's
+  expectation that saving enables the notification. The standalone Schedule
+  button still works; saving with malformed SMTP fields still completes the plain
+  config save without raising.
+
 ## [2.3.1] — 2026-06-07
 
 ### Added
