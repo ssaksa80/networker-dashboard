@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.3.2"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -11359,10 +11359,64 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         }
     if action == "save":
         config = save_email_config_from_payload(payload)
+        # Saving an alert/daily-report config with a live session also arms its
+        # schedule. Users expect "Save" to enable the notification; the separate
+        # "Schedule" button was a hidden second step that left reports inactive.
+        scheduled_message = ""
+        active_summary = ""
+        try:
+            raw_schedule_type = str(payload.get("scheduleType") or "").strip().lower()
+            schedulable = raw_schedule_type in ("alert", "daily_report")
+            if schedulable and session_id and _session_exists(session_id):
+                settings = parse_smtp_settings(payload)
+                can_schedule = (
+                    bool(settings["recipients"])
+                    and (
+                        settings["schedule_type"] != "daily_report"
+                        or bool(settings["report_time"])
+                    )
+                )
+                if can_schedule:
+                    automation_id = automation_key(session_id, settings["schedule_type"])
+                    existing = existing_smtp_automation(session_id, settings["schedule_type"])
+                    smtp_password = settings["smtp_password"] or (
+                        decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
+                    ) or saved_email_smtp_password()
+                    automation = AlertAutomation(
+                        automation_id=automation_id,
+                        session_id=session_id,
+                        smtp_host=settings["smtp_host"],
+                        smtp_port=settings["smtp_port"],
+                        smtp_username=settings["smtp_username"],
+                        encrypted_smtp_password=encrypt_process_secret(smtp_password),
+                        smtp_from=settings["smtp_from"],
+                        recipients=settings["recipients"],
+                        smtp_security=settings["smtp_security"],
+                        interval_minutes=settings["interval_minutes"],
+                        trigger=settings["trigger"],
+                        schedule_type=settings["schedule_type"],
+                        report_time=settings["report_time"],
+                        created_at=time.time(),
+                        theme=settings["theme"],
+                    )
+                    cancel_alert_automation(automation_id)
+                    _put_automation(automation_id, automation)
+                    schedule_alert_automation(automation)
+                    persist_automations()
+                    active_summary = active_automation_summary(session_id)
+                    scheduled_message = (
+                        f" Daily backup/SLA report scheduled for {automation.report_time}."
+                        if automation.schedule_type == "daily_report"
+                        else f" Alert automation scheduled every {automation.interval_minutes} minute(s)."
+                    )
+        except BadRequest:
+            # Bad SMTP/schedule fields shouldn't block a plain config save.
+            pass
         return HTTPStatus.OK, {
             "ok": True,
-            "message": "Email notification configuration saved.",
+            "message": "Email notification configuration saved." + scheduled_message,
             "config": config,
+            "activeAutomations": active_summary,
         }
     if action not in ("start", "test"):
         raise BadRequest("Alert automation action must be start, test, save, or stop.")
