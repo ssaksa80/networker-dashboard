@@ -11237,6 +11237,35 @@ def scheduled_dashboard_email_payload(dashboard: dict[str, Any]) -> tuple[str, s
     return plain, html_body, attachments
 
 
+def _dashboard_content_signature(dashboard: dict[str, Any]) -> str:
+    """Stable hash of meaningful dashboard fields (no timestamps), used for
+    daily-report dedup so an unchanged dashboard is not re-emailed."""
+    try:
+        summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
+        tables = dashboard.get("tables") if isinstance(dashboard.get("tables"), dict) else {}
+        keys = ("totalJobs", "successfulJobs", "failedJobs", "activeJobs",
+                "recoveryJobs", "cloneJobs", "totalAlerts", "slaPercent", "health", "range")
+        payload: dict[str, Any] = {"summary": {k: summary.get(k) for k in keys}}
+
+        def _job_key(j: Any) -> tuple[str, str, str]:
+            if not isinstance(j, dict):
+                return ("", "", "")
+            return (str(j.get("name") or ""), str(j.get("client") or ""), str(j.get("status") or ""))
+
+        def _alert_key(a: Any) -> tuple[str, str]:
+            if not isinstance(a, dict):
+                return ("", "")
+            return (str(a.get("message") or ""), str(a.get("severity") or ""))
+
+        payload["jobs"] = sorted(_job_key(j) for j in (tables.get("jobs") or []))
+        payload["failedJobs"] = sorted(_job_key(j) for j in (tables.get("failedJobs") or []))
+        payload["alerts"] = sorted(_alert_key(a) for a in (tables.get("alerts") or []))
+        blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha1(blob).hexdigest()
+    except Exception:
+        return ""
+
+
 def run_alert_automation(automation_id: str) -> None:
     automation = _get_automation(automation_id)
     if not automation:
@@ -11269,6 +11298,13 @@ def run_alert_automation(automation_id: str) -> None:
             # the schedule was created.
             dashboard["theme"] = load_ui_theme() or automation.theme
             dashboard["scheduledReport"] = True
+            new_signature = _dashboard_content_signature(dashboard)
+            if new_signature and new_signature == automation.last_signature:
+                automation.last_result = (
+                    f"Skipped at {generated_at()}: no change since last successful report"
+                )
+                automation.last_run = time.time()
+                return
             plain, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
             report_password = decrypt_process_secret(automation.encrypted_smtp_password)
             smtp_debug = send_smtp_email(
@@ -11279,7 +11315,7 @@ def run_alert_automation(automation_id: str) -> None:
                 html_body,
                 attachments=attachments,
             ) or smtp_debug_snapshot(automation, report_password, "sent")
-            automation.last_signature = dashboard.get("generatedAt") or generated_at()
+            automation.last_signature = new_signature or (dashboard.get("generatedAt") or generated_at())
             automation.last_result = (
                 f"Sent daily backup/SLA report at {generated_at()} "
                 f"via {smtp_debug.get('host')}:{smtp_debug.get('port')}"
