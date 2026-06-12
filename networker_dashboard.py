@@ -1205,6 +1205,25 @@ HTML_PAGE = r"""<!doctype html>
       white-space: pre-wrap;
     }
 
+    .email-schedule-list {
+      display: flex; flex-direction: column; gap: 6px;
+      padding: 10px 14px 0;
+    }
+    .email-schedule-list:empty { display: none; }
+    .email-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border: 1px solid var(--line);
+      border-radius: 8px; background: var(--surface2);
+      font-size: 12px;
+    }
+    .email-row strong { color: var(--ink); font-weight: 700; min-width: 110px; }
+    .email-row .em-meta {
+      color: var(--muted); flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .email-row .em-actions { display: flex; gap: 6px; }
+    .email-row button { font-size: 12px; padding: 4px 10px; }
+
     .snapshot-controls {
       display: flex;
       align-items: end;
@@ -3022,6 +3041,7 @@ HTML_PAGE = r"""<!doctype html>
             <span id="alertAutomationStatus" class="automation-status">Not scheduled</span>
             <button id="alertModalCloseBtn" class="ghost modal-close" type="button" aria-label="Close email automation popup">x</button>
           </div>
+          <div id="emailScheduleList" class="email-schedule-list" aria-label="Saved schedules"></div>
           <div class="automation-grid">
             <label>
               SMTP host
@@ -4303,11 +4323,88 @@ HTML_PAGE = r"""<!doctype html>
       } catch (_) { /* keep current form values */ }
     }
 
+    let currentEmailAutomationId = "";
+
+    function _emailEscape(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function editEmailRow(id, rows) {
+      const s = (rows || []).find(r => r.automationId === id);
+      if (!s) return;
+      currentEmailAutomationId = id;
+      document.getElementById("emailScheduleType").value = s.scheduleType || "alert";
+      document.getElementById("alertIntervalMinutes").value = s.intervalMinutes || 60;
+      document.getElementById("dailyReportTime").value = s.reportTime || "08:00";
+      document.getElementById("alertTrigger").value = s.trigger || "critical";
+      document.getElementById("smtpTo").value = s.recipients || "";
+      if (s.smtpHost) document.getElementById("smtpHost").value = s.smtpHost;
+      if (s.smtpPort) smtpPort.value = s.smtpPort;
+      if (s.smtpSecurity) smtpSecurity.value = s.smtpSecurity;
+      if (s.smtpUsername) smtpUsername.value = s.smtpUsername;
+      if (s.smtpFrom) document.getElementById("smtpFrom").value = s.smtpFrom;
+      syncSmtpSecurityFields();
+      applyEmailTypeBlock();
+      alertAutomationStatus.textContent = "Editing schedule " + id + " - update fields and click Schedule or Save.";
+    }
+
+    async function deleteEmailRow(id) {
+      if (!sessionId) return;
+      try {
+        await fetch("/api/alert-automation", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action: "stop", sessionId, automationId: id}),
+          cache: "no-store",
+        });
+      } catch (_e) {}
+      if (currentEmailAutomationId === id) currentEmailAutomationId = "";
+      refreshEmailScheduleList();
+    }
+
+    async function refreshEmailScheduleList() {
+      const list = document.getElementById("emailScheduleList");
+      if (!list) return;
+      if (!sessionId) { list.innerHTML = ""; return; }
+      try {
+        const r = await fetch("/api/alert-automation", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action: "list", sessionId}),
+          cache: "no-store",
+        });
+        const data = await r.json();
+        if (!r.ok || !data.ok) { list.innerHTML = ""; return; }
+        const rows = data.schedules || [];
+        if (!rows.length) { list.innerHTML = ""; return; }
+        list.innerHTML = rows.map(s => {
+          const typeLabel = s.scheduleType === "daily_report" ? "Daily report" : "Alert check";
+          const cadence = s.scheduleType === "daily_report"
+            ? ("at " + (s.reportTime || "08:00"))
+            : ("every " + (s.intervalMinutes || 0) + " min");
+          return '<div class="email-row" data-id="' + _emailEscape(s.automationId) + '">'
+            + '<strong>' + _emailEscape(typeLabel) + '</strong>'
+            + '<span class="em-meta">' + _emailEscape(s.recipients || "") + ' &middot; '
+            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + '</span>'
+            + '<div class="em-actions">'
+            + '<button type="button" class="ghost em-edit" data-id="' + _emailEscape(s.automationId) + '">Edit</button>'
+            + '<button type="button" class="ghost em-del" data-id="' + _emailEscape(s.automationId) + '">Delete</button>'
+            + '</div></div>';
+        }).join("");
+        list.querySelectorAll(".em-edit").forEach(b => b.addEventListener("click", () => editEmailRow(b.getAttribute("data-id"), rows)));
+        list.querySelectorAll(".em-del").forEach(b => b.addEventListener("click", () => deleteEmailRow(b.getAttribute("data-id"))));
+      } catch (_e) { list.innerHTML = ""; }
+    }
+
     function openAlertAutomationModal() {
       alertAutomationModal.classList.add("open");
       alertAutomationModal.setAttribute("aria-hidden", "false");
       syncSmtpSecurityFields();
       loadEmailConfigIntoForm();
+      applyEmailTypeBlock();
+      refreshEmailScheduleList();
       setTimeout(() => document.getElementById("smtpHost").focus(), 0);
     }
 
@@ -4315,6 +4412,7 @@ HTML_PAGE = r"""<!doctype html>
       alertAutomationModal.classList.remove("open");
       alertAutomationModal.setAttribute("aria-hidden", "true");
       smtpPassword.value = "";
+      currentEmailAutomationId = "";
       alertConfigBtn.focus();
     }
 
@@ -4322,6 +4420,7 @@ HTML_PAGE = r"""<!doctype html>
       const payload = {
         action,
         sessionId,
+        automationId: currentEmailAutomationId || "",
         smtpHost: document.getElementById("smtpHost").value.trim(),
         smtpPort: smtpPort.value.trim(),
         smtpSecurity: smtpSecurity.value,
@@ -4394,9 +4493,13 @@ HTML_PAGE = r"""<!doctype html>
           ? `${data.message || "Alert automation updated"}\\n${successDebug}`
           : data.message || "Alert automation updated";
         if (action === "test") setStatus("Test email sent", "ok");
-        if (action === "save") setStatus("Email configuration saved", "ok");
         if (action === "start") setStatus(payload.scheduleType === "daily_report" ? "Report scheduled" : "Alerts scheduled", "ok");
         if (action === "stop") setStatus("Schedule stopped", "neutral");
+        if (action === "save") setStatus("Configuration saved", "ok");
+        if (action === "start" || action === "save" || action === "stop") {
+          currentEmailAutomationId = "";
+          refreshEmailScheduleList();
+        }
       } catch (error) {
         alertAutomationStatus.textContent = error.message || "Alert automation failed";
         setStatus("Email automation failed", "bad");
