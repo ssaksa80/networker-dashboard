@@ -51,5 +51,73 @@ class DashboardSignatureTests(unittest.TestCase):
         self.assertNotEqual(nd._dashboard_content_signature(a), nd._dashboard_content_signature(b))
 
 
+class MultiScheduleTests(unittest.TestCase):
+    def setUp(self):
+        import networker_dashboard as _nd
+        self.nd = _nd
+        self._orig_session_exists = _nd._session_exists
+        self._orig_persist = _nd.persist_automations
+        self._orig_schedule = _nd.schedule_alert_automation
+        _nd._session_exists = lambda sid: sid == "S1"
+        _nd.persist_automations = lambda: None
+        _nd.schedule_alert_automation = lambda automation: None
+        with _nd.REGISTRY_LOCK:
+            _nd.ALERT_AUTOMATIONS.clear()
+
+    def tearDown(self):
+        self.nd._session_exists = self._orig_session_exists
+        self.nd.persist_automations = self._orig_persist
+        self.nd.schedule_alert_automation = self._orig_schedule
+        with self.nd.REGISTRY_LOCK:
+            self.nd.ALERT_AUTOMATIONS.clear()
+
+    def _start(self, recipients, automation_id=""):
+        return self.nd.handle_alert_automation({
+            "action": "start",
+            "sessionId": "S1",
+            "automationId": automation_id,
+            "smtpHost": "smtp.example.com",
+            "smtpPort": 25,
+            "smtpSecurity": "none",
+            "smtpFrom": "from@example.com",
+            "smtpTo": recipients,
+            "intervalMinutes": 30,
+            "trigger": "all",
+            "scheduleType": "daily_report",
+            "reportTime": "08:00",
+            "theme": "default",
+        })
+
+    def test_list_empty(self):
+        status, body = self.nd.handle_alert_automation({"action": "list", "sessionId": "S1"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["schedules"], [])
+
+    def test_start_twice_makes_two_rows(self):
+        s1, b1 = self._start("a@x.com")
+        s2, b2 = self._start("b@x.com")
+        self.assertEqual(s1, 200); self.assertEqual(s2, 200)
+        self.assertNotEqual(b1["automationId"], b2["automationId"])
+        _, listed = self.nd.handle_alert_automation({"action": "list", "sessionId": "S1"})
+        self.assertEqual(len(listed["schedules"]), 2)
+
+    def test_start_with_existing_id_updates_in_place(self):
+        _, b1 = self._start("a@x.com")
+        first_id = b1["automationId"]
+        _, b2 = self._start("a-updated@x.com", automation_id=first_id)
+        self.assertEqual(b2["automationId"], first_id)
+        _, listed = self.nd.handle_alert_automation({"action": "list", "sessionId": "S1"})
+        self.assertEqual(len(listed["schedules"]), 1)
+        self.assertEqual(listed["schedules"][0]["recipients"], "a-updated@x.com")
+
+    def test_stop_by_id_removes_only_that_row(self):
+        _, b1 = self._start("a@x.com")
+        _, b2 = self._start("b@x.com")
+        self.nd.handle_alert_automation({"action": "stop", "sessionId": "S1", "automationId": b1["automationId"]})
+        _, listed = self.nd.handle_alert_automation({"action": "list", "sessionId": "S1"})
+        ids = [s["automationId"] for s in listed["schedules"]]
+        self.assertEqual(ids, [b2["automationId"]])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11358,12 +11358,56 @@ def run_alert_automation(automation_id: str) -> None:
 def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     action = str(payload.get("action") or "").strip().lower()
     session_id = str(payload.get("sessionId") or "").strip()
+    _smtp_to_raw = payload.get("smtpTo")
+    try:
+        _recip_count = len(parse_email_recipients(_smtp_to_raw))
+    except BadRequest:
+        _recip_count = 0
     debug_log(
         f"alert-automation request action={action!r} "
         f"scheduleType={str(payload.get('scheduleType') or '')!r} "
-        f"session={session_id[:8]}… recipients={len(parse_email_recipients(payload.get('smtpTo')))}"
+        f"session={session_id[:8]}… recipients={_recip_count}"
     )
+    if action == "list":
+        rows = []
+        for _key, automation in _automation_items_snapshot():
+            if automation.session_id != session_id:
+                continue
+            rows.append({
+                "automationId": automation.automation_id,
+                "scheduleType": automation.schedule_type,
+                "recipients": ", ".join(automation.recipients or []),
+                "intervalMinutes": automation.interval_minutes,
+                "reportTime": automation.report_time,
+                "trigger": automation.trigger,
+                "theme": automation.theme,
+                "smtpHost": automation.smtp_host,
+                "smtpPort": automation.smtp_port,
+                "smtpSecurity": automation.smtp_security,
+                "smtpUsername": automation.smtp_username,
+                "smtpFrom": automation.smtp_from,
+                "lastResult": automation.last_result,
+                "lastRun": automation.last_run,
+                "nextRunAt": getattr(automation, "next_run_at", 0.0),
+            })
+        return HTTPStatus.OK, {"ok": True, "schedules": rows}
     if action == "stop":
+        requested_id = str(payload.get("automationId") or "").strip()
+        if requested_id:
+            target = _get_automation(requested_id)
+            if target and target.session_id == session_id:
+                cancel_alert_automation(requested_id)
+                persist_automations()
+                return HTTPStatus.OK, {
+                    "ok": True,
+                    "message": "Schedule stopped.",
+                    "activeAutomations": active_automation_summary(session_id),
+                }
+            return HTTPStatus.OK, {
+                "ok": True,
+                "message": "No such schedule.",
+                "activeAutomations": active_automation_summary(session_id),
+            }
         raw_schedule_type = str(payload.get("scheduleType") or "").strip().lower()
         if raw_schedule_type in ("alert", "daily_report"):
             schedule_type = raw_schedule_type
@@ -11413,8 +11457,13 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                     )
                 )
                 if can_schedule:
-                    automation_id = automation_key(session_id, settings["schedule_type"])
-                    existing = existing_smtp_automation(session_id, settings["schedule_type"])
+                    requested_id = str(payload.get("automationId") or "").strip()
+                    existing_by_id = _get_automation(requested_id) if requested_id else None
+                    if existing_by_id and existing_by_id.session_id == session_id:
+                        automation_id = existing_by_id.automation_id
+                    else:
+                        automation_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
+                    existing = existing_by_id or existing_smtp_automation(session_id, settings["schedule_type"])
                     smtp_password = settings["smtp_password"] or (
                         decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
                     ) or saved_email_smtp_password()
@@ -11459,8 +11508,13 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
     if not session_id or not _session_exists(session_id):
         raise BadRequest("A live dashboard session is required before scheduling email alerts.")
     settings = parse_smtp_settings(payload)
-    automation_id = automation_key(session_id, settings["schedule_type"])
-    existing = existing_smtp_automation(session_id, settings["schedule_type"])
+    requested_id = str(payload.get("automationId") or "").strip()
+    existing_by_id = _get_automation(requested_id) if requested_id else None
+    if existing_by_id and existing_by_id.session_id == session_id:
+        automation_id = existing_by_id.automation_id
+    else:
+        automation_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
+    existing = existing_by_id or existing_smtp_automation(session_id, settings["schedule_type"])
     smtp_password = settings["smtp_password"] or (
         decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
     ) or saved_email_smtp_password()
@@ -11539,6 +11593,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         message = f"{message} Active schedules: {active_summary}."
     return HTTPStatus.OK, {
         "ok": True,
+        "automationId": automation_id,
         "message": message,
         "activeAutomations": active_summary,
     }
