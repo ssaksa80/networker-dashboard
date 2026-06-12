@@ -4,6 +4,32 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] — 2026-06-08
+
+### Added
+- Email Automation now supports **multiple scheduled reports per session**. The
+  modal lists every saved schedule with **Edit** / **Delete** controls; the
+  Schedule / Save buttons either create a new row or update the row being
+  edited. SMTP server fields stay shared per session; each schedule keeps its
+  own email type, interval **or** daily time, trigger, recipients, and theme.
+- New `POST /api/alert-automation` `action=list` returns all schedules for the
+  current session (no SMTP password). `action=stop` accepts an `automationId`
+  to stop a specific row; the legacy `scheduleType` stop is kept.
+
+### Fixed
+- Daily reports no longer re-send when the dashboard has not changed. The
+  signature is now a content hash (`sha1` of stable summary counts + sorted
+  job / failed-job / alert identifiers — no timestamps). When the new signature
+  matches the last one, the send is skipped with `last_result = "Skipped at
+  <ts>: no change since last successful report"`. Previously the signature was
+  `generatedAt`, which always changed, so an unchanged report would still be
+  emailed on every cycle. The signature is persisted in `data/automations.json`,
+  so dedup survives a restart.
+
+### Changed
+- Each schedule now uses a per-row id (`<session_id>:<uuid>`). A session is no
+  longer capped at one alert + one daily-report entry.
+
 ## [2.3.2] — 2026-06-08
 
 ### Fixed
