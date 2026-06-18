@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.4.1"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -11231,7 +11231,32 @@ def _fire_automation_async(automation_id: str) -> None:
     ).start()
 
 
+def prune_orphaned_automations() -> int:
+    """Drop scheduled automations whose dashboard session no longer exists.
+
+    A new browser connection gets a fresh session id, so a previous session's
+    automations become orphans: invisible in the per-session modal list yet still
+    fired by the scheduler, which re-emails old reports. Pruning them here (and on
+    restore) keeps the live store — and the persisted automations.json — in sync
+    with the sessions that actually exist."""
+    removed = 0
+    for key, automation in _automation_items_snapshot():
+        if not _session_exists(automation.session_id):
+            if cancel_alert_automation(key):
+                removed += 1
+                debug_log(
+                    f"pruned orphaned automation id={key} "
+                    f"type={automation.schedule_type} session={automation.session_id[:8]}… (session gone)"
+                )
+    if removed:
+        persist_automations()
+    return removed
+
+
 def automation_scheduler_tick() -> None:
+    # Orphaned automations (session gone) must never fire — they would re-send a
+    # stale report. Prune them first, then fire only the survivors that are due.
+    prune_orphaned_automations()
     now = time.time()
     for key, automation in _automation_items_snapshot():
         nxt = float(getattr(automation, "next_run_at", 0) or 0)
@@ -11300,11 +11325,15 @@ def restore_automations_from_disk() -> int:
     if not isinstance(records, dict):
         return 0
     restored = 0
+    dropped = 0
     for aid, rec in records.items():
         try:
             session_id = str(rec.get("session_id") or "")
             if not session_id or not _session_exists(session_id):
-                continue  # session gone; cannot refresh the dashboard for it
+                # Session gone; cannot refresh its dashboard. Drop the record so
+                # the persisted file stops accumulating dead-session schedules.
+                dropped += 1
+                continue
             automation = AlertAutomation(
                 automation_id=str(rec.get("automation_id") or aid),
                 session_id=session_id,
@@ -11327,7 +11356,13 @@ def restore_automations_from_disk() -> int:
             schedule_alert_automation(automation)
             restored += 1
         except (TypeError, ValueError, KeyError) as exc:
+            dropped += 1
             debug_log(f"restore_automations: skipped {aid}: {exc}")
+    # Rewrite the file from the surviving in-memory store so orphaned/invalid
+    # records are pruned from disk, not just ignored.
+    if dropped:
+        debug_log(f"restore_automations: pruned {dropped} orphaned/invalid record(s) from {AUTOMATIONS_FILE.name}")
+        persist_automations()
     return restored
 
 
