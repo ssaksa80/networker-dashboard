@@ -162,6 +162,8 @@ class SnapshotWriteTests(unittest.TestCase):
 class AutomationSchedulerTests(unittest.TestCase):
     def setUp(self):
         nd.ALERT_AUTOMATIONS.clear()
+        nd.DASHBOARD_SESSIONS.clear()
+        nd.DASHBOARD_SESSIONS["s1"] = object()  # live session for s1:* automations
         self._orig_run = nd.run_alert_automation
         self.fired = []
         nd.run_alert_automation = lambda aid: self.fired.append(aid)
@@ -169,6 +171,7 @@ class AutomationSchedulerTests(unittest.TestCase):
     def tearDown(self):
         nd.run_alert_automation = self._orig_run
         nd.ALERT_AUTOMATIONS.clear()
+        nd.DASHBOARD_SESSIONS.clear()
 
     def _auto(self, next_at):
         a = nd.AlertAutomation(
@@ -200,6 +203,15 @@ class AutomationSchedulerTests(unittest.TestCase):
         nd.automation_scheduler_tick()
         time.sleep(0.2)
         self.assertEqual(self.fired, [])
+
+    def test_orphaned_automation_pruned_and_does_not_fire(self):
+        # Automation whose session no longer exists must be removed, not fired.
+        self._auto(time.time() - 5)
+        nd.DASHBOARD_SESSIONS.clear()  # session s1 gone
+        nd.automation_scheduler_tick()
+        time.sleep(0.2)
+        self.assertEqual(self.fired, [])
+        self.assertIsNone(nd._get_automation("s1:daily_report"))
 
 
 class AutomationPersistenceTests(unittest.TestCase):

@@ -4,6 +4,22 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.4.1] — 2026-06-08
+
+### Fixed
+- **Orphaned schedules from old sessions kept emailing.** Each browser
+  connection gets a fresh session id, so a previous session's automations became
+  orphans: invisible in the per-session modal list (which filters by the current
+  `session_id`) yet still fired by the scheduler, which re-sent old reports from
+  stale entries in `data/automations.json`. The scheduler now prunes any
+  automation whose dashboard session no longer exists before firing
+  (`prune_orphaned_automations`, run every tick), cancelling it and rewriting the
+  persisted file so dead-session schedules stop sending and are removed from
+  disk. `restore_automations_from_disk` likewise now rewrites the file to drop
+  orphaned/invalid records instead of leaving them to accumulate. Net effect: the
+  only schedules that fire are the ones currently shown and configured in the
+  modal; the automations file self-heals to match the live sessions.
+
 ## [2.4.0] — 2026-06-08
 
 ### Added
