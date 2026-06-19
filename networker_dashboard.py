@@ -79,6 +79,7 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_JOBS_RESPONSE_BYTES = 64 * 1024 * 1024
 TABLE_LIMIT = 80
 HOST_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]+$")
+TIME_HHMM_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 API_VERSION_PATTERN = re.compile(r"^v[0-9]+$")
 API_VERSION_CANDIDATES = ("v3", "v2", "v1")
 REPORT_RANGES = {
@@ -5810,6 +5811,8 @@ class AlertAutomation:
     created_at: float
     theme: str = "default"
     enabled: bool = True
+    quiet_start: str = ""
+    quiet_end: str = ""
     last_run: float = 0.0
     last_result: str = "Scheduled"
     last_signature: str = ""
@@ -10082,6 +10085,11 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
     schedule_type = str(payload.get("scheduleType") or "alert").strip().lower()
     if schedule_type not in ("alert", "daily_report"):
         raise BadRequest("Email type must be alert or daily_report.")
+    quiet_start = str(payload.get("quietStart") or "").strip()
+    quiet_end = str(payload.get("quietEnd") or "").strip()
+    for label, value in (("Quiet start", quiet_start), ("Quiet end", quiet_end)):
+        if value and not TIME_HHMM_PATTERN.match(value):
+            raise BadRequest(f"{label} must be HH:MM.")
     return {
         "smtp_host": host,
         "smtp_port": port,
@@ -10095,6 +10103,8 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
         "schedule_type": schedule_type,
         "report_time": parse_report_time(payload.get("reportTime")),
         "theme": parse_theme(payload.get("theme")),
+        "quiet_start": quiet_start,
+        "quiet_end": quiet_end,
     }
 
 
@@ -11059,6 +11069,30 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
     return plain, html_body
 
 
+def within_quiet_hours(start: str, end: str, hhmm: str | None = None) -> bool:
+    """True when the current time (HH:MM) falls inside [start, end).
+    Empty start/end disables quiet hours. Windows may wrap past midnight
+    (start > end), e.g. 22:00->06:00."""
+    start = (start or "").strip()
+    end = (end or "").strip()
+    if not start or not end:
+        return False
+    try:
+        if hhmm is None:
+            hhmm = datetime.now().astimezone().strftime("%H:%M")
+        def _mins(v: str) -> int:
+            h, m = (int(p) for p in v.split(":", 1))
+            return h * 60 + m
+        now_m, s_m, e_m = _mins(hhmm), _mins(start), _mins(end)
+    except Exception:
+        return False
+    if s_m == e_m:
+        return False
+    if s_m < e_m:
+        return s_m <= now_m < e_m
+    return now_m >= s_m or now_m < e_m
+
+
 def should_send_alert(trigger: str, severity: str) -> bool:
     if trigger == "all":
         return True
@@ -11481,6 +11515,10 @@ def run_alert_automation(automation_id: str) -> None:
             )
             automation.last_run = time.time()
             return
+        if within_quiet_hours(automation.quiet_start, automation.quiet_end):
+            automation.last_result = f"Quiet hours: suppressed at {generated_at()}"
+            automation.last_run = time.time()
+            return
         severity, lines = dashboard_alert_lines(dashboard)
         signature = "|".join(lines)
         cooldown_ok = (time.time() - automation.last_run) >= (automation.interval_minutes * 60) if automation.last_run else True
@@ -11549,6 +11587,8 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 "lastRun": automation.last_run,
                 "enabled": automation.enabled,
                 "nextRunAt": getattr(automation, "next_run_at", 0.0),
+                "quietStart": automation.quiet_start,
+                "quietEnd": automation.quiet_end,
             })
         return HTTPStatus.OK, {"ok": True, "schedules": rows}
     if action == "set_enabled":
@@ -11655,6 +11695,8 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                         report_time=settings["report_time"],
                         created_at=time.time(),
                         theme=settings["theme"],
+                        quiet_start=settings["quiet_start"],
+                        quiet_end=settings["quiet_end"],
                     )
                     cancel_alert_automation(automation_id)
                     _put_automation(automation_id, automation)
@@ -11713,6 +11755,8 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         report_time=settings["report_time"],
         created_at=time.time(),
         theme=settings["theme"],
+        quiet_start=settings["quiet_start"],
+        quiet_end=settings["quiet_end"],
     )
     if action == "test":
         subject = "NetWorker dashboard test email"

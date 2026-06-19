@@ -90,5 +90,26 @@ class EnableDisableTests(unittest.TestCase):
             nd.schedule_alert_automation = orig_sched
 
 
+class QuietHoursTests(unittest.TestCase):
+    def test_within_window_same_day(self):
+        self.assertTrue(nd.within_quiet_hours("22:00", "23:00", hhmm="22:30"))
+        self.assertFalse(nd.within_quiet_hours("22:00", "23:00", hhmm="21:30"))
+
+    def test_within_window_wraps_midnight(self):
+        self.assertTrue(nd.within_quiet_hours("22:00", "06:00", hhmm="02:00"))
+        self.assertTrue(nd.within_quiet_hours("22:00", "06:00", hhmm="23:30"))
+        self.assertFalse(nd.within_quiet_hours("22:00", "06:00", hhmm="12:00"))
+
+    def test_empty_window_never_quiet(self):
+        self.assertFalse(nd.within_quiet_hours("", "", hhmm="03:00"))
+
+    def test_parse_smtp_settings_reads_quiet(self):
+        s = nd.parse_smtp_settings({
+            "smtpHost": "10.0.0.1", "smtpFrom": "a@b.com", "smtpTo": "c@d.com",
+            "quietStart": "22:00", "quietEnd": "06:00"})
+        self.assertEqual(s["quiet_start"], "22:00")
+        self.assertEqual(s["quiet_end"], "06:00")
+
+
 if __name__ == "__main__":
     unittest.main()
