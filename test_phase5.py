@@ -111,5 +111,44 @@ class QuietHoursTests(unittest.TestCase):
         self.assertEqual(s["quiet_end"], "06:00")
 
 
+class DigestAndSeverityTests(unittest.TestCase):
+    def test_parse_reads_digest(self):
+        s = nd.parse_smtp_settings({
+            "smtpHost": "10.0.0.1", "smtpFrom": "a@b.com", "smtpTo": "c@d.com",
+            "digest": True})
+        self.assertTrue(s["digest"])
+
+    def test_parse_digest_defaults_false(self):
+        s = nd.parse_smtp_settings({
+            "smtpHost": "10.0.0.1", "smtpFrom": "a@b.com", "smtpTo": "c@d.com"})
+        self.assertFalse(s["digest"])
+
+    def test_alert_subject_for_digest(self):
+        self.assertEqual(
+            nd.alert_email_subject("critical", digest=True),
+            "NetWorker dashboard alert: Critical")
+
+    def test_alert_subject_for_single(self):
+        self.assertEqual(
+            nd.alert_email_subject("critical", digest=False),
+            "NetWorker dashboard alert (single): Critical")
+
+    def test_should_send_alert_respects_trigger(self):
+        self.assertTrue(nd.should_send_alert("all", "warning"))
+        self.assertTrue(nd.should_send_alert("critical", "critical"))
+        self.assertFalse(nd.should_send_alert("critical", "warning"))
+
+    def test_list_returns_trigger_and_digest(self):
+        nd.ALERT_AUTOMATIONS.clear()
+        auto = _make_automation()
+        auto.digest = True
+        nd._put_automation(auto.automation_id, auto)
+        row = nd.handle_alert_automation(
+            {"action": "list", "sessionId": "sess1"})[1]["schedules"][0]
+        self.assertEqual(row["trigger"], "critical")
+        self.assertTrue(row["digest"])
+        nd.ALERT_AUTOMATIONS.clear()
+
+
 if __name__ == "__main__":
     unittest.main()

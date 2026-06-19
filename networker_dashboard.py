@@ -5813,6 +5813,7 @@ class AlertAutomation:
     enabled: bool = True
     quiet_start: str = ""
     quiet_end: str = ""
+    digest: bool = True
     last_run: float = 0.0
     last_result: str = "Scheduled"
     last_signature: str = ""
@@ -10105,6 +10106,7 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
         "theme": parse_theme(payload.get("theme")),
         "quiet_start": quiet_start,
         "quiet_end": quiet_end,
+        "digest": bool(payload.get("digest", False)),
     }
 
 
@@ -11456,6 +11458,13 @@ def _dashboard_content_signature(dashboard: dict[str, Any]) -> str:
         return ""
 
 
+def alert_email_subject(severity: str, digest: bool = True) -> str:
+    label = (severity or "alert").title()
+    if digest:
+        return f"NetWorker dashboard alert: {label}"
+    return f"NetWorker dashboard alert (single): {label}"
+
+
 def run_alert_automation(automation_id: str) -> None:
     automation = _get_automation(automation_id)
     if not automation:
@@ -11523,7 +11532,7 @@ def run_alert_automation(automation_id: str) -> None:
         signature = "|".join(lines)
         cooldown_ok = (time.time() - automation.last_run) >= (automation.interval_minutes * 60) if automation.last_run else True
         if should_send_alert(automation.trigger, severity) and signature != automation.last_signature and cooldown_ok:
-            subject = f"NetWorker dashboard alert: {severity.title()}"
+            subject = alert_email_subject(severity, automation.digest)
             alert_password = decrypt_process_secret(automation.encrypted_smtp_password)
             smtp_debug = send_smtp_email(
                 automation,
@@ -11589,6 +11598,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 "nextRunAt": getattr(automation, "next_run_at", 0.0),
                 "quietStart": automation.quiet_start,
                 "quietEnd": automation.quiet_end,
+                "digest": automation.digest,
             })
         return HTTPStatus.OK, {"ok": True, "schedules": rows}
     if action == "set_enabled":
@@ -11697,6 +11707,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                         theme=settings["theme"],
                         quiet_start=settings["quiet_start"],
                         quiet_end=settings["quiet_end"],
+                        digest=settings["digest"],
                     )
                     cancel_alert_automation(automation_id)
                     _put_automation(automation_id, automation)
@@ -11757,6 +11768,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         theme=settings["theme"],
         quiet_start=settings["quiet_start"],
         quiet_end=settings["quiet_end"],
+        digest=settings["digest"],
     )
     if action == "test":
         subject = "NetWorker dashboard test email"
