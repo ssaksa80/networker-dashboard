@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.4.2"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -1095,6 +1095,16 @@ HTML_PAGE = r"""<!doctype html>
       cursor: not-allowed;
     }
 
+    input:disabled,
+    select:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    label.is-disabled {
+      opacity: 0.5;
+    }
+
     .dashboard {
       display: grid;
       gap: 18px;
@@ -1147,11 +1157,17 @@ HTML_PAGE = r"""<!doctype html>
     }
     .collapse-toggle {
       display: inline-flex; align-items: center; gap: 6px;
-      background: var(--surface2); color: var(--ink);
+      background: var(--surface-2); color: var(--ink);
       border: 1px solid var(--line); border-radius: 8px;
       padding: 6px 12px; font-size: 13px; font-weight: 700; cursor: pointer;
     }
     .collapse-toggle:hover { border-color: var(--brand); }
+    .topbar .collapse-toggle {
+      background: rgba(255, 255, 255, 0.10);
+      color: #ffffff;
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+    .topbar .collapse-toggle:hover { border-color: rgba(255, 255, 255, 0.5); }
     .collapse-toggle .caret { font-size: 11px; transition: transform .2s ease; }
     .collapse-toggle[aria-expanded="true"] .caret { transform: rotate(90deg); }
     .collapsible {
@@ -1213,7 +1229,7 @@ HTML_PAGE = r"""<!doctype html>
     .email-row {
       display: flex; align-items: center; gap: 10px;
       padding: 8px 10px; border: 1px solid var(--line);
-      border-radius: 8px; background: var(--surface2);
+      border-radius: 8px; background: var(--surface-2);
       font-size: 12px;
     }
     .email-row strong { color: var(--ink); font-weight: 700; min-width: 110px; }
@@ -1339,7 +1355,7 @@ HTML_PAGE = r"""<!doctype html>
 
     .snap-badge.good { background: rgba(46, 158, 107, 0.15); color: var(--green); }
     .snap-badge.bad  { background: rgba(192, 55, 59, 0.15);  color: var(--red); }
-    .snap-badge.neutral { background: var(--surface2); color: var(--muted); }
+    .snap-badge.neutral { background: var(--surface-2); color: var(--muted); }
 
     .snap-bars { margin-top: 4px; display: flex; flex-direction: column; gap: 3px; }
 
@@ -1354,7 +1370,7 @@ HTML_PAGE = r"""<!doctype html>
 
     .snap-bar-track {
       height: 5px;
-      background: var(--surface2);
+      background: var(--surface-2);
       border-radius: 999px;
       overflow: hidden;
     }
@@ -2360,7 +2376,7 @@ HTML_PAGE = r"""<!doctype html>
       margin-top: 4px;
     }
     .server-card {
-      background: var(--surface2);
+      background: var(--surface-2);
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 14px 16px;
@@ -2446,7 +2462,7 @@ HTML_PAGE = r"""<!doctype html>
       padding: 7px 10px;
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: var(--surface2);
+      background: var(--surface-2);
       color: var(--ink);
     }
     .share-info {
@@ -2483,7 +2499,7 @@ HTML_PAGE = r"""<!doctype html>
       align-items: center;
       gap: 10px;
       padding: 8px 16px;
-      background: var(--surface2);
+      background: var(--surface-2);
       border-bottom: 1px solid var(--line);
       font-size: 13px;
       color: var(--muted);
@@ -2611,7 +2627,7 @@ HTML_PAGE = r"""<!doctype html>
 
     /* ── Table row click hint ────────────────────────────────── */
     tbody tr { cursor: pointer; }
-    tbody tr:hover td { background: var(--surface2); }
+    tbody tr:hover td { background: var(--surface-2); }
   </style>
 </head>
 <body class="connection-open">
@@ -4285,6 +4301,7 @@ HTML_PAGE = r"""<!doctype html>
       const c = emailConfigCache;
       if (!c) return;
       const smtpToEl = document.getElementById("smtpTo");
+      syncEmailTypeFields();
       if (emailScheduleType.value === "daily_report") {
         smtpToEl.value = c.dailyReport.recipients || "";
         document.getElementById("dailyReportTime").value = c.dailyReport.reportTime || "08:00";
@@ -10696,10 +10713,10 @@ def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
     .bar-chart {{ display:grid; gap:12px; margin-top:auto; }}
     .bar-row {{ display:grid; grid-template-columns:92px minmax(120px,1fr) 54px; gap:10px; align-items:center; min-height:26px; font-size:12px; font-weight:720; }}
     .bar-row > span {{ color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-    .bar-track {{ height:12px; border-radius:999px; background:var(--surface2); border:1px solid var(--line); overflow:hidden; }}
+    .bar-track {{ height:12px; border-radius:999px; background:var(--surface-2); border:1px solid var(--line); overflow:hidden; }}
     .bar-track i {{ display:block; height:100%; border-radius:inherit; }}
     .bar-row strong {{ text-align:right; font-weight:850; }}
-    .summary-band {{ padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface2); margin-top:auto; }}
+    .summary-band {{ padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); margin-top:auto; }}
     .summary-band strong {{ display:block; font-size:24px; line-height:1; font-weight:850; }}
     .summary-band span {{ display:block; margin-top:8px; color:var(--muted); font-size:12px; font-weight:720; }}
     .summary-row {{ display:flex; justify-content:space-between; gap:12px; padding:7px 0; font-size:12px; font-weight:730; }}
@@ -10709,7 +10726,7 @@ def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
     .metric span {{ color:var(--muted); font-size:12px; font-weight:720; }}
     .metric strong {{ font-size:30px; line-height:1; font-weight:820; }}
     .health-section {{ margin-top:16px; overflow:hidden; }}
-    .health-head {{ display:flex; justify-content:space-between; gap:12px; align-items:center; min-height:52px; padding:14px 16px; background:var(--surface2); border-bottom:1px solid var(--line); }}
+    .health-head {{ display:flex; justify-content:space-between; gap:12px; align-items:center; min-height:52px; padding:14px 16px; background:var(--surface-2); border-bottom:1px solid var(--line); }}
     .health-head strong {{ font-size:14px; font-weight:850; }}
     .health-head span {{ color:var(--muted); font-size:12px; }}
     .health-grid {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; padding:14px 16px 16px; }}
@@ -10717,7 +10734,7 @@ def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
     .health-card span {{ color:var(--muted); font-size:12px; font-weight:760; }}
     .health-card strong {{ font-size:20px; line-height:1.1; font-weight:850; }}
     .health-card small {{ color:var(--muted); font-size:11px; line-height:1.35; overflow-wrap:anywhere; }}
-    .health-meter {{ height:9px; border-radius:999px; background:var(--surface2); border:1px solid var(--line); overflow:hidden; }}
+    .health-meter {{ height:9px; border-radius:999px; background:var(--surface-2); border:1px solid var(--line); overflow:hidden; }}
     .health-meter i {{ display:block; height:100%; border-radius:inherit; }}
   </style>
 </head>
