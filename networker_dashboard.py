@@ -5809,6 +5809,7 @@ class AlertAutomation:
     report_time: str
     created_at: float
     theme: str = "default"
+    enabled: bool = True
     last_run: float = 0.0
     last_result: str = "Scheduled"
     last_signature: str = ""
@@ -11431,6 +11432,9 @@ def run_alert_automation(automation_id: str) -> None:
         f"session={automation.session_id[:8]}… recipients={len(automation.recipients)}"
     )
     try:
+        if not automation.enabled:
+            automation.last_result = "Paused"
+            return
         status, dashboard = build_dashboard_from_session(automation.session_id)
         debug_log(f"run_alert_automation build status={status} id={automation_id}")
         if status != HTTPStatus.OK:
@@ -11543,9 +11547,22 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 "smtpFrom": automation.smtp_from,
                 "lastResult": automation.last_result,
                 "lastRun": automation.last_run,
+                "enabled": automation.enabled,
                 "nextRunAt": getattr(automation, "next_run_at", 0.0),
             })
         return HTTPStatus.OK, {"ok": True, "schedules": rows}
+    if action == "set_enabled":
+        requested_id = str(payload.get("automationId") or "").strip()
+        target = _get_automation(requested_id) if requested_id else None
+        if not target or target.session_id != session_id:
+            return HTTPStatus.OK, {"ok": True, "message": "No such schedule."}
+        target.enabled = bool(payload.get("enabled"))
+        return HTTPStatus.OK, {
+            "ok": True,
+            "automationId": requested_id,
+            "enabled": target.enabled,
+            "message": "Schedule resumed." if target.enabled else "Schedule paused.",
+        }
     if action == "stop":
         requested_id = str(payload.get("automationId") or "").strip()
         if requested_id:
