@@ -150,5 +150,18 @@ class DigestAndSeverityTests(unittest.TestCase):
         nd.ALERT_AUTOMATIONS.clear()
 
 
+class PersistenceRoundTripTests(unittest.TestCase):
+    def test_automation_to_dict_includes_new_fields(self):
+        auto = _make_automation(enabled=False)
+        auto.quiet_start = "22:00"
+        auto.quiet_end = "06:00"
+        auto.digest = False
+        d = nd._automation_to_dict(auto)
+        self.assertEqual(d["enabled"], False)
+        self.assertEqual(d["quiet_start"], "22:00")
+        self.assertEqual(d["quiet_end"], "06:00")
+        self.assertEqual(d["digest"], False)
+
+
 if __name__ == "__main__":
     unittest.main()

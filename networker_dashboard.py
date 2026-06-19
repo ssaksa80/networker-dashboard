@@ -11417,6 +11417,10 @@ def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
         "created_at": automation.created_at,
         "theme": automation.theme,
         "last_signature": automation.last_signature,
+        "enabled": automation.enabled,
+        "quiet_start": automation.quiet_start,
+        "quiet_end": automation.quiet_end,
+        "digest": automation.digest,
     }
 
 
@@ -11474,6 +11478,10 @@ def restore_automations_from_disk() -> int:
                 created_at=float(rec.get("created_at") or time.time()),
                 theme=str(rec.get("theme") or "default"),
                 last_signature=str(rec.get("last_signature") or ""),
+                enabled=bool(rec.get("enabled", True)),
+                quiet_start=str(rec.get("quiet_start") or ""),
+                quiet_end=str(rec.get("quiet_end") or ""),
+                digest=bool(rec.get("digest", True)),
             )
             _put_automation(automation.automation_id, automation)
             schedule_alert_automation(automation)
