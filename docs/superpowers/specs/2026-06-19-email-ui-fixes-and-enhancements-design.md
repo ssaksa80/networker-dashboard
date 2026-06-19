@@ -56,16 +56,20 @@ controls) render with their intended surface background.
   Toggling it posts `action=set_enabled`. Edit / Delete buttons stay.
 - A paused row renders with `.is-disabled` styling and its meta shows `(paused)`.
 
-### Backend
+### Backend (architecture as actually built)
+Automations are **in-memory only**: each `AlertAutomation` self-reschedules with a
+daemon `threading.Timer` at the end of `run_alert_automation` (no 30 s loop, no
+`automations.json`, no orphan pruning — the CHANGELOG 2.4.1 prune entry describes
+a divergent lineage not present in this file). So no disk migration is needed.
+
 - `AlertAutomation` (dataclass ~line 5790): add `enabled: bool = True`.
 - New handler action **`set_enabled`**: payload `{automationId, enabled}` for a
-  row whose `session_id == session_id`; sets the flag, `persist_automations()`,
-  returns `{ok, automationId, enabled}`.
-- `automation_scheduler_loop`: skip rows where `enabled is False` (do not fire,
-  do not advance `last_run`; still reschedule `next_run_at` so resume is prompt).
+  row whose `session_id == session_id`; flips `automation.enabled`, returns
+  `{ok, automationId, enabled}`. The timer keeps running.
+- `run_alert_automation`: at the top, if `automation.enabled is False`, set
+  `last_result = "Paused"` and return early (the `finally` still reschedules the
+  timer, so resume is immediate once re-enabled).
 - `action=list` row dict gains `"enabled"`.
-- Persistence: `enabled` written/read in the existing `automations.json` schema
-  (default `True` for legacy rows that lack the key).
 
 ## Enhancements
 
@@ -90,24 +94,22 @@ controls) render with their intended surface background.
 - No new timer; digest only affects how the per-interval send is composed.
 - UI: a checkbox; grayed out for daily report.
 
-### 3. Per-schedule severity threshold
-- `trigger` already exists (`critical` / `warning` / …). Confirm the alert-match
-  code honours it per schedule; if it currently hard-codes a level, wire it to
-  `automation.trigger`. Expose existing `alertTrigger` select per schedule (it is
-  already in the form and persisted) — no new field, just ensure `list`/edit
-  round-trips it and the match path reads it.
-
-## Persistence & migration
-All new fields (`enabled`, `quiet_start`, `quiet_end`, `digest`) get safe
-defaults when absent, so existing `automations.json` rows load unchanged.
+### 3. Per-schedule severity threshold (already largely wired)
+`should_send_alert(automation.trigger, severity)` already gates the alert send by
+`trigger` (`critical` / `warning` / `all`), `parse_smtp_settings` validates it,
+`AlertAutomation` stores it, and `editEmailRow` restores it. The only gap is that
+`action=list` does already return `trigger` — so #3 is effectively done. Task:
+add a regression test asserting `list` round-trips `trigger` and that
+`should_send_alert` respects each level, and surface the existing `alertTrigger`
+select on each saved row's meta line. No new field.
 
 ## Tests (`test_phase5.py`)
-- `set_enabled` flips a row's flag; scheduler skips a disabled row; re-enable
-  fires again.
+- `set_enabled` flips a row's flag; `run_alert_automation` on a disabled row sets
+  `last_result == "Paused"` and does not call `send_smtp_email`; re-enable sends.
 - Quiet-hours window (including midnight-wrap) suppresses an alert send and sets
   the quiet `last_result`; outside window sends.
-- Legacy automation dict without the new keys loads with defaults.
-- `list` returns `enabled`, `quietStart`, `quietEnd`, `digest`, `trigger`.
+- `should_send_alert` respects `critical` / `warning` / `all`; `list` returns
+  `enabled`, `quietStart`, `quietEnd`, `digest`, `trigger`.
 
 ## Version
 Bump `APP_VERSION` `"2.4.2"` → `"2.5.0"` (new features). CHANGELOG `[2.5.0]`:
