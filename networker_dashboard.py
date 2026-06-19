@@ -3246,6 +3246,7 @@ HTML_PAGE = r"""<!doctype html>
           <span id="paginationMeta"></span>
           <button id="showMoreBtn" class="ghost" type="button">Show more</button>
           <button id="showAllBtn" class="ghost" type="button">Show all</button>
+          <button id="showLessBtn" class="ghost hidden" type="button">Show less</button>
         </div>
         <div id="timelineWrap" class="timeline-wrap hidden"></div>
         <div id="heatmapWrap" class="heatmap-wrap hidden"></div>
@@ -5135,6 +5136,7 @@ HTML_PAGE = r"""<!doctype html>
       tableWrap.classList.add("hidden");
       emptyState.classList.add("hidden");
       heatmapWrap.classList.add("hidden");
+      paginationBar.classList.add("hidden");
       timelineWrap.classList.remove("hidden");
 
       const jobs = latestDashboard?.tables?.jobs || [];
@@ -5225,6 +5227,7 @@ HTML_PAGE = r"""<!doctype html>
       tableWrap.classList.add("hidden");
       emptyState.classList.add("hidden");
       timelineWrap.classList.add("hidden");
+      paginationBar.classList.add("hidden");
       heatmapWrap.classList.remove("hidden");
 
       const clients = latestDashboard?.tables?.clients || [];
@@ -5696,6 +5699,7 @@ HTML_PAGE = r"""<!doctype html>
     const paginationMeta = document.getElementById("paginationMeta");
     const showMoreBtn    = document.getElementById("showMoreBtn");
     const showAllBtn     = document.getElementById("showAllBtn");
+    const showLessBtn    = document.getElementById("showLessBtn");
     const PAGE_SIZE      = 25;
     let   pageLimit      = PAGE_SIZE;
 
@@ -5718,23 +5722,54 @@ HTML_PAGE = r"""<!doctype html>
           try { openJobDrawer(JSON.parse(tr.dataset.row || "{}")); } catch (_) {}
         });
       });
-      paginationMeta.textContent = `Showing ${showing} of ${rows.length}`;
-      if (showing < rows.length) {
+      const more = showing < rows.length;
+      paginationMeta.textContent = more
+        ? `Showing ${showing} of ${rows.length}`
+        : `Showing all ${rows.length}`;
+      // Keep the bar visible whenever the list is expandable so the user always
+      // has a control: "Show more/all" while collapsed, "Show less" once
+      // expanded. Previously the bar vanished after "Show all", leaving a long
+      // list with no way to collapse back — a scroll trap on touch devices.
+      if (rows.length <= PAGE_SIZE) {
+        paginationBar.classList.add("hidden");
+      } else {
         paginationBar.classList.remove("hidden");
+        showMoreBtn.classList.toggle("hidden", !more);
+        showAllBtn.classList.toggle("hidden", !more);
+        showLessBtn.classList.toggle("hidden", more);
         showMoreBtn.disabled = false;
         showAllBtn.disabled  = false;
-      } else {
-        paginationBar.classList.add("hidden");
+        showLessBtn.disabled = false;
       }
+    }
+
+    // Re-render the active table at the CURRENT pageLimit without resetting it.
+    // renderTable() always forces pageLimit back to PAGE_SIZE (correct for
+    // tab-switch / data refresh), so the pagination buttons must bypass it —
+    // otherwise their pageLimit change is overwritten and they do nothing.
+    function repaginate() {
+      if (activeTable === "timeline" || activeTable === "heatmap") return;
+      const def  = tableDefs[activeTable] || {title: activeTable, columns: []};
+      const rows = latestDashboard?.tables?.[activeTable] || [];
+      if (!rows.length) return;
+      renderTablePage(rows, def);
     }
 
     showMoreBtn.addEventListener("click", () => {
       pageLimit += PAGE_SIZE;
-      renderTable();
+      repaginate();
     });
     showAllBtn.addEventListener("click", () => {
       pageLimit = Infinity;
-      renderTable();
+      repaginate();
+    });
+    showLessBtn.addEventListener("click", () => {
+      pageLimit = PAGE_SIZE;
+      repaginate();
+      // Collapsing a long list leaves the viewport scrolled far down; bring the
+      // jobs section back into view so the page isn't stuck below the fold
+      // (touch devices can't easily drag back up past a tall table).
+      tableTitle.scrollIntoView({behavior: "smooth", block: "start"});
     });
 
     // ── Job detail drawer ─────────────────────────────────────────────────────
