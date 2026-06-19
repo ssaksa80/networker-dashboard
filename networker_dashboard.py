@@ -1240,6 +1240,10 @@ HTML_PAGE = r"""<!doctype html>
     }
     .email-row .em-actions { display: flex; gap: 6px; }
     .email-row button { font-size: 12px; padding: 4px 10px; }
+    .email-checkbox { flex-direction: row; align-items: center; gap: 8px; }
+    .email-checkbox input { width: auto; }
+    .email-row.is-disabled { opacity: 0.5; }
+    .email-row .em-toggle { margin-right: 8px; }
 
     .snapshot-controls {
       display: flex;
@@ -3058,7 +3062,12 @@ HTML_PAGE = r"""<!doctype html>
             <span id="alertAutomationStatus" class="automation-status">Not scheduled</span>
             <button id="alertModalCloseBtn" class="ghost modal-close" type="button" aria-label="Close email automation popup">x</button>
           </div>
-          <div id="emailScheduleList" class="email-schedule-list" aria-label="Saved schedules"></div>
+          <button class="collapse-toggle" type="button" data-toggle-target="emailScheduleListWrap" aria-expanded="false" style="margin:8px 14px 0">
+            <span class="caret">&#9656;</span> Saved schedules (<span id="emailScheduleCount">0</span>)
+          </button>
+          <div id="emailScheduleListWrap" class="collapsible">
+            <div id="emailScheduleList" class="email-schedule-list" aria-label="Saved schedules"></div>
+          </div>
           <div class="automation-grid">
             <label>
               SMTP host
@@ -3090,6 +3099,18 @@ HTML_PAGE = r"""<!doctype html>
             <label>
               Daily report time
               <input id="dailyReportTime" value="08:00" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
+            </label>
+            <label>
+              Quiet hours start
+              <input id="quietStart" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
+            </label>
+            <label>
+              Quiet hours end
+              <input id="quietEnd" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
+            </label>
+            <label class="email-checkbox">
+              <input id="emailDigest" type="checkbox" checked>
+              Digest (one email per interval)
             </label>
             <label>
               SMTP username
@@ -4298,6 +4319,31 @@ HTML_PAGE = r"""<!doctype html>
 
     let emailConfigCache = null;
 
+    function syncEmailTypeFields() {
+      const isDaily = emailScheduleType.value === "daily_report";
+      const intervalEl = document.getElementById("alertIntervalMinutes");
+      const reportTimeEl = document.getElementById("dailyReportTime");
+      if (intervalEl) {
+        intervalEl.disabled = isDaily;
+        const lbl = intervalEl.closest("label");
+        if (lbl) lbl.classList.toggle("is-disabled", isDaily);
+      }
+      if (reportTimeEl) {
+        reportTimeEl.disabled = !isDaily;
+        const lbl = reportTimeEl.closest("label");
+        if (lbl) lbl.classList.toggle("is-disabled", !isDaily);
+      }
+      const quietStart = document.getElementById("quietStart");
+      const quietEnd = document.getElementById("quietEnd");
+      const digestEl = document.getElementById("emailDigest");
+      [quietStart, quietEnd, digestEl].forEach(el => {
+        if (!el) return;
+        el.disabled = isDaily;
+        const lbl = el.closest("label");
+        if (lbl) lbl.classList.toggle("is-disabled", isDaily);
+      });
+    }
+
     function applyEmailTypeBlock() {
       const c = emailConfigCache;
       if (!c) return;
@@ -4363,6 +4409,9 @@ HTML_PAGE = r"""<!doctype html>
       if (s.smtpSecurity) smtpSecurity.value = s.smtpSecurity;
       if (s.smtpUsername) smtpUsername.value = s.smtpUsername;
       if (s.smtpFrom) document.getElementById("smtpFrom").value = s.smtpFrom;
+      document.getElementById("quietStart").value = s.quietStart || "";
+      document.getElementById("quietEnd").value = s.quietEnd || "";
+      document.getElementById("emailDigest").checked = s.digest !== false;
       syncSmtpSecurityFields();
       applyEmailTypeBlock();
       alertAutomationStatus.textContent = "Editing schedule " + id + " - update fields and click Schedule or Save.";
@@ -4382,10 +4431,23 @@ HTML_PAGE = r"""<!doctype html>
       refreshEmailScheduleList();
     }
 
+    async function toggleEmailRow(id, active) {
+      if (!sessionId) return;
+      try {
+        await fetch("/api/alert-automation", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action: "set_enabled", sessionId, automationId: id, enabled: active}),
+          cache: "no-store",
+        });
+      } catch (_e) {}
+      refreshEmailScheduleList();
+    }
+
     async function refreshEmailScheduleList() {
       const list = document.getElementById("emailScheduleList");
       if (!list) return;
-      if (!sessionId) { list.innerHTML = ""; return; }
+      if (!sessionId) { list.innerHTML = ""; const cnt0 = document.getElementById("emailScheduleCount"); if (cnt0) cnt0.textContent = "0"; return; }
       try {
         const r = await fetch("/api/alert-automation", {
           method: "POST",
@@ -4394,18 +4456,21 @@ HTML_PAGE = r"""<!doctype html>
           cache: "no-store",
         });
         const data = await r.json();
-        if (!r.ok || !data.ok) { list.innerHTML = ""; return; }
+        if (!r.ok || !data.ok) { list.innerHTML = ""; const cnt1 = document.getElementById("emailScheduleCount"); if (cnt1) cnt1.textContent = "0"; return; }
         const rows = data.schedules || [];
-        if (!rows.length) { list.innerHTML = ""; return; }
+        if (!rows.length) { list.innerHTML = ""; document.getElementById("emailScheduleCount").textContent = "0"; return; }
+        document.getElementById("emailScheduleCount").textContent = rows.length;
         list.innerHTML = rows.map(s => {
           const typeLabel = s.scheduleType === "daily_report" ? "Daily report" : "Alert check";
           const cadence = s.scheduleType === "daily_report"
             ? ("at " + (s.reportTime || "08:00"))
             : ("every " + (s.intervalMinutes || 0) + " min");
-          return '<div class="email-row" data-id="' + _emailEscape(s.automationId) + '">'
+          const paused = s.enabled === false;
+          return '<div class="email-row' + (paused ? " is-disabled" : "") + '" data-id="' + _emailEscape(s.automationId) + '">'
+            + '<label class="em-toggle"><input type="checkbox" class="em-active" data-id="' + _emailEscape(s.automationId) + '"' + (paused ? "" : " checked") + '> Active</label>'
             + '<strong>' + _emailEscape(typeLabel) + '</strong>'
             + '<span class="em-meta">' + _emailEscape(s.recipients || "") + ' &middot; '
-            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + '</span>'
+            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + (paused ? ' &middot; (paused)' : '') + '</span>'
             + '<div class="em-actions">'
             + '<button type="button" class="ghost em-edit" data-id="' + _emailEscape(s.automationId) + '">Edit</button>'
             + '<button type="button" class="ghost em-del" data-id="' + _emailEscape(s.automationId) + '">Delete</button>'
@@ -4413,7 +4478,8 @@ HTML_PAGE = r"""<!doctype html>
         }).join("");
         list.querySelectorAll(".em-edit").forEach(b => b.addEventListener("click", () => editEmailRow(b.getAttribute("data-id"), rows)));
         list.querySelectorAll(".em-del").forEach(b => b.addEventListener("click", () => deleteEmailRow(b.getAttribute("data-id"))));
-      } catch (_e) { list.innerHTML = ""; }
+        list.querySelectorAll(".em-active").forEach(b => b.addEventListener("change", () => toggleEmailRow(b.getAttribute("data-id"), b.checked)));
+      } catch (_e) { list.innerHTML = ""; const cnt2 = document.getElementById("emailScheduleCount"); if (cnt2) cnt2.textContent = "0"; }
     }
 
     function openAlertAutomationModal() {
@@ -4450,6 +4516,9 @@ HTML_PAGE = r"""<!doctype html>
         trigger: document.getElementById("alertTrigger").value,
         scheduleType: document.getElementById("emailScheduleType").value,
         reportTime: document.getElementById("dailyReportTime").value.trim(),
+        quietStart: document.getElementById("quietStart").value.trim(),
+        quietEnd: document.getElementById("quietEnd").value.trim(),
+        digest: document.getElementById("emailDigest").checked,
         theme: themeSelect.value || "default",
       };
       if (action === "test" && payload.scheduleType === "daily_report" && latestDashboard) {
