@@ -57,10 +57,14 @@ controls) render with their intended surface background.
 - A paused row renders with `.is-disabled` styling and its meta shows `(paused)`.
 
 ### Backend (architecture as actually built)
-Automations are **in-memory only**: each `AlertAutomation` self-reschedules with a
-daemon `threading.Timer` at the end of `run_alert_automation` (no 30 s loop, no
-`automations.json`, no orphan pruning — the CHANGELOG 2.4.1 prune entry describes
-a divergent lineage not present in this file). So no disk migration is needed.
+Each `AlertAutomation` self-reschedules with a daemon `threading.Timer` at the end
+of `run_alert_automation` (no 30 s loop). Automations **are persisted to disk**:
+`persist_automations` writes `AUTOMATIONS_FILE` via `_automation_to_dict`
+(~line 11402), and `restore_automations_from_disk` (~line 11439) recreates and
+reschedules them on startup, pruning orphaned/dead-session records. Persistence is
+gated on `WMI_CIPHER` (no stable key ⇒ skipped). **Any new `AlertAutomation` field
+must be added to both `_automation_to_dict` and `restore_automations_from_disk`**
+with a backward-compatible default, or it resets on restart.
 
 - `AlertAutomation` (dataclass ~line 5790): add `enabled: bool = True`.
 - New handler action **`set_enabled`**: payload `{automationId, enabled}` for a

@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
 
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.5.0"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -79,6 +79,7 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_JOBS_RESPONSE_BYTES = 64 * 1024 * 1024
 TABLE_LIMIT = 80
 HOST_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]+$")
+TIME_HHMM_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 API_VERSION_PATTERN = re.compile(r"^v[0-9]+$")
 API_VERSION_CANDIDATES = ("v3", "v2", "v1")
 REPORT_RANGES = {
@@ -1095,6 +1096,16 @@ HTML_PAGE = r"""<!doctype html>
       cursor: not-allowed;
     }
 
+    input:disabled,
+    select:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    label.is-disabled {
+      opacity: 0.5;
+    }
+
     .dashboard {
       display: grid;
       gap: 18px;
@@ -1147,11 +1158,17 @@ HTML_PAGE = r"""<!doctype html>
     }
     .collapse-toggle {
       display: inline-flex; align-items: center; gap: 6px;
-      background: var(--surface2); color: var(--ink);
+      background: var(--surface-2); color: var(--ink);
       border: 1px solid var(--line); border-radius: 8px;
       padding: 6px 12px; font-size: 13px; font-weight: 700; cursor: pointer;
     }
     .collapse-toggle:hover { border-color: var(--brand); }
+    .topbar .collapse-toggle {
+      background: rgba(255, 255, 255, 0.10);
+      color: #ffffff;
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+    .topbar .collapse-toggle:hover { border-color: rgba(255, 255, 255, 0.5); }
     .collapse-toggle .caret { font-size: 11px; transition: transform .2s ease; }
     .collapse-toggle[aria-expanded="true"] .caret { transform: rotate(90deg); }
     .collapsible {
@@ -1213,7 +1230,7 @@ HTML_PAGE = r"""<!doctype html>
     .email-row {
       display: flex; align-items: center; gap: 10px;
       padding: 8px 10px; border: 1px solid var(--line);
-      border-radius: 8px; background: var(--surface2);
+      border-radius: 8px; background: var(--surface-2);
       font-size: 12px;
     }
     .email-row strong { color: var(--ink); font-weight: 700; min-width: 110px; }
@@ -1223,6 +1240,10 @@ HTML_PAGE = r"""<!doctype html>
     }
     .email-row .em-actions { display: flex; gap: 6px; }
     .email-row button { font-size: 12px; padding: 4px 10px; }
+    .email-checkbox { flex-direction: row; align-items: center; gap: 8px; }
+    .email-checkbox input { width: auto; }
+    .email-row.is-disabled { opacity: 0.5; }
+    .email-row .em-toggle { margin-right: 8px; }
 
     .snapshot-controls {
       display: flex;
@@ -1339,7 +1360,7 @@ HTML_PAGE = r"""<!doctype html>
 
     .snap-badge.good { background: rgba(46, 158, 107, 0.15); color: var(--green); }
     .snap-badge.bad  { background: rgba(192, 55, 59, 0.15);  color: var(--red); }
-    .snap-badge.neutral { background: var(--surface2); color: var(--muted); }
+    .snap-badge.neutral { background: var(--surface-2); color: var(--muted); }
 
     .snap-bars { margin-top: 4px; display: flex; flex-direction: column; gap: 3px; }
 
@@ -1354,7 +1375,7 @@ HTML_PAGE = r"""<!doctype html>
 
     .snap-bar-track {
       height: 5px;
-      background: var(--surface2);
+      background: var(--surface-2);
       border-radius: 999px;
       overflow: hidden;
     }
@@ -2360,7 +2381,7 @@ HTML_PAGE = r"""<!doctype html>
       margin-top: 4px;
     }
     .server-card {
-      background: var(--surface2);
+      background: var(--surface-2);
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 14px 16px;
@@ -2446,7 +2467,7 @@ HTML_PAGE = r"""<!doctype html>
       padding: 7px 10px;
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: var(--surface2);
+      background: var(--surface-2);
       color: var(--ink);
     }
     .share-info {
@@ -2483,7 +2504,7 @@ HTML_PAGE = r"""<!doctype html>
       align-items: center;
       gap: 10px;
       padding: 8px 16px;
-      background: var(--surface2);
+      background: var(--surface-2);
       border-bottom: 1px solid var(--line);
       font-size: 13px;
       color: var(--muted);
@@ -2611,7 +2632,7 @@ HTML_PAGE = r"""<!doctype html>
 
     /* ── Table row click hint ────────────────────────────────── */
     tbody tr { cursor: pointer; }
-    tbody tr:hover td { background: var(--surface2); }
+    tbody tr:hover td { background: var(--surface-2); }
   </style>
 </head>
 <body class="connection-open">
@@ -3041,7 +3062,12 @@ HTML_PAGE = r"""<!doctype html>
             <span id="alertAutomationStatus" class="automation-status">Not scheduled</span>
             <button id="alertModalCloseBtn" class="ghost modal-close" type="button" aria-label="Close email automation popup">x</button>
           </div>
-          <div id="emailScheduleList" class="email-schedule-list" aria-label="Saved schedules"></div>
+          <button class="collapse-toggle" type="button" data-toggle-target="emailScheduleListWrap" aria-expanded="false" style="margin:8px 14px 0">
+            <span class="caret">&#9656;</span> Saved schedules (<span id="emailScheduleCount">0</span>)
+          </button>
+          <div id="emailScheduleListWrap" class="collapsible">
+            <div id="emailScheduleList" class="email-schedule-list" aria-label="Saved schedules"></div>
+          </div>
           <div class="automation-grid">
             <label>
               SMTP host
@@ -3073,6 +3099,18 @@ HTML_PAGE = r"""<!doctype html>
             <label>
               Daily report time
               <input id="dailyReportTime" value="08:00" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
+            </label>
+            <label>
+              Quiet hours start
+              <input id="quietStart" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
+            </label>
+            <label>
+              Quiet hours end
+              <input id="quietEnd" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
+            </label>
+            <label class="email-checkbox">
+              <input id="emailDigest" type="checkbox" checked>
+              Digest (one email per interval)
             </label>
             <label>
               SMTP username
@@ -4281,10 +4319,36 @@ HTML_PAGE = r"""<!doctype html>
 
     let emailConfigCache = null;
 
+    function syncEmailTypeFields() {
+      const isDaily = emailScheduleType.value === "daily_report";
+      const intervalEl = document.getElementById("alertIntervalMinutes");
+      const reportTimeEl = document.getElementById("dailyReportTime");
+      if (intervalEl) {
+        intervalEl.disabled = isDaily;
+        const lbl = intervalEl.closest("label");
+        if (lbl) lbl.classList.toggle("is-disabled", isDaily);
+      }
+      if (reportTimeEl) {
+        reportTimeEl.disabled = !isDaily;
+        const lbl = reportTimeEl.closest("label");
+        if (lbl) lbl.classList.toggle("is-disabled", !isDaily);
+      }
+      const quietStart = document.getElementById("quietStart");
+      const quietEnd = document.getElementById("quietEnd");
+      const digestEl = document.getElementById("emailDigest");
+      [quietStart, quietEnd, digestEl].forEach(el => {
+        if (!el) return;
+        el.disabled = isDaily;
+        const lbl = el.closest("label");
+        if (lbl) lbl.classList.toggle("is-disabled", isDaily);
+      });
+    }
+
     function applyEmailTypeBlock() {
       const c = emailConfigCache;
       if (!c) return;
       const smtpToEl = document.getElementById("smtpTo");
+      syncEmailTypeFields();
       if (emailScheduleType.value === "daily_report") {
         smtpToEl.value = c.dailyReport.recipients || "";
         document.getElementById("dailyReportTime").value = c.dailyReport.reportTime || "08:00";
@@ -4345,6 +4409,9 @@ HTML_PAGE = r"""<!doctype html>
       if (s.smtpSecurity) smtpSecurity.value = s.smtpSecurity;
       if (s.smtpUsername) smtpUsername.value = s.smtpUsername;
       if (s.smtpFrom) document.getElementById("smtpFrom").value = s.smtpFrom;
+      document.getElementById("quietStart").value = s.quietStart || "";
+      document.getElementById("quietEnd").value = s.quietEnd || "";
+      document.getElementById("emailDigest").checked = s.digest !== false;
       syncSmtpSecurityFields();
       applyEmailTypeBlock();
       alertAutomationStatus.textContent = "Editing schedule " + id + " - update fields and click Schedule or Save.";
@@ -4364,10 +4431,23 @@ HTML_PAGE = r"""<!doctype html>
       refreshEmailScheduleList();
     }
 
+    async function toggleEmailRow(id, active) {
+      if (!sessionId) return;
+      try {
+        await fetch("/api/alert-automation", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action: "set_enabled", sessionId, automationId: id, enabled: active}),
+          cache: "no-store",
+        });
+      } catch (_e) {}
+      refreshEmailScheduleList();
+    }
+
     async function refreshEmailScheduleList() {
       const list = document.getElementById("emailScheduleList");
       if (!list) return;
-      if (!sessionId) { list.innerHTML = ""; return; }
+      if (!sessionId) { list.innerHTML = ""; const cnt0 = document.getElementById("emailScheduleCount"); if (cnt0) cnt0.textContent = "0"; return; }
       try {
         const r = await fetch("/api/alert-automation", {
           method: "POST",
@@ -4376,18 +4456,21 @@ HTML_PAGE = r"""<!doctype html>
           cache: "no-store",
         });
         const data = await r.json();
-        if (!r.ok || !data.ok) { list.innerHTML = ""; return; }
+        if (!r.ok || !data.ok) { list.innerHTML = ""; const cnt1 = document.getElementById("emailScheduleCount"); if (cnt1) cnt1.textContent = "0"; return; }
         const rows = data.schedules || [];
-        if (!rows.length) { list.innerHTML = ""; return; }
+        if (!rows.length) { list.innerHTML = ""; document.getElementById("emailScheduleCount").textContent = "0"; return; }
+        document.getElementById("emailScheduleCount").textContent = rows.length;
         list.innerHTML = rows.map(s => {
           const typeLabel = s.scheduleType === "daily_report" ? "Daily report" : "Alert check";
           const cadence = s.scheduleType === "daily_report"
             ? ("at " + (s.reportTime || "08:00"))
             : ("every " + (s.intervalMinutes || 0) + " min");
-          return '<div class="email-row" data-id="' + _emailEscape(s.automationId) + '">'
+          const paused = s.enabled === false;
+          return '<div class="email-row' + (paused ? " is-disabled" : "") + '" data-id="' + _emailEscape(s.automationId) + '">'
+            + '<label class="em-toggle"><input type="checkbox" class="em-active" data-id="' + _emailEscape(s.automationId) + '"' + (paused ? "" : " checked") + '> Active</label>'
             + '<strong>' + _emailEscape(typeLabel) + '</strong>'
             + '<span class="em-meta">' + _emailEscape(s.recipients || "") + ' &middot; '
-            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + '</span>'
+            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + (paused ? ' &middot; (paused)' : '') + '</span>'
             + '<div class="em-actions">'
             + '<button type="button" class="ghost em-edit" data-id="' + _emailEscape(s.automationId) + '">Edit</button>'
             + '<button type="button" class="ghost em-del" data-id="' + _emailEscape(s.automationId) + '">Delete</button>'
@@ -4395,7 +4478,8 @@ HTML_PAGE = r"""<!doctype html>
         }).join("");
         list.querySelectorAll(".em-edit").forEach(b => b.addEventListener("click", () => editEmailRow(b.getAttribute("data-id"), rows)));
         list.querySelectorAll(".em-del").forEach(b => b.addEventListener("click", () => deleteEmailRow(b.getAttribute("data-id"))));
-      } catch (_e) { list.innerHTML = ""; }
+        list.querySelectorAll(".em-active").forEach(b => b.addEventListener("change", () => toggleEmailRow(b.getAttribute("data-id"), b.checked)));
+      } catch (_e) { list.innerHTML = ""; const cnt2 = document.getElementById("emailScheduleCount"); if (cnt2) cnt2.textContent = "0"; }
     }
 
     function openAlertAutomationModal() {
@@ -4432,6 +4516,9 @@ HTML_PAGE = r"""<!doctype html>
         trigger: document.getElementById("alertTrigger").value,
         scheduleType: document.getElementById("emailScheduleType").value,
         reportTime: document.getElementById("dailyReportTime").value.trim(),
+        quietStart: document.getElementById("quietStart").value.trim(),
+        quietEnd: document.getElementById("quietEnd").value.trim(),
+        digest: document.getElementById("emailDigest").checked,
         theme: themeSelect.value || "default",
       };
       if (action === "test" && payload.scheduleType === "daily_report" && latestDashboard) {
@@ -5792,6 +5879,10 @@ class AlertAutomation:
     report_time: str
     created_at: float
     theme: str = "default"
+    enabled: bool = True
+    quiet_start: str = ""
+    quiet_end: str = ""
+    digest: bool = True
     last_run: float = 0.0
     last_result: str = "Scheduled"
     last_signature: str = ""
@@ -10064,6 +10155,11 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
     schedule_type = str(payload.get("scheduleType") or "alert").strip().lower()
     if schedule_type not in ("alert", "daily_report"):
         raise BadRequest("Email type must be alert or daily_report.")
+    quiet_start = str(payload.get("quietStart") or "").strip()
+    quiet_end = str(payload.get("quietEnd") or "").strip()
+    for label, value in (("Quiet start", quiet_start), ("Quiet end", quiet_end)):
+        if value and not TIME_HHMM_PATTERN.match(value):
+            raise BadRequest(f"{label} must be HH:MM.")
     return {
         "smtp_host": host,
         "smtp_port": port,
@@ -10077,6 +10173,9 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
         "schedule_type": schedule_type,
         "report_time": parse_report_time(payload.get("reportTime")),
         "theme": parse_theme(payload.get("theme")),
+        "quiet_start": quiet_start,
+        "quiet_end": quiet_end,
+        "digest": bool(payload.get("digest", False)),
     }
 
 
@@ -10696,10 +10795,10 @@ def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
     .bar-chart {{ display:grid; gap:12px; margin-top:auto; }}
     .bar-row {{ display:grid; grid-template-columns:92px minmax(120px,1fr) 54px; gap:10px; align-items:center; min-height:26px; font-size:12px; font-weight:720; }}
     .bar-row > span {{ color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-    .bar-track {{ height:12px; border-radius:999px; background:var(--surface2); border:1px solid var(--line); overflow:hidden; }}
+    .bar-track {{ height:12px; border-radius:999px; background:var(--surface-2); border:1px solid var(--line); overflow:hidden; }}
     .bar-track i {{ display:block; height:100%; border-radius:inherit; }}
     .bar-row strong {{ text-align:right; font-weight:850; }}
-    .summary-band {{ padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface2); margin-top:auto; }}
+    .summary-band {{ padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); margin-top:auto; }}
     .summary-band strong {{ display:block; font-size:24px; line-height:1; font-weight:850; }}
     .summary-band span {{ display:block; margin-top:8px; color:var(--muted); font-size:12px; font-weight:720; }}
     .summary-row {{ display:flex; justify-content:space-between; gap:12px; padding:7px 0; font-size:12px; font-weight:730; }}
@@ -10709,7 +10808,7 @@ def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
     .metric span {{ color:var(--muted); font-size:12px; font-weight:720; }}
     .metric strong {{ font-size:30px; line-height:1; font-weight:820; }}
     .health-section {{ margin-top:16px; overflow:hidden; }}
-    .health-head {{ display:flex; justify-content:space-between; gap:12px; align-items:center; min-height:52px; padding:14px 16px; background:var(--surface2); border-bottom:1px solid var(--line); }}
+    .health-head {{ display:flex; justify-content:space-between; gap:12px; align-items:center; min-height:52px; padding:14px 16px; background:var(--surface-2); border-bottom:1px solid var(--line); }}
     .health-head strong {{ font-size:14px; font-weight:850; }}
     .health-head span {{ color:var(--muted); font-size:12px; }}
     .health-grid {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; padding:14px 16px 16px; }}
@@ -10717,7 +10816,7 @@ def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
     .health-card span {{ color:var(--muted); font-size:12px; font-weight:760; }}
     .health-card strong {{ font-size:20px; line-height:1.1; font-weight:850; }}
     .health-card small {{ color:var(--muted); font-size:11px; line-height:1.35; overflow-wrap:anywhere; }}
-    .health-meter {{ height:9px; border-radius:999px; background:var(--surface2); border:1px solid var(--line); overflow:hidden; }}
+    .health-meter {{ height:9px; border-radius:999px; background:var(--surface-2); border:1px solid var(--line); overflow:hidden; }}
     .health-meter i {{ display:block; height:100%; border-radius:inherit; }}
   </style>
 </head>
@@ -11041,6 +11140,30 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
     return plain, html_body
 
 
+def within_quiet_hours(start: str, end: str, hhmm: str | None = None) -> bool:
+    """True when the current time (HH:MM) falls inside [start, end).
+    Empty start/end disables quiet hours. Windows may wrap past midnight
+    (start > end), e.g. 22:00->06:00."""
+    start = (start or "").strip()
+    end = (end or "").strip()
+    if not start or not end:
+        return False
+    try:
+        if hhmm is None:
+            hhmm = datetime.now().astimezone().strftime("%H:%M")
+        def _mins(v: str) -> int:
+            h, m = (int(p) for p in v.split(":", 1))
+            return h * 60 + m
+        now_m, s_m, e_m = _mins(hhmm), _mins(start), _mins(end)
+    except Exception:
+        return False
+    if s_m == e_m:
+        return False
+    if s_m < e_m:
+        return s_m <= now_m < e_m
+    return now_m >= s_m or now_m < e_m
+
+
 def should_send_alert(trigger: str, severity: str) -> bool:
     if trigger == "all":
         return True
@@ -11294,6 +11417,10 @@ def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
         "created_at": automation.created_at,
         "theme": automation.theme,
         "last_signature": automation.last_signature,
+        "enabled": automation.enabled,
+        "quiet_start": automation.quiet_start,
+        "quiet_end": automation.quiet_end,
+        "digest": automation.digest,
     }
 
 
@@ -11351,6 +11478,10 @@ def restore_automations_from_disk() -> int:
                 created_at=float(rec.get("created_at") or time.time()),
                 theme=str(rec.get("theme") or "default"),
                 last_signature=str(rec.get("last_signature") or ""),
+                enabled=bool(rec.get("enabled", True)),
+                quiet_start=str(rec.get("quiet_start") or ""),
+                quiet_end=str(rec.get("quiet_end") or ""),
+                digest=bool(rec.get("digest", True)),
             )
             _put_automation(automation.automation_id, automation)
             schedule_alert_automation(automation)
@@ -11404,6 +11535,13 @@ def _dashboard_content_signature(dashboard: dict[str, Any]) -> str:
         return ""
 
 
+def alert_email_subject(severity: str, digest: bool = True) -> str:
+    label = (severity or "alert").title()
+    if digest:
+        return f"NetWorker dashboard alert: {label}"
+    return f"NetWorker dashboard alert (single): {label}"
+
+
 def run_alert_automation(automation_id: str) -> None:
     automation = _get_automation(automation_id)
     if not automation:
@@ -11414,6 +11552,9 @@ def run_alert_automation(automation_id: str) -> None:
         f"session={automation.session_id[:8]}… recipients={len(automation.recipients)}"
     )
     try:
+        if not automation.enabled:
+            automation.last_result = "Paused"
+            return
         status, dashboard = build_dashboard_from_session(automation.session_id)
         debug_log(f"run_alert_automation build status={status} id={automation_id}")
         if status != HTTPStatus.OK:
@@ -11460,11 +11601,15 @@ def run_alert_automation(automation_id: str) -> None:
             )
             automation.last_run = time.time()
             return
+        if within_quiet_hours(automation.quiet_start, automation.quiet_end):
+            automation.last_result = f"Quiet hours: suppressed at {generated_at()}"
+            automation.last_run = time.time()
+            return
         severity, lines = dashboard_alert_lines(dashboard)
         signature = "|".join(lines)
         cooldown_ok = (time.time() - automation.last_run) >= (automation.interval_minutes * 60) if automation.last_run else True
         if should_send_alert(automation.trigger, severity) and signature != automation.last_signature and cooldown_ok:
-            subject = f"NetWorker dashboard alert: {severity.title()}"
+            subject = alert_email_subject(severity, automation.digest)
             alert_password = decrypt_process_secret(automation.encrypted_smtp_password)
             smtp_debug = send_smtp_email(
                 automation,
@@ -11526,9 +11671,25 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 "smtpFrom": automation.smtp_from,
                 "lastResult": automation.last_result,
                 "lastRun": automation.last_run,
+                "enabled": automation.enabled,
                 "nextRunAt": getattr(automation, "next_run_at", 0.0),
+                "quietStart": automation.quiet_start,
+                "quietEnd": automation.quiet_end,
+                "digest": automation.digest,
             })
         return HTTPStatus.OK, {"ok": True, "schedules": rows}
+    if action == "set_enabled":
+        requested_id = str(payload.get("automationId") or "").strip()
+        target = _get_automation(requested_id) if requested_id else None
+        if not target or target.session_id != session_id:
+            return HTTPStatus.OK, {"ok": True, "message": "No such schedule."}
+        target.enabled = bool(payload.get("enabled"))
+        return HTTPStatus.OK, {
+            "ok": True,
+            "automationId": requested_id,
+            "enabled": target.enabled,
+            "message": "Schedule resumed." if target.enabled else "Schedule paused.",
+        }
     if action == "stop":
         requested_id = str(payload.get("automationId") or "").strip()
         if requested_id:
@@ -11621,6 +11782,9 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                         report_time=settings["report_time"],
                         created_at=time.time(),
                         theme=settings["theme"],
+                        quiet_start=settings["quiet_start"],
+                        quiet_end=settings["quiet_end"],
+                        digest=settings["digest"],
                     )
                     cancel_alert_automation(automation_id)
                     _put_automation(automation_id, automation)
@@ -11679,6 +11843,9 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         report_time=settings["report_time"],
         created_at=time.time(),
         theme=settings["theme"],
+        quiet_start=settings["quiet_start"],
+        quiet_end=settings["quiet_end"],
+        digest=settings["digest"],
     )
     if action == "test":
         subject = "NetWorker dashboard test email"

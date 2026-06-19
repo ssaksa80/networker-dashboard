@@ -4,6 +4,36 @@ All notable changes to the NetWorker Backup & Recovery Dashboard.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] — 2026-06-19
+
+### Added
+- **Per-schedule pause.** Each saved email schedule has an **Active** checkbox;
+  unchecking pauses sending without deleting the configuration (`set_enabled`
+  action, in-memory `enabled` flag honoured by `run_alert_automation`).
+- **Quiet hours** for alert schedules — alerts are suppressed inside a
+  configurable `HH:MM`–`HH:MM` window (wraps midnight). Daily reports ignore it.
+- **Digest toggle** — alert subject reflects digest (batched) vs. single style.
+- Saved schedules now live behind a **"Saved schedules (N)" dropdown** instead of
+  stacking inline in the modal.
+
+### Fixed
+- **Account dropdown button was invisible on the default theme** — the topbar
+  toggle used an undefined CSS variable (`--surface2`) and the theme's dark
+  `--ink`, rendering dark-on-dark. Now styled explicit light-on-dark,
+  theme-independent. Also corrected the same `--surface2` typo across all other
+  surfaces (snapshot badges, table hover, health panels, report bars).
+
+## [2.4.2] — 2026-06-19
+
+### Fixed
+- **Email modal: interval / report-time fields now gray out by email type.**
+  Selecting **Daily backup/SLA report** disables the **Alert interval minutes**
+  field (the report fires at a fixed time, so interval is irrelevant); selecting
+  **Alert check** disables the **Daily report time** field. Previously
+  `applyEmailTypeBlock` only copied values and never toggled the inputs, so the
+  irrelevant field stayed editable. Added `input:disabled` / `select:disabled` /
+  `label.is-disabled` styling for the grayed-out look.
+
 ## [2.4.1] — 2026-06-08
 
 ### Fixed
