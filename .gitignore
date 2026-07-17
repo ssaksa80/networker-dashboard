@@ -1,0 +1,13 @@
+# Runtime state — never commit
+data/
+logs/
+.certs/
+debug_test/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store
