@@ -424,6 +424,22 @@ def _verify_auth_cookie(value: str) -> bool:
         return False
 
 
+def _make_csrf_token(cookie_value: str) -> str:
+    # Stateless synchronizer token bound to the signed session cookie: an
+    # attacker without the HttpOnly cookie value cannot derive it, and a new
+    # login (new cookie) automatically rotates it.
+    payload, _, _ = cookie_value.rpartition(".")
+    return base64.urlsafe_b64encode(
+        hmac.new(AUTH_SECRET_KEY, b"csrf:" + payload.encode("ascii"), hashlib.sha256).digest()
+    ).decode("ascii").rstrip("=")
+
+
+def _verify_csrf_token(cookie_value: str, token: str) -> bool:
+    if not cookie_value or not token:
+        return False
+    return hmac.compare_digest(_make_csrf_token(cookie_value), token)
+
+
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 LOGIN_ATTEMPTS_LOCK = threading.Lock()
 
@@ -3193,6 +3209,10 @@ HTML_PAGE = r"""<!doctype html>
                 <option value="rest">REST</option>
               </select>
             </label>
+            <label class="check-row">
+              <input id="asVerifyTls" type="checkbox" checked>
+              <span>Verify REST API TLS certificate</span>
+            </label>
           </div>
           <div class="add-server-actions">
             <button id="addServerCancelBtn" class="ghost" type="button">Cancel</button>
@@ -3265,14 +3285,42 @@ HTML_PAGE = r"""<!doctype html>
   <script>
     (function(){
       const _fetch = window.fetch;
-      window.fetch = async function(...args){
-        const resp = await _fetch.apply(this, args);
+      let csrfToken = "";
+      async function refreshCsrfToken(){
         try {
-          const url = (args[0] && args[0].url) ? args[0].url : String(args[0] || "");
+          const r = await _fetch("/api/csrf", {cache: "no-store"});
+          if (r.ok) { csrfToken = (await r.json()).csrfToken || ""; }
+        } catch (_e) {}
+        return csrfToken;
+      }
+      function withCsrf(args){
+        const opts = Object.assign({}, args[1] || {});
+        const method = String(opts.method || "GET").toUpperCase();
+        const url = (args[0] && args[0].url) ? args[0].url : String(args[0] || "");
+        if (method !== "GET" && method !== "HEAD" && url.indexOf("/api/") !== -1 && csrfToken) {
+          opts.headers = Object.assign({}, opts.headers || {}, {"X-CSRF-Token": csrfToken});
+          return [args[0], opts];
+        }
+        return args;
+      }
+      window.fetch = async function(...args){
+        let resp = await _fetch.apply(this, withCsrf(args));
+        const url = (args[0] && args[0].url) ? args[0].url : String(args[0] || "");
+        if (resp.status === 403 && url.indexOf("/api/") !== -1) {
+          // Stale/missing CSRF token (e.g. tab restored after server restart):
+          // re-bootstrap once and retry the original request.
+          const before = csrfToken;
+          await refreshCsrfToken();
+          if (csrfToken && csrfToken !== before) {
+            resp = await _fetch.apply(this, withCsrf(args));
+          }
+        }
+        try {
           if (resp.status === 401 && url.indexOf("/api/") !== -1) { location.reload(); }
         } catch (_e) {}
         return resp;
       };
+      refreshCsrfToken();
     })();
     function initCollapsibles(){
       var toggles = document.querySelectorAll('[data-toggle-target]');
@@ -5313,6 +5361,7 @@ HTML_PAGE = r"""<!doctype html>
       const username = document.getElementById("asUsername").value.trim();
       const password = document.getElementById("asPassword").value;
       const apiMode  = document.getElementById("asApiMode").value;
+      const verifyTls = document.getElementById("asVerifyTls").checked;
       if (!host || !username || !password) {
         addServerStatus.textContent = "Host, username, and password are required.";
         return;
@@ -5326,7 +5375,7 @@ HTML_PAGE = r"""<!doctype html>
           username, password, apiMode, apiVersion: "auto",
           reportRange: "24h", customStartDate: "", customEndDate: "",
           useWmiHealth: false, wmiUsername: "", wmiPassword: "",
-          timeoutSeconds: 30, verifyTls: false, useAuthcHeader: true,
+          timeoutSeconds: 30, verifyTls, useAuthcHeader: true,
         };
         const resp = await fetch("/api/dashboard", {
           method: "POST",
@@ -9292,7 +9341,7 @@ def restore_sessions_from_disk() -> int:
                 wmi_username=str(cfg_raw.get("wmi_username") or ""),
                 wmi_password=decrypt_wmi_password(str(rec.get("encrypted_wmi_password") or "")),
                 timeout_seconds=int(cfg_raw.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
-                verify_tls=bool(cfg_raw.get("verify_tls", False)),
+                verify_tls=bool(cfg_raw.get("verify_tls", True)),
                 use_authc_header=bool(cfg_raw.get("use_authc_header", True)),
             )
             if not config.rest_api_host or not config.username:
@@ -12595,21 +12644,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_error_json(HTTPStatus.FORBIDDEN, "HTTPS is required.")
         return False
 
-    def _authenticated(self) -> bool:
-        if not AUTH_ENABLED:
-            return True
+    def _session_cookie_value(self) -> str:
         raw = self.headers.get("Cookie")
         if not raw:
-            return False
+            return ""
         try:
             jar = SimpleCookie()
             jar.load(raw)
         except Exception:  # noqa: BLE001 — malformed cookie header
-            return False
+            return ""
         morsel = jar.get(COOKIE_NAME)
-        if not morsel:
-            return False
-        return _verify_auth_cookie(morsel.value)
+        return morsel.value if morsel else ""
+
+    def _authenticated(self) -> bool:
+        if not AUTH_ENABLED:
+            return True
+        cookie_value = self._session_cookie_value()
+        return bool(cookie_value) and _verify_auth_cookie(cookie_value)
+
+    def _csrf_ok(self) -> bool:
+        token = self.headers.get("X-CSRF-Token") or ""
+        return _verify_csrf_token(self._session_cookie_value(), token)
 
     def _send_json_with_cookie(self, status: int, payload: dict[str, Any], cookie_value: str, max_age: int) -> None:
         body = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
@@ -12635,7 +12690,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if verify_auth_password(password):
             _clear_login_failures(ip)
-            self._send_json_with_cookie(HTTPStatus.OK, {"ok": True}, _make_auth_cookie(), AUTH_TTL_SECONDS)
+            cookie_value = _make_auth_cookie()
+            self._send_json_with_cookie(
+                HTTPStatus.OK,
+                {"ok": True, "csrfToken": _make_csrf_token(cookie_value)},
+                cookie_value,
+                AUTH_TTL_SECONDS,
+            )
         else:
             _record_login_failure(ip)
             self._send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid password.")
@@ -12729,6 +12790,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # --- Everything below requires authentication ---
             if AUTH_ENABLED and not self._authenticated():
                 self._send_error_json(HTTPStatus.UNAUTHORIZED, "Authentication required.")
+                return
+
+            if path == "/api/csrf":
+                # Token bootstrap for an already-authenticated page load: the
+                # session cookie is HttpOnly, so the UI cannot derive this itself.
+                token = _make_csrf_token(self._session_cookie_value()) if AUTH_ENABLED else ""
+                self._send_json(HTTPStatus.OK, {"ok": True, "csrfToken": token})
                 return
 
             if path == "/api/status":
@@ -12848,6 +12916,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Auth gate for all other POST routes
         if AUTH_ENABLED and not self._authenticated():
             self._send_error_json(HTTPStatus.UNAUTHORIZED, "Authentication required.")
+            return
+        # CSRF gate: every state-changing route requires the per-session token.
+        # Only meaningful when cookie auth is on (no session cookie, no CSRF).
+        if AUTH_ENABLED and not self._csrf_ok():
+            self._send_error_json(HTTPStatus.FORBIDDEN, "CSRF token missing or invalid.")
             return
         allowed = {"/api/dashboard", "/api/export", "/api/server-health",
                    "/api/alert-automation", "/api/snapshots",
@@ -13197,10 +13270,19 @@ def preferred_launch_url(urls: list[tuple[str, str]]) -> str:
     return urls[0][1] if urls else ""
 
 
-def self_test_dashboard_listener(url: str, timeout_seconds: float = 8.0) -> tuple[bool, str]:
+def self_test_dashboard_listener(
+    url: str, timeout_seconds: float = 8.0, cert_path: Path | None = None
+) -> tuple[bool, str]:
     health_url = f"{url.rstrip('/')}/api/health"
     deadline = time.monotonic() + max(0.5, timeout_seconds)
-    tls_context = ssl._create_unverified_context()
+    if cert_path and cert_path.exists():
+        # Pin our own serving certificate as the sole trust anchor. The CN
+        # rarely matches the probe host (localhost/IP), so hostname checking
+        # stays off — chain verification against the exact cert is the point.
+        tls_context = ssl.create_default_context(cafile=str(cert_path))
+        tls_context.check_hostname = False
+    else:
+        tls_context = ssl._create_unverified_context()
     last_error = "listener did not respond"
 
     while time.monotonic() < deadline:
@@ -13470,7 +13552,7 @@ def run(argv: list[str] | None = None) -> int:
     threading.Thread(target=automation_scheduler_loop, name="automation-scheduler", daemon=True).start()
 
     try:
-        self_test_ok, self_test_message = self_test_dashboard_listener(launch_url)
+        self_test_ok, self_test_message = self_test_dashboard_listener(launch_url, cert_path=cert_path)
         print(f"Startup self-test: {self_test_message}")
         if not self_test_ok:
             raise SystemExit("Dashboard HTTPS listener did not pass startup self-test.")
