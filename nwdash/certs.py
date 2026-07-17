@@ -1,0 +1,79 @@
+"""Embedded development TLS certificate and certificate helpers.
+
+Split from networker_dashboard.py (v2.5.0); behavior unchanged.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+EMBEDDED_DEV_CERT_PEM = """-----BEGIN CERTIFICATE-----
+MIIC/jCCAeagAwIBAgIIBMxIBLcGgGYwDQYJKoZIhvcNAQELBQAwFDESMBAGA1UE
+AxMJbG9jYWxob3N0MB4XDTI2MDUwNjA4NTEzN1oXDTI4MDgwOTA4NTEzN1owFDES
+MBAGA1UEAxMJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKC
+AQEAor3J9jQD1k9OhUJQkw3mT87+ZGqyzug3LZIxvZL2nYwKhPuL8K26tF3NI33F
+N4requttETRqLXdLdDhyWdFRClFjG6lsLarfNhq8FlM/GxE/Rk2nXAnt2WV0/ONi
+VdA/qAhDqg0W6LBTwdh+/F0JjQZ511+a7/bjqFUqLt7+IFDMG2PTLgpn7u+ITDDa
+Lo2zMksw1KHXWjnOAlE9CkY1MAuxqakndUAMsyHRWegPhWupX8uv2O/sv7z6t1Hj
+uKcjnlB7deNs0bFjDzfFcAxDbRmLK0SRO+5/EdkEOaFZPeevos6zgrbSIBe6CegP
+lSFJvIAr4PTJRLYqWYWsb58ocQIDAQABo1QwUjAaBgNVHREEEzARgglsb2NhbGhv
+c3SHBH8AAAEwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAqQwEwYDVR0l
+BAwwCgYIKwYBBQUHAwEwDQYJKoZIhvcNAQELBQADggEBADYioCFb4gW5JyqAwbsK
+bgzCkkhu1dBVZ78c8m8TclvGD7c6rLH3rgIgvOhDFu6RoIQC+6LgXSytH9JJN7EG
+r+hb1x8R28qKn0ezDEfb+kEGB/jNs3Ce5xkYu/dpmAl8H6ruKuKMEthq8ndrVM5k
+YIBBqthV1GCD28YfzE1WGsgWmcjyaJ/8mcnCaVDk/pZtwdkJUvndym/Ev8CsDJjD
+xZ0RES2S2oq7m/zXaLR072Y5TQcwSdfIUTfKCwQGrvS6EyKKajg195LsUVgYFQZX
+I0Oj6qlKJv2mFKdui7BXx3zOJ9HbgZu7EvQfc5jblOeFhvOUHDS/tPpXGEPhaGsW
+v/M=
+-----END CERTIFICATE-----
+"""
+
+
+EMBEDDED_DEV_KEY_PEM = """-----BEGIN PRIVATE KEY-----
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+REDACTED-BURNED-DEV-KEY-LINE
+yoFkYy+k3LlpZC+vOnuJ60g=
+-----END PRIVATE KEY-----
+"""
+
+
+
+def write_embedded_dev_certificate(cert_path: Path, key_path: Path) -> None:
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    cert_path.write_text(EMBEDDED_DEV_CERT_PEM, encoding="ascii")
+    key_path.write_text(EMBEDDED_DEV_KEY_PEM, encoding="ascii")
+    try:
+        key_path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def ensure_certificate(cert_path: Path, key_path: Path) -> bool:
+    if cert_path.exists() and key_path.exists():
+        return False
+
+    write_embedded_dev_certificate(cert_path, key_path)
+    return True
