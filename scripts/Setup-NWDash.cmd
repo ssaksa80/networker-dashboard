@@ -284,6 +284,31 @@ Write-Host "Target : $InstallDir"
 $isUpgrade = Test-Path (Join-Path $InstallDir "networker_dashboard.py")
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
+if ($isUpgrade) {
+    # Clean swap: stop whatever is running, then REMOVE the old application
+    # files before extracting. Overwrite-in-place leaves stale modules behind
+    # when a newer bundle deletes or renames files, and stale .py/__pycache__
+    # can shadow real code. Configuration (data\, .certs\, logs\) is never
+    # part of this list and is never touched.
+    $wasTask = $null -ne (Get-ScheduledTask -TaskName "NetWorkerDashboard" -ErrorAction SilentlyContinue)
+    if ($wasTask) {
+        try { Stop-ScheduledTask -TaskName "NetWorkerDashboard" -ErrorAction Stop } catch { }
+    }
+    $stopped = 0
+    Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='py.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "networker_dashboard\.py" } |
+        ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $stopped++ } catch { } }
+    if ($stopped -or $wasTask) {
+        Write-Host ("Stop    : {0} running instance(s) stopped{1}" -f $stopped, $(if ($wasTask) { " (boot task paused)" } else { "" }))
+        Start-Sleep -Seconds 1
+    }
+    foreach ($item in @("networker_dashboard.py", "nwdash", "README.md", "pyproject.toml", "__pycache__")) {
+        $p = Join-Path $InstallDir $item
+        if (Test-Path $p) { Remove-Item -LiteralPath $p -Recurse -Force }
+    }
+    Write-Host "Clean   : old application files removed (data\, .certs\, logs\ untouched)"
+}
+
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [System.IO.Compression.ZipFile]::OpenRead($bundle.FullName)
@@ -357,6 +382,30 @@ if (-not $Silent -and -not (Test-Path $authFile)) {
 #        every Windows reboot, restarted automatically if it crashes. ----------
 $taskName = "NetWorkerDashboard"
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if ($existingTask -and -not $Service) {
+    # Upgrade with a boot task already registered: keep it, just restart it —
+    # no prompts, no re-registration (which would need elevation for nothing).
+    Write-Host "Task    : '$taskName' already registered - restarting it with the new files"
+    # Health-check the task's OWN port (it may differ from this run's -Port).
+    $taskArgs = try { ($existingTask.Actions | Select-Object -First 1).Arguments } catch { "" }
+    if ($taskArgs -match "--port\s+(\d+)") { $Port = [int]$Matches[1] }
+    try { Start-ScheduledTask -TaskName $taskName } catch {
+        Fail "Could not start the existing '$taskName' task: $($_.Exception.Message)"
+    }
+    if (Wait-DashHealth $Port 20) {
+        Write-Host "Health  : dashboard is LIVE at https://localhost:$Port/ (boot task kept)"
+    } else {
+        Fail "The boot task restarted but the dashboard did not answer /api/health on port $Port within 20 seconds. Check Task Scheduler ('$taskName') and the app log in $InstallDir\logs."
+    }
+    Write-Host ""
+    Write-Host "Setup complete."
+    if (-not $Silent) {
+        $ans = Read-Host "Tail the live log now? [Y/n]"
+        if ($ans -eq "" -or $ans -match "^[Yy]") { Show-LogTail $InstallDir }
+    }
+    exit 0
+}
 $wantService = $Service
 if (-not $Silent -and -not $Service) {
     $ans = Read-Host "Register auto-start at boot (runs as SYSTEM, survives reboot)? [Y/n]"
