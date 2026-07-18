@@ -16,6 +16,12 @@ REM    Setup-NWDash.cmd -Service            register the boot task instead of a
 REM                                         plain background start (needs an
 REM                                         elevated prompt); -Port NNNN to
 REM                                         change the HTTPS port (default 8443)
+REM    Setup-NWDash.cmd -Uninstall          stop the app, remove the boot task
+REM                                         and application files; KEEPS data\,
+REM                                         .certs\ and logs\ (keys, snapshots,
+REM                                         saved profiles)
+REM    Setup-NWDash.cmd -Uninstall -Purge   full removal including runtime state
+REM    (add the install dir as first argument if it is not the default)
 REM
 REM  The dashboard always runs in the BACKGROUND after setup (scheduled task
 REM  with -Service, hidden process otherwise) and the start is health-gated
@@ -35,7 +41,7 @@ exit /b %ERRORLEVEL%
 
 REM Everything below runs as PowerShell, not cmd.
 #PSBEGIN
-param([string]$ScriptDir, [string]$InstallDir = "C:\apps\networker-dashboard", [switch]$Silent, [switch]$Service, [int]$Port = 8443)
+param([string]$ScriptDir, [string]$InstallDir = "C:\apps\networker-dashboard", [switch]$Silent, [switch]$Service, [int]$Port = 8443, [switch]$Uninstall, [switch]$Purge)
 
 $ErrorActionPreference = "Stop"
 
@@ -44,6 +50,55 @@ function Fail([string]$msg) {
     Write-Host "ERROR: $msg" -ForegroundColor Red
     if (-not $Silent) { Read-Host "Press Enter to close" | Out-Null }
     exit 1
+}
+
+if ($Uninstall) {
+    Write-Host "=== NetWorker Dashboard uninstall ==="
+    if (-not (Test-Path (Join-Path $InstallDir "networker_dashboard.py")) -and -not ($Purge -and (Test-Path $InstallDir))) {
+        Write-Host "No installation found at $InstallDir - nothing to do."
+        exit 0
+    }
+    # 1. Boot task (if present). Unregistering needs elevation; wrap every
+    #    scheduler call - on PS 5.1 their stderr becomes terminating under
+    #    ErrorActionPreference=Stop even when the operation half-succeeds.
+    $task = Get-ScheduledTask -TaskName "NetWorkerDashboard" -ErrorAction SilentlyContinue
+    if ($task) {
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if (-not $isAdmin) {
+            Write-Host ""
+            Write-Host "ERROR: the 'NetWorkerDashboard' boot task exists; removing it requires an elevated prompt. Re-run as Administrator." -ForegroundColor Red
+            exit 1
+        }
+        try { Stop-ScheduledTask -TaskName "NetWorkerDashboard" -ErrorAction Stop } catch { }
+        try { Unregister-ScheduledTask -TaskName "NetWorkerDashboard" -Confirm:$false -ErrorAction Stop; Write-Host "Task    : removed" } catch { Write-Host "Task    : removal failed ($($_.Exception.Message))" }
+    } else {
+        Write-Host "Task    : none registered"
+    }
+    # 2. Stop any running dashboard instance (matched by command line, so an
+    #    instance started by hand is caught too).
+    $killed = 0
+    Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='py.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "networker_dashboard\.py" } |
+        ForEach-Object {
+            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $killed++ } catch { }
+        }
+    Write-Host "Process : $killed stopped"
+    Start-Sleep -Seconds 1
+    # 3. Remove files. Default keeps runtime state (data\ holds keys, snapshots,
+    #    saved profiles, automations); -Purge removes everything.
+    if ($Purge) {
+        Remove-Item -LiteralPath $InstallDir -Recurse -Force
+        Write-Host "Files   : removed $InstallDir (INCLUDING data\, .certs\, logs\ - purged)"
+    } else {
+        foreach ($item in @("networker_dashboard.py", "nwdash", "README.md", "pyproject.toml", "__pycache__")) {
+            $p = Join-Path $InstallDir $item
+            if (Test-Path $p) { Remove-Item -LiteralPath $p -Recurse -Force }
+        }
+        Write-Host "Files   : application removed; kept data\, .certs\, logs\ in $InstallDir"
+        Write-Host "          (re-run with -Uninstall -Purge to delete those too)"
+    }
+    Write-Host "Uninstall complete."
+    exit 0
 }
 
 Write-Host "=== NetWorker Dashboard setup ==="
