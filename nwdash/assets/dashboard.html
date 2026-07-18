@@ -423,12 +423,12 @@
       </section>
 
       <div id="snapshotPanel" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="snapshotPanelTitle" aria-hidden="true">
-        <div class="modal-panel" style="max-width:720px">
+        <div class="modal-panel snapshot-panel-box">
           <div class="modal-head">
             <h3 id="snapshotPanelTitle">Snapshot History</h3>
             <button id="snapshotPanelCloseBtn" class="modal-close" type="button" aria-label="Close">×</button>
           </div>
-          <div id="snapshotPanelBody" style="padding:16px;overflow-y:auto;max-height:60vh"></div>
+          <div id="snapshotPanelBody" style="padding:16px"></div>
         </div>
       </div>
 
@@ -602,6 +602,7 @@
       <!-- Job detail drawer -->
       <div id="drawerOverlay" class="drawer-overlay"></div>
       <div id="jobDetailDrawer" class="detail-drawer" role="dialog" aria-label="Job details">
+        <div id="drawerResizeHandle" class="drawer-resize-handle" aria-hidden="true" title="Drag to resize"></div>
         <div class="detail-drawer-head">
           <h3 id="drawerTitle">Job Details</h3>
           <button id="drawerCloseBtn" class="detail-drawer-close" type="button" aria-label="Close">&#x2715;</button>

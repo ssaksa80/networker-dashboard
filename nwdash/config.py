@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.8.1"
+APP_VERSION = "2.8.2"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090

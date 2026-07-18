@@ -35,6 +35,22 @@ class TestDashboardHtml(unittest.TestCase):
         ):
             self.assertIn(marker, html, f"dashboard html missing {marker!r}")
 
+    def test_contains_popup_close_and_resize_wiring(self):
+        """Popup UX pass: one shared Escape handler closes the topmost open
+        popup, the account menu closes on outside click, modal panels are
+        CSS-resizable, and the job drawer ships a pointer-drag width handle."""
+        html = dashboard_html()
+        for marker in (
+            "closeTopmostPopup",
+            "closeCollapsiblePanel",
+            "resize: both;",
+            "drawerResizeHandle",
+            "drawer-resize-handle",
+            "snapshot-panel-box",
+            "snapshotPanelCloseBtn",
+        ):
+            self.assertIn(marker, html, f"dashboard html missing {marker!r}")
+
 
 class TestLoginPageHtml(unittest.TestCase):
     def test_posts_to_login_api(self):

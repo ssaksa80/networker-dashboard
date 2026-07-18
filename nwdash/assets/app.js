@@ -66,6 +66,31 @@
       }
     }
     initCollapsibles();
+    // Close a collapsible dropdown panel and keep its toggle + saved state in sync.
+    function closeCollapsiblePanel(id) {
+      var panel = document.getElementById(id);
+      if (!panel || !panel.classList.contains('open')) return false;
+      panel.classList.remove('open');
+      var toggle = document.querySelector('[data-toggle-target="' + id + '"]');
+      if (toggle) toggle.setAttribute('aria-expanded', 'false');
+      try { localStorage.setItem('collapse:' + id, 'closed'); } catch (_e) {}
+      return true;
+    }
+    // The account menu is a floating dropdown: any click outside it (or on one
+    // of its action buttons) closes it. Inline collapsibles are left alone.
+    document.addEventListener('click', function (event) {
+      var menu = document.getElementById('accountMenu');
+      if (!menu || !menu.classList.contains('open')) return;
+      var toggle = document.querySelector('[data-toggle-target="accountMenu"]');
+      if (toggle && toggle.contains(event.target)) return; // toggle handles itself
+      if (menu.contains(event.target)) {
+        if (event.target.closest && event.target.closest('button')) {
+          closeCollapsiblePanel('accountMenu');
+        }
+        return;
+      }
+      closeCollapsiblePanel('accountMenu');
+    });
     const form = document.getElementById("connectionForm");
     const topStatus = document.getElementById("topStatus");
     const discoverBtn = document.getElementById("discoverBtn");
@@ -1890,12 +1915,21 @@
       if (event.target === alertAutomationModal) closeAlertAutomationModal();
     });
 
+    // Single document-level Escape handler: closes only the topmost open
+    // popup per key press (ordered by stacking: drawer > dropdown > modals).
+    function closeTopmostPopup() {
+      if (jobDetailDrawer.classList.contains("open")) { closeJobDrawer(); return true; }
+      const accountMenu = document.getElementById("accountMenu");
+      if (accountMenu && accountMenu.classList.contains("open")) return closeCollapsiblePanel("accountMenu");
+      if (snapshotPanel.classList.contains("open")) { closeSnapshotPanel(); return true; }
+      if (alertAutomationModal.classList.contains("open")) { closeAlertAutomationModal(); return true; }
+      if (shareModal.classList.contains("open")) { closeShareModal(); return true; }
+      if (addServerModal.classList.contains("open")) { closeAddServerModal(); return true; }
+      return false;
+    }
+
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        if (alertAutomationModal.classList.contains("open")) closeAlertAutomationModal();
-        if (shareModal.classList.contains("open")) closeShareModal();
-        if (addServerModal.classList.contains("open")) closeAddServerModal();
-      }
+      if (event.key === "Escape" && closeTopmostPopup()) event.preventDefault();
     });
 
     alertScheduleBtn.addEventListener("click", () => {
@@ -1970,7 +2004,7 @@
 
     async function openSnapshotPanel() {
       snapshotPanel.setAttribute("aria-hidden", "false");
-      snapshotPanel.style.display = "flex";
+      snapshotPanel.classList.add("open");
       document.getElementById("snapshotPanelBody").innerHTML = "<p style='color:var(--muted);padding:8px'>Loading…</p>";
       try {
         const r = await fetch("/api/snapshots?action=list", {cache: "no-store"});
@@ -1983,7 +2017,7 @@
 
     function closeSnapshotPanel() {
       snapshotPanel.setAttribute("aria-hidden", "true");
-      snapshotPanel.style.display = "";
+      snapshotPanel.classList.remove("open");
     }
 
     function renderSnapshotPanelList(snapshots) {
@@ -2863,7 +2897,36 @@
     }
     drawerCloseBtn.addEventListener("click", closeJobDrawer);
     drawerOverlay.addEventListener("click", closeJobDrawer);
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeJobDrawer(); });
+    // Escape close is handled by the shared closeTopmostPopup keydown handler.
+
+    // Left-edge drag handle: adjusts drawer width (session-only), clamped to
+    // 320px .. 90vw. CSS resize is unreliable on fixed right-anchored panels.
+    const drawerResizeHandle = document.getElementById("drawerResizeHandle");
+    let drawerDragState = null;
+    drawerResizeHandle.addEventListener("pointerdown", (e) => {
+      drawerDragState = {
+        startX: e.clientX,
+        startWidth: jobDetailDrawer.getBoundingClientRect().width,
+      };
+      drawerResizeHandle.classList.add("dragging");
+      try { drawerResizeHandle.setPointerCapture(e.pointerId); } catch (_err) {}
+      e.preventDefault();
+    });
+    drawerResizeHandle.addEventListener("pointermove", (e) => {
+      if (!drawerDragState) return;
+      const maxW = Math.round(window.innerWidth * 0.9);
+      const next = Math.min(
+        Math.max(drawerDragState.startWidth + (drawerDragState.startX - e.clientX), 320),
+        maxW
+      );
+      jobDetailDrawer.style.width = next + "px";
+    });
+    const endDrawerDrag = () => {
+      drawerDragState = null;
+      drawerResizeHandle.classList.remove("dragging");
+    };
+    drawerResizeHandle.addEventListener("pointerup", endDrawerDrag);
+    drawerResizeHandle.addEventListener("pointercancel", endDrawerDrag);
 
     refreshBtn.disabled = false;
     syncRangeToToolbar();

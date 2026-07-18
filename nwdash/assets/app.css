@@ -835,7 +835,7 @@
     .automation-modal button:active:not(:disabled) { transform: scale(0.98); }
     @media (prefers-reduced-motion: reduce) {
       .ep-card, .ep-slider, .ep-slider::after, .ep-dot,
-      .automation-modal button { transition: none; }
+      .automation-modal button, .detail-drawer { transition: none; }
       .ep-card:hover { transform: none; }
       .automation-modal button:active:not(:disabled) { transform: none; }
     }
@@ -1080,14 +1080,27 @@
 
     .modal-panel {
       width: min(920px, 100%);
-      max-height: min(86vh, 780px);
+      min-width: min(360px, 92vw);
+      min-height: min(220px, 80vh);
+      max-width: 95vw;
+      max-height: 92vh;
       overflow: auto;
+      resize: both;
       background: var(--surface);
       color: var(--ink);
       border: 1px solid var(--line);
       border-radius: var(--radius);
       box-shadow: 0 28px 70px rgba(7, 18, 24, 0.26);
     }
+
+    /* Theme-aware corner grip for the browser resize handle (Chromium/WebKit).
+       Firefox draws its own grip; overflow:auto keeps it visible there too. */
+    .modal-panel::-webkit-resizer {
+      background: linear-gradient(135deg, transparent 0 55%, var(--muted) 55% 100%);
+      border-radius: 0 0 var(--radius) 0;
+    }
+
+    .modal-panel.snapshot-panel-box { width: min(720px, 100%); }
 
     .modal-head {
       position: sticky;
@@ -2156,8 +2169,10 @@
     /* ── Job detail drawer ───────────────────────────────────── */
     .detail-drawer {
       position: fixed;
-      top: 0; right: -420px;
+      top: 0; right: 0;
       width: 400px;
+      min-width: 320px;
+      max-width: 90vw;
       height: 100vh;
       background: var(--surface);
       border-left: 1px solid var(--line);
@@ -2165,10 +2180,25 @@
       z-index: 10000;
       display: flex;
       flex-direction: column;
-      transition: right 0.22s ease;
+      /* Hide via transform (not a hardcoded right offset) so a user-resized
+         width still slides fully off screen; 28px covers the box shadow. */
+      transform: translateX(calc(100% + 28px));
+      transition: transform 0.22s ease;
       overflow: hidden;
     }
-    .detail-drawer.open { right: 0; }
+    .detail-drawer.open { transform: translateX(0); }
+    .drawer-resize-handle {
+      position: absolute;
+      top: 0; left: 0;
+      width: 8px;
+      height: 100%;
+      cursor: ew-resize;
+      z-index: 2;
+      touch-action: none;
+      background: transparent;
+    }
+    .drawer-resize-handle:hover,
+    .drawer-resize-handle.dragging { background: var(--brand); opacity: 0.35; }
     .detail-drawer-head {
       display: flex;
       align-items: center;
@@ -2402,8 +2432,7 @@
       .server-card-host { font-size: 15px; max-width: 190px; }
       .server-card-stats { font-size: 14px; }
       .server-card-badge { font-size: 12px; }
-      .detail-drawer { width: 460px; right: -480px; }
-      .detail-drawer.open { right: 0; }
+      .detail-drawer { width: 460px; }
       .detail-drawer-head h3 { font-size: 17px; }
       .detail-field .detail-label { font-size: 12px; }
       .detail-field .detail-value { font-size: 15px; }
