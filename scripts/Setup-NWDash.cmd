@@ -1,178 +1,63 @@
 @echo off
 REM ===========================================================================
-REM  NetWorker Dashboard - one-click installer.
+REM  NetWorker Dashboard - setup bootstrap (thin launcher).
 REM
-REM  Put this file NEXT TO a networker-dashboard-<version>-bundle.zip and
-REM  double-click it. It extracts the newest bundle to the install directory,
-REM  preserves existing runtime state (data\, .certs\, logs\) on upgrade,
-REM  offers to set the dashboard password on first install, and can start
-REM  the app when done.
+REM  Put this file NEXT TO a nwdash-bundle-<version>-win-x64.zip and
+REM  double-click it. It finds the newest bundle beside it (checking GitHub for
+REM  a newer published release first), unpacks the bundle to a temporary
+REM  staging folder, and hands off to the installer that ships INSIDE the
+REM  bundle (deploy\install.ps1). All install/upgrade/service logic lives in
+REM  the bundle, so this launcher never goes stale (DEDB/FMD lesson).
 REM
-REM  Usage:
-REM    Setup-NWDash.cmd                     install to C:\apps\networker-dashboard
-REM    Setup-NWDash.cmd D:\some\dir         install to a custom directory
-REM    Setup-NWDash.cmd D:\some\dir -Silent no prompts
-REM    Setup-NWDash.cmd -Service            register the boot task instead of a
-REM                                         plain background start (needs an
-REM                                         elevated prompt); -Port NNNN to
-REM                                         change the HTTPS port (default 8443)
-REM    Setup-NWDash.cmd -Uninstall          stop the app, remove the boot task
-REM                                         and application files; KEEPS data\,
-REM                                         .certs\ and logs\ (keys, snapshots,
-REM                                         saved profiles)
-REM    Setup-NWDash.cmd -Uninstall -Purge   full removal including runtime state
-REM    Setup-NWDash.cmd -NoUpdate           skip the latest-release check and
-REM                                         use only the bundle beside this
-REM                                         script (air-gapped hosts)
-REM    (add the install dir as first argument if it is not the default)
+REM  Usage (arguments are forwarded to deploy\install.ps1 unchanged):
+REM    Setup-NWDash.cmd                          fresh install / migrate the
+REM                                              legacy scheduled-task install
+REM    Setup-NWDash.cmd -InstallDir D:\some\dir  custom install directory
+REM    Setup-NWDash.cmd -Check                   dry-run: print the plan only
+REM    Setup-NWDash.cmd -Upgrade                 upgrade (config + data kept)
+REM    Setup-NWDash.cmd -Rollback                restore the newest backup
+REM    Setup-NWDash.cmd -Uninstall [-Purge]      remove service + files
+REM    Setup-NWDash.cmd -Port 9443 -BindHost 10.0.0.5 -AuthPassword ...
+REM    Setup-NWDash.cmd -NoUpdate ...            skip the latest-release check
+REM                                              (air-gapped hosts; handled by
+REM                                              this bootstrap, not forwarded)
 REM
-REM  Version detection: setup checks GitHub for the newest published release
-REM  (via an authenticated gh CLI, else a GITHUB_TOKEN env var) and downloads
-REM  a newer bundle automatically. Offline or credential-less hosts fall back
-REM  to the local bundle - the check never blocks an install.
+REM  Version detection: checks GitHub for the newest published release (via an
+REM  authenticated gh CLI, else a GITHUB_TOKEN env var) and downloads a newer
+REM  nwdash-bundle-*-win-x64.zip automatically. Offline or credential-less
+REM  hosts fall back to the local bundle - the check never blocks an install.
 REM
-REM  The dashboard always runs in the BACKGROUND after setup (scheduled task
-REM  with -Service, hidden process otherwise) and the start is health-gated
-REM  against /api/health. When setup completes you are offered a real-time
-REM  log tail (Ctrl+C stops the tail only, never the dashboard).
-REM
-REM  -Service self-elevates via a UAC prompt when needed. The result is a
-REM  TASK SCHEDULER task named 'NetWorkerDashboard' (taskschd.msc) - it does
-REM  NOT appear in services.msc.
-REM
-REM  With the boot task registered the dashboard runs as SYSTEM, starts on
-REM  every Windows boot, and is restarted up to 3 times if it crashes. Note:
-REM  if the app was previously run manually under a user account, its
-REM  DPAPI-protected keys regenerate once on the first SYSTEM run (the app
-REM  prints a warning; saved sessions must be re-entered once).
-REM
-REM  Requires: Windows PowerShell 5.1+ (in-box) and Python 3.11+ on PATH.
+REM  The installer registers a REAL Windows service 'NetWorkerDashboard'
+REM  (services.msc) via the bundled nssm.exe, running the bundled embedded
+REM  Python - the target host needs NOTHING preinstalled.
 REM ===========================================================================
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$m='#PS'+'BEGIN';$sc=[IO.File]::ReadAllText('%~f0');$ps=$sc.Substring($sc.IndexOf($m)+$m.Length);& ([scriptblock]::Create($ps)) '%~dp0' '%~f0' %*"
 exit /b %ERRORLEVEL%
 
 REM Everything below runs as PowerShell, not cmd.
 #PSBEGIN
-param([string]$ScriptDir, [string]$ScriptPath, [string]$InstallDir = "C:\apps\networker-dashboard", [switch]$Silent, [switch]$Service, [int]$Port = 8443, [switch]$Uninstall, [switch]$Purge, [switch]$NoUpdate, [switch]$Elevated)
-
-# Relaunch this script elevated (UAC prompt), preserving arguments, and exit
-# with the elevated run's code. -Elevated marks the child so a declined or
-# failed elevation cannot loop forever.
-function Invoke-SelfElevated([string[]]$ExtraArgs) {
-    $args = @("/c", "`"$ScriptPath`"", "`"$InstallDir`"") + $ExtraArgs + @("-Elevated")
-    Write-Host "Elevation required - requesting administrator approval (UAC)..."
-    try {
-        $p = Start-Process -FilePath $env:ComSpec -ArgumentList $args -Verb RunAs -Wait -PassThru
-        exit $p.ExitCode
-    } catch {
-        Write-Host ""
-        Write-Host "ERROR: elevation was declined or failed. Re-run this script from an Administrator prompt." -ForegroundColor Red
-        exit 1
-    }
-}
-
+param(
+    [string]$ScriptDir,
+    [string]$ScriptPath,
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
+)
 $ErrorActionPreference = "Stop"
 
 function Fail([string]$msg) {
     Write-Host ""
     Write-Host "ERROR: $msg" -ForegroundColor Red
-    if (-not $Silent) { Read-Host "Press Enter to close" | Out-Null }
     exit 1
 }
 
-if ($Uninstall) {
-    Write-Host "=== NetWorker Dashboard uninstall ==="
-    if (-not (Test-Path (Join-Path $InstallDir "networker_dashboard.py")) -and -not ($Purge -and (Test-Path $InstallDir))) {
-        Write-Host "No installation found at $InstallDir - nothing to do."
-        exit 0
-    }
-    # 1. Boot task (if present). Unregistering needs elevation; wrap every
-    #    scheduler call - on PS 5.1 their stderr becomes terminating under
-    #    ErrorActionPreference=Stop even when the operation half-succeeds.
-    $task = Get-ScheduledTask -TaskName "NetWorkerDashboard" -ErrorAction SilentlyContinue
-    if ($task) {
-        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-        if (-not $isAdmin) {
-            if ($Elevated) {
-                Write-Host ""
-                Write-Host "ERROR: still not elevated after the UAC relaunch - elevation was declined." -ForegroundColor Red
-                exit 1
-            }
-            $extra = @("-Uninstall")
-            if ($Purge) { $extra += "-Purge" }
-            Invoke-SelfElevated $extra
-        }
-        try { Stop-ScheduledTask -TaskName "NetWorkerDashboard" -ErrorAction Stop } catch { }
-        try { Unregister-ScheduledTask -TaskName "NetWorkerDashboard" -Confirm:$false -ErrorAction Stop; Write-Host "Task    : removed" } catch { Write-Host "Task    : removal failed ($($_.Exception.Message))" }
-    } else {
-        Write-Host "Task    : none registered"
-    }
-    # 2. Stop any running dashboard instance (matched by command line, so an
-    #    instance started by hand is caught too).
-    $killed = 0
-    Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='py.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match "networker_dashboard\.py" } |
-        ForEach-Object {
-            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $killed++ } catch { }
-        }
-    Write-Host "Process : $killed stopped"
-    Start-Sleep -Seconds 1
-    # 3. Remove files. Default keeps runtime state (data\ holds keys, snapshots,
-    #    saved profiles, automations); -Purge removes everything.
-    if ($Purge) {
-        Remove-Item -LiteralPath $InstallDir -Recurse -Force
-        Write-Host "Files   : removed $InstallDir (INCLUDING data\, .certs\, logs\ - purged)"
-    } else {
-        foreach ($item in @("networker_dashboard.py", "nwdash", "README.md", "pyproject.toml", "__pycache__")) {
-            $p = Join-Path $InstallDir $item
-            if (Test-Path $p) { Remove-Item -LiteralPath $p -Recurse -Force }
-        }
-        Write-Host "Files   : application removed; kept data\, .certs\, logs\ in $InstallDir"
-        Write-Host "          (re-run with -Uninstall -Purge to delete those too)"
-    }
-    Write-Host "Uninstall complete."
-    exit 0
+# -NoUpdate is the bootstrap's own switch (skip the release check); everything
+# else is forwarded to the bundle's deploy\install.ps1 verbatim.
+$NoUpdate = $false
+$fwd = @()
+foreach ($a in @($Rest)) {
+    if ($a -ieq "-NoUpdate") { $NoUpdate = $true } else { $fwd += $a }
 }
 
-Write-Host "=== NetWorker Dashboard setup ==="
-
-# Poll the app's own /api/health over HTTPS (self-signed cert -> trust-all)
-# instead of trusting process/task state. Returns $true when live.
-function Wait-DashHealth([int]$HealthPort, [int]$Seconds) {
-    Add-Type -TypeDefinition "using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAll:ICertificatePolicy{public bool CheckValidationResult(ServicePoint a,X509Certificate b,WebRequest c,int d){return true;}}" -ErrorAction SilentlyContinue
-    $oldPolicy = [System.Net.ServicePointManager]::CertificatePolicy
-    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAll
-    try {
-        foreach ($i in 1..$Seconds) {
-            Start-Sleep -Seconds 1
-            try {
-                $resp = (New-Object System.Net.WebClient).DownloadString("https://127.0.0.1:$HealthPort/api/health")
-                if ($resp -match '"ok"\s*:\s*true') { return $true }
-            } catch { }
-        }
-        return $false
-    }
-    finally {
-        [System.Net.ServicePointManager]::CertificatePolicy = $oldPolicy
-    }
-}
-
-# Follow the app's rotating log in real time. Ctrl+C stops tailing only;
-# the dashboard keeps running in the background.
-function Show-LogTail([string]$Dir) {
-    $log = Join-Path $Dir "logs\networker_dashboard.log"
-    foreach ($i in 1..10) {
-        if (Test-Path $log) { break }
-        Start-Sleep -Seconds 1
-    }
-    if (-not (Test-Path $log)) {
-        Write-Host "Log file not found yet: $log"
-        return
-    }
-    Write-Host ""
-    Write-Host "--- Tailing $log (Ctrl+C stops tailing; the dashboard keeps running) ---"
-    Get-Content -LiteralPath $log -Wait -Tail 20
-}
+Write-Host "=== NetWorker Dashboard setup (bootstrap) ==="
 
 # Console progress bar: [##########------------------]  42%  (ASCII, in-place)
 function Show-Bar([string]$label, [int]$pct) {
@@ -187,21 +72,20 @@ function Show-Bar([string]$label, [int]$pct) {
 
 # --- 1. Find the newest bundle next to this script ---------------------------
 function Get-BundleVersion([string]$name) {
-    if ($name -match "networker-dashboard-(\d+\.\d+\.\d+)-bundle\.zip") { return [version]$Matches[1] }
+    if ($name -match "nwdash-bundle-(\d+\.\d+\.\d+)-win-x64\.zip") { return [version]$Matches[1] }
     return $null
 }
 function Select-NewestBundle {
-    Get-ChildItem -Path $ScriptDir -Filter "networker-dashboard-*-bundle.zip" |
+    Get-ChildItem -Path $ScriptDir -Filter "nwdash-bundle-*-win-x64.zip" |
         Where-Object { Get-BundleVersion $_.Name } |
         Sort-Object { Get-BundleVersion $_.Name } -Descending | Select-Object -First 1
 }
 $bundle = Select-NewestBundle
 $localVer = if ($bundle) { Get-BundleVersion $bundle.Name } else { $null }
 
-# --- 1b. Detect the latest published release and self-update the bundle -------
+# --- 1b. Latest published release check + self-update of the bundle ----------
 # Fail-soft by design: air-gapped hosts, missing credentials, or GitHub being
 # unreachable all fall back to whatever bundle sits next to this script.
-# Skip entirely with -NoUpdate.
 if (-not $NoUpdate) {
     $repo = "ssaksa80/networker-dashboard"
     $latestTag = $null
@@ -224,11 +108,11 @@ if (-not $NoUpdate) {
         $localText = if ($localVer) { "v$localVer" } else { "none" }
         Write-Host "Version : latest published $latestTag, local bundle $localText"
         if (-not $localVer -or $latestVer -gt $localVer) {
-            Write-Host "Update  : downloading networker-dashboard-$latestVer-bundle.zip ..."
+            Write-Host "Update  : downloading nwdash-bundle-$latestVer-win-x64.zip ..."
             $ok = $false
             if ($gh) {
                 try {
-                    & gh release download $latestTag --repo $repo --pattern "networker-dashboard-*-bundle.zip" --dir $ScriptDir --clobber 2>$null
+                    & gh release download $latestTag --repo $repo --pattern "nwdash-bundle-*" --dir $ScriptDir --clobber 2>$null
                     $ok = ($LASTEXITCODE -eq 0)
                 } catch { }
             }
@@ -236,7 +120,7 @@ if (-not $NoUpdate) {
                 try {
                     $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/$latestTag" `
                         -Headers @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = "application/vnd.github+json" } -TimeoutSec 15
-                    $asset = $rel.assets | Where-Object { $_.name -like "networker-dashboard-*-bundle.zip" } | Select-Object -First 1
+                    $asset = $rel.assets | Where-Object { $_.name -like "nwdash-bundle-*-win-x64.zip" } | Select-Object -First 1
                     if ($asset) {
                         Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$($asset.id)" `
                             -Headers @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = "application/octet-stream" } `
@@ -259,56 +143,13 @@ if (-not $NoUpdate) {
 }
 
 if (-not $bundle) {
-    Fail "No networker-dashboard-*-bundle.zip found next to this script and no release could be downloaded. Download the bundle from the GitHub release and place it in the same folder."
+    Fail "No nwdash-bundle-*-win-x64.zip found next to this script and no release could be downloaded. Download the bundle from the GitHub release and place it in the same folder."
 }
-Write-Host "Bundle : $($bundle.Name)"
+Write-Host "Bundle  : $($bundle.Name)"
 
-# --- 2. Check Python ----------------------------------------------------------
-$python = $null
-foreach ($cand in @("python", "py")) {
-    $cmd = Get-Command $cand -ErrorAction SilentlyContinue
-    if ($cmd) {
-        try {
-            $v = & $cand -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
-            if ($v -and ([version]$v -ge [version]"3.11")) { $python = $cand; $pyver = $v; break }
-        } catch { }
-    }
-}
-if (-not $python) {
-    Fail "Python 3.11+ was not found on PATH. Install Python and re-run."
-}
-Write-Host "Python : $python ($pyver)"
-
-# --- 3. Extract (preserving runtime state on upgrade) -------------------------
-Write-Host "Target : $InstallDir"
-$isUpgrade = Test-Path (Join-Path $InstallDir "networker_dashboard.py")
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-
-if ($isUpgrade) {
-    # Clean swap: stop whatever is running, then REMOVE the old application
-    # files before extracting. Overwrite-in-place leaves stale modules behind
-    # when a newer bundle deletes or renames files, and stale .py/__pycache__
-    # can shadow real code. Configuration (data\, .certs\, logs\) is never
-    # part of this list and is never touched.
-    $wasTask = $null -ne (Get-ScheduledTask -TaskName "NetWorkerDashboard" -ErrorAction SilentlyContinue)
-    if ($wasTask) {
-        try { Stop-ScheduledTask -TaskName "NetWorkerDashboard" -ErrorAction Stop } catch { }
-    }
-    $stopped = 0
-    Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='py.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match "networker_dashboard\.py" } |
-        ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $stopped++ } catch { } }
-    if ($stopped -or $wasTask) {
-        Write-Host ("Stop    : {0} running instance(s) stopped{1}" -f $stopped, $(if ($wasTask) { " (boot task paused)" } else { "" }))
-        Start-Sleep -Seconds 1
-    }
-    foreach ($item in @("networker_dashboard.py", "nwdash", "README.md", "pyproject.toml", "__pycache__")) {
-        $p = Join-Path $InstallDir $item
-        if (Test-Path $p) { Remove-Item -LiteralPath $p -Recurse -Force }
-    }
-    Write-Host "Clean   : old application files removed (data\, .certs\, logs\ untouched)"
-}
-
+# --- 2. Unpack to a temp staging dir ------------------------------------------
+$staging = Join-Path $env:TEMP ("nwdash-setup-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $staging | Out-Null
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [System.IO.Compression.ZipFile]::OpenRead($bundle.FullName)
@@ -316,170 +157,29 @@ try {
     $entries = @($archive.Entries | Where-Object { $_.Name })  # skip directory entries
     $total = $entries.Count
     $done = 0
-    $installed = @()
-    Show-Bar "Unarchiving" 0
+    Show-Bar "Unpacking" 0
     foreach ($entry in $entries) {
         $rel = $entry.FullName -replace "/", "\"
-        # The bundle never contains runtime state, but guard anyway so a
-        # hand-modified zip can never clobber keys or certificates.
-        if ($rel -notmatch '^(data|logs|\.certs)\\') {
-            $dest = Join-Path $InstallDir $rel
-            $destDir = Split-Path -Parent $dest
-            if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
-            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
-            $installed += @{ Path = $dest; Size = $entry.Length }
-        }
+        $dest = Join-Path $staging $rel
+        $destDir = Split-Path -Parent $dest
+        if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
         $done++
-        Show-Bar "Unarchiving" ([int](100 * $done / $total))
+        Show-Bar "Unpacking" ([int](100 * $done / $total))
     }
 }
 finally {
     $archive.Dispose()
 }
 
-# Installation pass: verify every extracted file landed with the right size,
-# and byte-compile the Python sources so first start is import-error-free.
-$done = 0
-Show-Bar "Installing" 0
-foreach ($item in $installed) {
-    $f = Get-Item -LiteralPath $item.Path -ErrorAction SilentlyContinue
-    if (-not $f -or $f.Length -ne $item.Size) {
-        Write-Host ""
-        Fail ("Installed file failed verification: {0}" -f $item.Path)
-    }
-    $done++
-    Show-Bar "Installing" ([int](90 * $done / $installed.Count))
+# --- 3. Hand off to the installer that ships inside the bundle ----------------
+$installer = Join-Path $staging "deploy\install.ps1"
+if (-not (Test-Path $installer)) {
+    Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+    Fail "$($bundle.Name) does not contain deploy\install.ps1 - it is an old-layout bundle. Download the current nwdash-bundle-<version>-win-x64.zip from the latest GitHub release."
 }
-& $python -m compileall -q $InstallDir 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Fail "Python byte-compilation of the installed sources failed."
-}
-Show-Bar "Installing" 100
-if ($isUpgrade) {
-    Write-Host "Result : upgraded application files (data\, .certs\, logs\ untouched)"
-} else {
-    Write-Host "Result : fresh install"
-}
-
-# --- 4. First-install password ------------------------------------------------
-$authFile = Join-Path $InstallDir "data\auth.json"
-$passwordArg = @()
-if (-not $Silent -and -not (Test-Path $authFile)) {
-    Write-Host ""
-    $sec = Read-Host "Set a dashboard password now (Enter to skip)" -AsSecureString
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-    $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-    if ($plain) {
-        # Passed only to the app process; the app stores a salted PBKDF2 hash.
-        $env:DASHBOARD_AUTH_PASSWORD = $plain
-        $plain = $null
-    }
-}
-
-# --- 5. Boot-survival: register a startup task so the dashboard is live after
-#        every Windows reboot, restarted automatically if it crashes. ----------
-$taskName = "NetWorkerDashboard"
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-if ($existingTask -and -not $Service) {
-    # Upgrade with a boot task already registered: keep it, just restart it —
-    # no prompts, no re-registration (which would need elevation for nothing).
-    Write-Host "Task    : '$taskName' already registered - restarting it with the new files"
-    # Health-check the task's OWN port (it may differ from this run's -Port).
-    $taskArgs = try { ($existingTask.Actions | Select-Object -First 1).Arguments } catch { "" }
-    if ($taskArgs -match "--port\s+(\d+)") { $Port = [int]$Matches[1] }
-    try { Start-ScheduledTask -TaskName $taskName } catch {
-        Fail "Could not start the existing '$taskName' task: $($_.Exception.Message)"
-    }
-    if (Wait-DashHealth $Port 20) {
-        Write-Host "Health  : dashboard is LIVE at https://localhost:$Port/ (boot task kept)"
-    } else {
-        Fail "The boot task restarted but the dashboard did not answer /api/health on port $Port within 20 seconds. Check Task Scheduler ('$taskName') and the app log in $InstallDir\logs."
-    }
-    Write-Host ""
-    Write-Host "Setup complete."
-    if (-not $Silent) {
-        $ans = Read-Host "Tail the live log now? [Y/n]"
-        if ($ans -eq "" -or $ans -match "^[Yy]") { Show-LogTail $InstallDir }
-    }
-    exit 0
-}
-$wantService = $Service
-if (-not $Silent -and -not $Service) {
-    $ans = Read-Host "Register auto-start at boot (runs as SYSTEM, survives reboot)? [Y/n]"
-    if ($ans -eq "" -or $ans -match "^[Yy]") { $wantService = $true }
-}
-if ($wantService) {
-    if (-not $isAdmin) {
-        if ($Elevated) {
-            Fail "Still not elevated after the UAC relaunch - elevation was declined. Re-run from an Administrator prompt."
-        }
-        $extra = @("-Service", "-Port", "$Port")
-        if ($Silent) { $extra += "-Silent" }
-        if ($NoUpdate) { $extra += "-NoUpdate" }
-        Invoke-SelfElevated $extra
-    }
-    $pythonExe = (Get-Command $python).Source
-    $action = New-ScheduledTaskAction -Execute $pythonExe `
-        -Argument "networker_dashboard.py --port $Port --no-launch" `
-        -WorkingDirectory $InstallDir
-    $trigger = New-ScheduledTaskTrigger -AtStartup
-    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
-        -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
-        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    # Default execution time limit kills the task after 72h; PT0S = unlimited.
-    # (The cmdlet parameter rejects a zero timespan on PowerShell 5.1, so set
-    # it on the settings object directly.)
-    $settings.ExecutionTimeLimit = "PT0S"
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-        -Principal $principal -Settings $settings | Out-Null
-    # Prove the registration instead of assuming it, and head off the classic
-    # confusion: this is a Task Scheduler task, NOT a services.msc service.
-    $check = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    if (-not $check) {
-        Fail "Register-ScheduledTask reported success but the task is not queryable. Check Task Scheduler manually."
-    }
-    Write-Host "Task    : '$taskName' registered (at boot, SYSTEM, 3 crash restarts, port $Port) - state: $($check.State)"
-    Write-Host "Note    : look in TASK SCHEDULER (taskschd.msc > Task Scheduler Library > '$taskName')."
-    Write-Host "          It will NOT appear in services.msc - it is a boot task, not a Windows service."
-    Start-ScheduledTask -TaskName $taskName
-    if (Wait-DashHealth $Port 20) {
-        Write-Host "Health  : dashboard is LIVE at https://localhost:$Port/ (will come back after every reboot)"
-    } else {
-        Fail "The boot task was registered but the dashboard did not answer /api/health on port $Port within 20 seconds. Check Task Scheduler ('$taskName') and the app log in $InstallDir\logs."
-    }
-}
-else {
-    # --- 6. No boot task: start the dashboard in the background ---------------
-    $pythonExe = (Get-Command $python).Source
-    Start-Process -FilePath $pythonExe `
-        -ArgumentList "networker_dashboard.py --port $Port --no-launch" `
-        -WorkingDirectory $InstallDir -WindowStyle Hidden
-    Write-Host "Start   : dashboard launched in the background (port $Port)"
-    if (Wait-DashHealth $Port 20) {
-        Write-Host "Health  : dashboard is LIVE at https://localhost:$Port/"
-        Write-Host ""
-        Write-Host "WARNING : no boot task was registered - the dashboard will NOT come back" -ForegroundColor Yellow
-        Write-Host "          after a reboot. Re-run with -Service to register auto-start." -ForegroundColor Yellow
-    } else {
-        Fail "The dashboard did not answer /api/health on port $Port within 20 seconds. Check the app log in $InstallDir\logs."
-    }
-}
-
-# --- 7. Offer a real-time log tail --------------------------------------------
-Write-Host ""
-Write-Host "Setup complete."
-if (-not $Silent) {
-    $ans = Read-Host "Tail the live log now? [Y/n]"
-    if ($ans -eq "" -or $ans -match "^[Yy]") {
-        Show-LogTail $InstallDir
-    }
-} else {
-    Write-Host "Tail the log any time with:"
-    Write-Host "  powershell -Command `"Get-Content '$InstallDir\logs\networker_dashboard.log' -Wait -Tail 20`""
-}
-exit 0
+Write-Host "Handoff : $installer $($fwd -join ' ')"
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer @fwd
+$code = $LASTEXITCODE
+Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+exit $code

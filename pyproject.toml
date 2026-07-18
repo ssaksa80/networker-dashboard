@@ -1,6 +1,6 @@
 [project]
 name = "networker-dashboard"
-version = "2.8.2"
+version = "2.8.3"
 description = "Self-contained HTTPS dashboard for Dell NetWorker backup and recovery status"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }

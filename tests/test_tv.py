@@ -106,7 +106,7 @@ class TestTvPageHtml(unittest.TestCase):
 
 class TestTvShipsInBundle(unittest.TestCase):
     def test_bundle_allow_list_includes_tv_assets(self):
-        script = (PROJECT / "scripts" / "build-bundle.ps1").read_text(encoding="utf-8")
+        script = (PROJECT / "deploy" / "build-bundle.ps1").read_text(encoding="utf-8")
         for name in ("tv.html", "tv.css", "tv.js"):
             self.assertIn(f"nwdash\\assets\\{name}", script)
 
