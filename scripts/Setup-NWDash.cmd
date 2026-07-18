@@ -11,10 +11,16 @@ REM
 REM  Usage:
 REM    Setup-NWDash.cmd                     install to C:\apps\networker-dashboard
 REM    Setup-NWDash.cmd D:\some\dir         install to a custom directory
-REM    Setup-NWDash.cmd D:\some\dir -Silent no prompts (no password set, no start)
-REM    Setup-NWDash.cmd -Service            also register the boot task (needs
-REM                                         an elevated prompt); -Port NNNN to
+REM    Setup-NWDash.cmd D:\some\dir -Silent no prompts
+REM    Setup-NWDash.cmd -Service            register the boot task instead of a
+REM                                         plain background start (needs an
+REM                                         elevated prompt); -Port NNNN to
 REM                                         change the HTTPS port (default 8443)
+REM
+REM  The dashboard always runs in the BACKGROUND after setup (scheduled task
+REM  with -Service, hidden process otherwise) and the start is health-gated
+REM  against /api/health. When setup completes you are offered a real-time
+REM  log tail (Ctrl+C stops the tail only, never the dashboard).
 REM
 REM  With the boot task registered the dashboard runs as SYSTEM, starts on
 REM  every Windows boot, and is restarted up to 3 times if it crashes. Note:
@@ -41,6 +47,44 @@ function Fail([string]$msg) {
 }
 
 Write-Host "=== NetWorker Dashboard setup ==="
+
+# Poll the app's own /api/health over HTTPS (self-signed cert -> trust-all)
+# instead of trusting process/task state. Returns $true when live.
+function Wait-DashHealth([int]$HealthPort, [int]$Seconds) {
+    Add-Type -TypeDefinition "using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAll:ICertificatePolicy{public bool CheckValidationResult(ServicePoint a,X509Certificate b,WebRequest c,int d){return true;}}" -ErrorAction SilentlyContinue
+    $oldPolicy = [System.Net.ServicePointManager]::CertificatePolicy
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAll
+    try {
+        foreach ($i in 1..$Seconds) {
+            Start-Sleep -Seconds 1
+            try {
+                $resp = (New-Object System.Net.WebClient).DownloadString("https://127.0.0.1:$HealthPort/api/health")
+                if ($resp -match '"ok"\s*:\s*true') { return $true }
+            } catch { }
+        }
+        return $false
+    }
+    finally {
+        [System.Net.ServicePointManager]::CertificatePolicy = $oldPolicy
+    }
+}
+
+# Follow the app's rotating log in real time. Ctrl+C stops tailing only;
+# the dashboard keeps running in the background.
+function Show-LogTail([string]$Dir) {
+    $log = Join-Path $Dir "logs\networker_dashboard.log"
+    foreach ($i in 1..10) {
+        if (Test-Path $log) { break }
+        Start-Sleep -Seconds 1
+    }
+    if (-not (Test-Path $log)) {
+        Write-Host "Log file not found yet: $log"
+        return
+    }
+    Write-Host ""
+    Write-Host "--- Tailing $log (Ctrl+C stops tailing; the dashboard keeps running) ---"
+    Get-Content -LiteralPath $log -Wait -Tail 20
+}
 
 # Console progress bar: [##########------------------]  42%  (ASCII, in-place)
 function Show-Bar([string]$label, [int]$pct) {
@@ -182,41 +226,37 @@ if ($wantService) {
         -Principal $principal -Settings $settings | Out-Null
     Write-Host "Task    : '$taskName' registered (at boot, SYSTEM, 3 crash restarts, port $Port)"
     Start-ScheduledTask -TaskName $taskName
-    # Health-gate the start instead of trusting the task state: poll the app's
-    # own /api/health endpoint over HTTPS (self-signed cert, so bypass trust).
-    $healthy = $false
-    Add-Type -TypeDefinition "using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAll:ICertificatePolicy{public bool CheckValidationResult(ServicePoint a,X509Certificate b,WebRequest c,int d){return true;}}"
-    $oldPolicy = [System.Net.ServicePointManager]::CertificatePolicy
-    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAll
-    try {
-        foreach ($i in 1..20) {
-            Start-Sleep -Seconds 1
-            try {
-                $resp = (New-Object System.Net.WebClient).DownloadString("https://127.0.0.1:$Port/api/health")
-                if ($resp -match '"ok"\s*:\s*true') { $healthy = $true; break }
-            } catch { }
-        }
-    }
-    finally {
-        [System.Net.ServicePointManager]::CertificatePolicy = $oldPolicy
-    }
-    if ($healthy) {
+    if (Wait-DashHealth $Port 20) {
         Write-Host "Health  : dashboard is LIVE at https://localhost:$Port/ (will come back after every reboot)"
     } else {
         Fail "The boot task was registered but the dashboard did not answer /api/health on port $Port within 20 seconds. Check Task Scheduler ('$taskName') and the app log in $InstallDir\logs."
     }
-    exit 0
+}
+else {
+    # --- 6. No boot task: start the dashboard in the background ---------------
+    $pythonExe = (Get-Command $python).Source
+    Start-Process -FilePath $pythonExe `
+        -ArgumentList "networker_dashboard.py --port $Port --no-launch" `
+        -WorkingDirectory $InstallDir -WindowStyle Hidden
+    Write-Host "Start   : dashboard launched in the background (port $Port)"
+    if (Wait-DashHealth $Port 20) {
+        Write-Host "Health  : dashboard is LIVE at https://localhost:$Port/"
+        Write-Host "Note    : this instance does NOT survive a reboot; re-run with -Service (elevated) for that."
+    } else {
+        Fail "The dashboard did not answer /api/health on port $Port within 20 seconds. Check the app log in $InstallDir\logs."
+    }
 }
 
-# --- 6. No boot task: offer a foreground start --------------------------------
+# --- 7. Offer a real-time log tail --------------------------------------------
 Write-Host ""
-Write-Host "Installed. Start later with:"
-Write-Host "  cd `"$InstallDir`" && $python networker_dashboard.py"
+Write-Host "Setup complete."
 if (-not $Silent) {
-    $ans = Read-Host "Start the dashboard now? [Y/n]"
+    $ans = Read-Host "Tail the live log now? [Y/n]"
     if ($ans -eq "" -or $ans -match "^[Yy]") {
-        Set-Location $InstallDir
-        & $python networker_dashboard.py
+        Show-LogTail $InstallDir
     }
+} else {
+    Write-Host "Tail the log any time with:"
+    Write-Host "  powershell -Command `"Get-Content '$InstallDir\logs\networker_dashboard.log' -Wait -Tail 20`""
 }
 exit 0
