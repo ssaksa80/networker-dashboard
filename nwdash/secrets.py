@@ -103,6 +103,17 @@ def _read_protected_key(path: Path) -> bytes | None:
     return raw
 
 
+def _warn_key_regenerated(path: Path) -> None:
+    """Surface the operator-visible consequence of replacing an unreadable key file."""
+    message = (
+        f"data/{path.name} could not be decrypted for this Windows account "
+        "(copied from another machine/user?). A new key was generated; previously "
+        "saved sessions and profile passwords must be re-entered."
+    )
+    LOG.warning(message)
+    print(f"WARNING: {message}")
+
+
 def _load_or_create_stable_key() -> bytes:
     """Load persisted Fernet key (DPAPI-wrapped on Windows); create if absent.
     Legacy plaintext keys are migrated to wrapped form on first read.
@@ -121,8 +132,10 @@ def _load_or_create_stable_key() -> bytes:
             if _dpapi_available() and not _key_file_is_wrapped(SESSION_KEY_FILE):
                 _write_protected_key(SESSION_KEY_FILE, candidate)  # migrate
             return candidate
-        except Exception:
-            pass
+        except Exception as exc:
+            LOG.debug(f"stored session key failed validation: {exc}")
+    if SESSION_KEY_FILE.exists():
+        _warn_key_regenerated(SESSION_KEY_FILE)
     key = Fernet.generate_key()
     _write_protected_key(SESSION_KEY_FILE, key)
     return key
@@ -145,6 +158,8 @@ def _load_or_create_auth_key() -> bytes:
         if _dpapi_available() and not _key_file_is_wrapped(AUTH_KEY_FILE):
             _write_protected_key(AUTH_KEY_FILE, raw)  # migrate
         return raw
+    if AUTH_KEY_FILE.exists():
+        _warn_key_regenerated(AUTH_KEY_FILE)
     key = os.urandom(32)
     _write_protected_key(AUTH_KEY_FILE, key)
     return key

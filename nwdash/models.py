@@ -366,8 +366,8 @@ def set_shared_dashboard(session_id: str, dashboard: dict[str, Any]) -> None:
             SHARED_DASHBOARD_STATE["lastError"] = str(shared.get("reportNotice") or "Live refresh is using cached data.")
         try:
             sse_broadcast("dashboard", json.dumps(shared, separators=(",", ":")))
-        except Exception:
-            pass
+        except Exception as exc:
+            debug_log(f"SSE broadcast of stale dashboard failed: {exc}")
         return
     if not dashboard_backup_source_available(shared):
         with SHARED_DASHBOARD_LOCK:
@@ -387,8 +387,8 @@ def set_shared_dashboard(session_id: str, dashboard: dict[str, Any]) -> None:
     # Push to SSE subscribers
     try:
         sse_broadcast("dashboard", json.dumps(shared, separators=(",", ":")))
-    except Exception:
-        pass
+    except Exception as exc:
+        debug_log(f"SSE broadcast of shared dashboard failed: {exc}")
 
 
 def shared_dashboard_payload() -> dict[str, Any]:

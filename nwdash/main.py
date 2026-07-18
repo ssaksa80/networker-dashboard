@@ -262,8 +262,8 @@ def run(argv: list[str] | None = None) -> int:
                 server_thread.join(3.0)
             shared_refresh_thread.join(3.0)
             server.server_close()
-        except Exception:
-            pass
+        except Exception as exc:
+            LOG.debug(f"shutdown cleanup failed: {exc}")
         # Daemon worker/background threads may still be mid-write to stderr (via
         # logging) when the interpreter finalizes — a normal shutdown can then
         # deadlock on the stderr buffer lock (Fatal Python error:
@@ -273,8 +273,8 @@ def run(argv: list[str] | None = None) -> int:
         try:
             sys.stdout.flush()
             sys.stderr.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            LOG.debug(f"final stdout/stderr flush failed: {exc}")
         os._exit(0)
     return 0
 

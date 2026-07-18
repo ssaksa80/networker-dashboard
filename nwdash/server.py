@@ -460,8 +460,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             LOG.error(f"do_GET unhandled error: {safe_log_text(exc)}", extra={"request_id": ref}, exc_info=True)
             try:
                 self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
-            except Exception:  # noqa: BLE001 — headers may already be sent
-                pass
+            except Exception as exc2:  # noqa: BLE001 — headers may already be sent
+                LOG.debug(f"failed to send error response (ref {ref}): {exc2}")
 
     def do_POST(self) -> None:
         if not self._require_https():
@@ -791,8 +791,8 @@ def bind_dashboard_server(
             raise
         try:
             server = ExclusiveThreadingHTTPServer((bind_host, 0), DashboardHandler, max_connections=max_connections)
-        except OSError:
-            raise exc
+        except OSError as fallback_exc:
+            raise exc from fallback_exc
         return server, int(server.server_address[1]), True
 
 
