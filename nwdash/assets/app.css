@@ -875,12 +875,17 @@
 
     .snap-bar-row {
       display: grid;
-      grid-template-columns: 34px 1fr 36px;
+      /* em-based columns: the label ("Before"/"After") and value columns must
+         scale WITH the font — fixed px columns overflowed under the large-
+         display font sizes and the track painted over the label text. */
+      grid-template-columns: 4.6em 1fr 4em;
       align-items: center;
       gap: 4px;
       font-size: 10px;
       color: var(--muted);
     }
+    .snap-bar-row > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .snap-bar-row > span:last-child { text-align: right; }
 
     .snap-bar-track {
       height: 5px;
