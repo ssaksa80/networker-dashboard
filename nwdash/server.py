@@ -195,10 +195,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise BadRequest("Invalid Content-Length.") from exc
         if length <= 0 or length > MAX_POST_BYTES:
             raise BadRequest("Request body size is invalid.")
-        payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        raw = self.rfile.read(length)
+        self._body_consumed = True
+        payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise BadRequest("JSON body must be an object.")
         return payload
+
+    def _drain_request_body(self) -> None:
+        """Consume an unread request body before an early error response.
+
+        On a keep-alive connection the unread bytes would otherwise be parsed
+        as the start of the NEXT request line (e.g. '{"theme":..}GET /x' -> 501),
+        poisoning every subsequent request on that connection. Idempotent:
+        does nothing if _read_json_body already consumed the body (a blind
+        re-read would block on the open socket until the request timeout).
+        """
+        if getattr(self, "_body_consumed", False):
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self.close_connection = True
+            return
+        if length <= 0:
+            return
+        if length > MAX_POST_BYTES:
+            # Refuse to swallow oversized bodies; drop the connection instead.
+            self.close_connection = True
+            return
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                self.close_connection = True
+                return
+            remaining -= len(chunk)
+        self._body_consumed = True
 
     def _require_https(self) -> bool:
         if self._is_https():
@@ -239,11 +272,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _handle_login(self) -> None:
         ip = self.client_address[0]
         if _login_rate_limited(ip):
+            self._drain_request_body()
             self._send_error_json(HTTPStatus.TOO_MANY_REQUESTS, "Too many login attempts. Wait and try again.")
             return
         try:
             payload = self._read_json_body()
         except (BadRequest, json.JSONDecodeError):
+            self._drain_request_body()
             self._send_error_json(HTTPStatus.BAD_REQUEST, "Invalid login request.")
             return
         password = str(payload.get("password") or "")
@@ -467,21 +502,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._require_https():
             return
         self.request_id = uuid.uuid4().hex[:8]
+        self._body_consumed = False  # one handler instance serves many keep-alive requests
         path = urlparse(self.path).path
         # Always-open auth endpoints
         if path == "/api/login":
             self._handle_login()
             return
         if path == "/api/logout":
+            self._drain_request_body()
             self._send_json_with_cookie(HTTPStatus.OK, {"ok": True}, "", 0)
             return
+        # Every early-error path below MUST drain the request body first, or
+        # the unread bytes poison the next request on this keep-alive socket.
         # Auth gate for all other POST routes
         if _cfg.AUTH_ENABLED and not self._authenticated():
+            self._drain_request_body()
             self._send_error_json(HTTPStatus.UNAUTHORIZED, "Authentication required.")
             return
         # CSRF gate: every state-changing route requires the per-session token.
         # Only meaningful when cookie auth is on (no session cookie, no CSRF).
         if _cfg.AUTH_ENABLED and not self._csrf_ok():
+            self._drain_request_body()
             self._send_error_json(HTTPStatus.FORBIDDEN, "CSRF token missing or invalid.")
             return
         allowed = {"/api/dashboard", "/api/export", "/api/server-health",
@@ -489,6 +530,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                    "/api/share", "/api/multi-server", "/api/profiles",
                    "/api/ui-theme"}
         if path not in allowed:
+            self._drain_request_body()
             self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
             return
 
@@ -669,8 +711,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if status >= 400:
                 self.log_dashboard_failure(status, body)
         except BadRequest as exc:
+            self._drain_request_body()
             self._send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
         except json.JSONDecodeError:
+            self._drain_request_body()
             self._send_error_json(HTTPStatus.BAD_REQUEST, "Request body must be valid JSON.")
         except Exception as exc:
             ref = getattr(self, "request_id", "-")

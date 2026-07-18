@@ -176,6 +176,41 @@ class TestServerHttp(unittest.TestCase):
         )
         self.assertEqual(status, 404)
 
+    def test_keepalive_survives_early_error_post(self):
+        # Regression: an early-error POST (401/403/404) must drain its request
+        # body. Before the fix, the unread body bytes were parsed as the start
+        # of the next request line on the same keep-alive connection
+        # ('{"theme":..}GET /api/health' -> 501), poisoning the connection.
+        import http.client
+
+        conn = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.ctx, timeout=20)
+        try:
+            payload = json.dumps({"theme": "default"})
+            # 1: unauthenticated bodied POST -> 401, body must be drained
+            conn.request("POST", "/api/ui-theme", body=payload,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 401)
+            resp.read()
+            # 2: SAME connection must still parse the next request cleanly
+            conn.request("GET", "/api/health")
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            self.assertIn(b'"ok":', resp.read().replace(b" ", b""))
+            # 3: authed but tokenless bodied POST -> 403, then reuse again
+            cookie, _ = self._login()
+            conn.request("POST", "/api/ui-theme", body=payload,
+                         headers={"Content-Type": "application/json", "Cookie": cookie})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 403)
+            resp.read()
+            conn.request("GET", "/api/health")
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            resp.read()
+        finally:
+            conn.close()
+
     def test_root_without_cookie_serves_login_page(self):
         status, body, _ = self._raw_request("GET", "/")
         self.assertEqual(status, 200)

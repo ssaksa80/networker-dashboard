@@ -9,17 +9,24 @@
         } catch (_e) {}
         return csrfToken;
       }
-      function withCsrf(args){
-        const opts = Object.assign({}, args[1] || {});
+      function isMutatingApi(args){
+        const opts = args[1] || {};
         const method = String(opts.method || "GET").toUpperCase();
         const url = (args[0] && args[0].url) ? args[0].url : String(args[0] || "");
-        if (method !== "GET" && method !== "HEAD" && url.indexOf("/api/") !== -1 && csrfToken) {
+        return method !== "GET" && method !== "HEAD" && url.indexOf("/api/") !== -1;
+      }
+      function withCsrf(args){
+        if (isMutatingApi(args) && csrfToken) {
+          const opts = Object.assign({}, args[1] || {});
           opts.headers = Object.assign({}, opts.headers || {}, {"X-CSRF-Token": csrfToken});
           return [args[0], opts];
         }
         return args;
       }
       window.fetch = async function(...args){
+        // A mutating call fired before the token bootstrap finished would be
+        // rejected 403 (and needlessly retried); wait for the bootstrap once.
+        if (isMutatingApi(args) && !csrfToken) { await csrfReady; }
         let resp = await _fetch.apply(this, withCsrf(args));
         const url = (args[0] && args[0].url) ? args[0].url : String(args[0] || "");
         if (resp.status === 403 && url.indexOf("/api/") !== -1) {
@@ -36,7 +43,7 @@
         } catch (_e) {}
         return resp;
       };
-      refreshCsrfToken();
+      const csrfReady = refreshCsrfToken();
     })();
     function initCollapsibles(){
       var toggles = document.querySelectorAll('[data-toggle-target]');
