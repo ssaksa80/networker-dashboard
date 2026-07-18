@@ -19,13 +19,21 @@ from .config import (
     DATA_DIR,
     DEFAULT_REPORT_RANGE,
     EMAIL_CONFIG_FILE,
+    EMAIL_PROFILES_FILE,
     HOST_PATTERN,
     THEME_PALETTES,
     TIME_HHMM_PATTERN,
     UI_PREFS_FILE,
+    _PROFILE_PW_SAVED,
+    _PROFILE_PW_SENTINEL,
     debug_log,
 )
-from .secrets import decrypt_process_secret, encrypt_process_secret
+from .secrets import (
+    decrypt_process_secret,
+    decrypt_profile_secret,
+    encrypt_process_secret,
+    encrypt_profile_secret,
+)
 from .models import BadRequest, SHARED_DASHBOARD_LOCK, SHARED_DASHBOARD_STATE, SHARED_REFRESH_STOP
 from .profiles import SNAPSHOTS_LOCK, parse_port
 
@@ -452,6 +460,128 @@ def saved_email_smtp_password() -> str:
     if isinstance(smtp, dict) and smtp.get("encrypted_password"):
         return decrypt_process_secret(str(smtp.get("encrypted_password")))
     return ""
+
+
+# ── Named email notification profiles ───────────────────────────────────────
+# data/email_profiles.json: {name: {smtpHost, smtpPort, ..., _enc_smtpPassword}}
+# — the same field set the Email Alert Automation modal submits (validated via
+# parse_smtp_settings). The SMTP password is stored encrypted with the shared
+# profile-secret helpers and NEVER returned by the API: masked responses carry
+# the "(saved)" sentinel instead, and submitting that sentinel back means
+# "keep the stored password" (same convention as connection profiles).
+EMAIL_PROFILES_LOCK = threading.Lock()
+
+
+def clean_email_profile_name(value: Any) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise BadRequest("Email profile name is required.")
+    if len(name) > 64:
+        raise BadRequest("Email profile name must be 64 characters or fewer.")
+    if any(ch in name for ch in "\r\n\t"):
+        raise BadRequest("Email profile name contains unsupported characters.")
+    return name
+
+
+def load_email_profiles() -> dict[str, Any]:
+    try:
+        raw = json.loads(EMAIL_PROFILES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def write_email_profiles(profiles: dict[str, Any]) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = EMAIL_PROFILES_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(profiles, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(EMAIL_PROFILES_FILE)
+    except OSError:
+        pass
+
+
+def _mask_email_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    masked = {k: v for k, v in profile.items() if k != "_enc_smtpPassword"}
+    masked["smtpPassword"] = _PROFILE_PW_SAVED if profile.get("_enc_smtpPassword") else ""
+    return masked
+
+
+def mask_email_profiles(profiles: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: _mask_email_profile(profile)
+        for name, profile in sorted(profiles.items())
+        if isinstance(profile, dict)
+    }
+
+
+def save_email_profile(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate + persist one named profile; returns ALL profiles masked."""
+    settings = parse_smtp_settings(payload)
+    with EMAIL_PROFILES_LOCK:
+        profiles = load_email_profiles()
+        existing = profiles.get(name) if isinstance(profiles.get(name), dict) else {}
+        raw_password = settings["smtp_password"]
+        if raw_password and raw_password not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
+            encrypted = encrypt_profile_secret(raw_password)
+        else:
+            # Blank or sentinel password on save keeps the stored one.
+            encrypted = str(existing.get("_enc_smtpPassword") or "")
+        profiles[name] = {
+            "smtpHost": settings["smtp_host"],
+            "smtpPort": settings["smtp_port"],
+            "smtpSecurity": settings["smtp_security"],
+            "smtpUsername": settings["smtp_username"],
+            "smtpFrom": settings["smtp_from"],
+            "smtpTo": "; ".join(settings["recipients"]),
+            "intervalMinutes": settings["interval_minutes"],
+            "trigger": settings["trigger"],
+            "scheduleType": settings["schedule_type"],
+            "reportTime": settings["report_time"],
+            "theme": settings["theme"],
+            "quietStart": settings["quiet_start"],
+            "quietEnd": settings["quiet_end"],
+            "digest": settings["digest"],
+            "_enc_smtpPassword": encrypted,
+        }
+        write_email_profiles(profiles)
+        return mask_email_profiles(profiles)
+
+
+def delete_email_profile(name: str) -> dict[str, Any]:
+    with EMAIL_PROFILES_LOCK:
+        profiles = load_email_profiles()
+        profiles.pop(name, None)
+        write_email_profiles(profiles)
+        return mask_email_profiles(profiles)
+
+
+def get_email_profile_masked(name: str) -> dict[str, Any] | None:
+    with EMAIL_PROFILES_LOCK:
+        profiles = load_email_profiles()
+    profile = profiles.get(name)
+    return _mask_email_profile(profile) if isinstance(profile, dict) else None
+
+
+def resolve_email_profile_password(payload: dict[str, Any]) -> dict[str, Any]:
+    """When the form submits the "(saved)" sentinel (a loaded email profile),
+    swap in the profile's stored SMTP password before parsing. Falls back to
+    empty (→ existing automation / saved email-config password) when there is
+    no matching stored secret."""
+    password = str(payload.get("smtpPassword") or "")
+    if password not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
+        return payload
+    stored = ""
+    name = str(payload.get("emailProfileName") or "").strip()
+    if name:
+        with EMAIL_PROFILES_LOCK:
+            profiles = load_email_profiles()
+        profile = profiles.get(name)
+        if isinstance(profile, dict):
+            stored = decrypt_profile_secret(str(profile.get("_enc_smtpPassword") or ""))
+    result = dict(payload)
+    result["smtpPassword"] = stored
+    return result
 
 
 def save_email_config_from_payload(payload: dict[str, Any]) -> dict[str, Any]:

@@ -440,6 +440,16 @@
           <div id="emailScheduleListWrap" class="collapsible">
             <div id="emailScheduleList" class="email-schedule-list" aria-label="Saved schedules"></div>
           </div>
+          <div class="email-profile-bar" aria-label="Saved email profiles">
+            <span class="ep-label">Saved profiles</span>
+            <select id="emailProfileSelect" aria-label="Saved email profile list">
+              <option value="">-- select a profile --</option>
+            </select>
+            <input id="emailProfileName" placeholder="Profile name" autocomplete="off" spellcheck="false" aria-label="Email profile name">
+            <button id="emailProfileSaveBtn" class="ghost" type="button">Save profile</button>
+            <button id="emailProfileLoadBtn" class="ghost" type="button">Load</button>
+            <button id="emailProfileDeleteBtn" class="ghost" type="button">Delete</button>
+          </div>
           <div class="automation-grid">
             <label>
               SMTP host

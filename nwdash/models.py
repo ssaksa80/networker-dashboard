@@ -87,12 +87,19 @@ class AlertAutomation:
     last_signature: str = ""
     timer: threading.Timer | None = None
     next_run_at: float = 0.0  # epoch seconds; driven by the scheduler loop
+    # Connection snapshot captured at schedule time (same JSON shape that
+    # sessions.py persists to sessions.json: sanitized config + encrypted
+    # credentials). Lets the automation recreate its dashboard session at fire
+    # time so schedules survive restarts, session TTL expiry, and new browser
+    # sessions. Empty dict for legacy records saved before this field existed —
+    # those wait until a matching session appears again.
+    connection: dict[str, Any] = field(default_factory=dict)
 
 
 ALERT_AUTOMATIONS: dict[str, AlertAutomation] = {}
 
 # One reentrant lock guards both global registries. Reentrant so nested calls
-# (cleanup -> cancel_session_automations -> cancel_alert_automation) cannot
+# (stop-all -> cancel_session_automations -> cancel_alert_automation) cannot
 # self-deadlock. Invariant: never hold REGISTRY_LOCK across network I/O —
 # snapshot what you need under the lock, release, then call out.
 REGISTRY_LOCK = threading.RLock()

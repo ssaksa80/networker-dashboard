@@ -14,6 +14,24 @@ class TestDashboardHtml(unittest.TestCase):
     def test_logo_placeholder_replaced(self):
         self.assertNotIn("__NETWORKER_LOGO_SRC__", dashboard_html())
 
+    def test_contains_email_profile_wiring(self):
+        """Email Alert Automation modal ships the saved-profiles controls and
+        the client-side calls for the profile CRUD actions."""
+        html = dashboard_html()
+        for marker in (
+            "emailProfileSelect",
+            "emailProfileName",
+            "emailProfileSaveBtn",
+            "emailProfileLoadBtn",
+            "emailProfileDeleteBtn",
+            "save-profile",
+            "list-profiles",
+            "get-profile",
+            "delete-profile",
+            "emailProfileName: loadedEmailProfileName",
+        ):
+            self.assertIn(marker, html, f"dashboard html missing {marker!r}")
+
 
 class TestLoginPageHtml(unittest.TestCase):
     def test_posts_to_login_api(self):

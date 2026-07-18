@@ -39,12 +39,23 @@ from .models import (
     session_automation_keys,
     shared_reliable_dashboard_for_session,
 )
-from .sessions import build_dashboard_from_session
+from .sessions import (
+    build_dashboard_from_session,
+    connection_snapshot_for_session,
+    recreate_session_from_snapshot,
+)
 from .snapshots import (
+    clean_email_profile_name,
+    delete_email_profile,
+    get_email_profile_masked,
+    load_email_profiles,
     load_ui_theme,
+    mask_email_profiles,
     parse_email_recipients,
     parse_smtp_settings,
+    resolve_email_profile_password,
     save_email_config_from_payload,
+    save_email_profile,
     saved_email_smtp_password,
 )
 from .reports import dashboard_alert_lines, dashboard_report_email, render_dashboard_snapshot_png
@@ -263,32 +274,12 @@ def _fire_automation_async(automation_id: str) -> None:
     ).start()
 
 
-def prune_orphaned_automations() -> int:
-    """Drop scheduled automations whose dashboard session no longer exists.
-
-    A new browser connection gets a fresh session id, so a previous session's
-    automations become orphans: invisible in the per-session modal list yet still
-    fired by the scheduler, which re-emails old reports. Pruning them here (and on
-    restore) keeps the live store — and the persisted automations.json — in sync
-    with the sessions that actually exist."""
-    removed = 0
-    for key, automation in _automation_items_snapshot():
-        if not _session_exists(automation.session_id):
-            if cancel_alert_automation(key):
-                removed += 1
-                debug_log(
-                    f"pruned orphaned automation id={key} "
-                    f"type={automation.schedule_type} session={automation.session_id[:8]}… (session gone)"
-                )
-    if removed:
-        persist_automations()
-    return removed
-
-
 def automation_scheduler_tick() -> None:
-    # Orphaned automations (session gone) must never fire — they would re-send a
-    # stale report. Prune them first, then fire only the survivors that are due.
-    prune_orphaned_automations()
+    # Automations deliberately OUTLIVE their dashboard session: each carries a
+    # connection snapshot and recreates a session at fire time (see
+    # run_alert_automation). A missing session must never cancel a schedule —
+    # that was the "saved schedules vanish after restart" bug. The modal lists
+    # ALL schedules (not per-session), so nothing here is invisible.
     now = time.time()
     for key, automation in _automation_items_snapshot():
         nxt = float(getattr(automation, "next_run_at", 0) or 0)
@@ -330,6 +321,7 @@ def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
         "quiet_start": automation.quiet_start,
         "quiet_end": automation.quiet_end,
         "digest": automation.digest,
+        "connection": automation.connection if isinstance(automation.connection, dict) else {},
     }
 
 
@@ -350,8 +342,12 @@ def persist_automations() -> None:
 
 
 def restore_automations_from_disk() -> int:
-    """Recreate and reschedule automations saved by a previous run. Must be
-    called AFTER sessions are restored, since an automation needs its session."""
+    """Recreate and reschedule ALL automations saved by a previous run —
+    regardless of whether their dashboard session still exists. Sessions are
+    recreated lazily at fire time from each automation's connection snapshot
+    (run_alert_automation), so restore no longer depends on session restore.
+    Legacy records without a snapshot are kept too: they stay scheduled and
+    wait until a matching session appears again."""
     if not WMI_CIPHER or not AUTOMATIONS_FILE.exists():
         return 0
     try:
@@ -365,14 +361,14 @@ def restore_automations_from_disk() -> int:
     for aid, rec in records.items():
         try:
             session_id = str(rec.get("session_id") or "")
-            if not session_id or not _session_exists(session_id):
-                # Session gone; cannot refresh its dashboard. Drop the record so
-                # the persisted file stops accumulating dead-session schedules.
+            if not session_id:
                 dropped += 1
                 continue
+            connection = rec.get("connection")
             automation = AlertAutomation(
                 automation_id=str(rec.get("automation_id") or aid),
                 session_id=session_id,
+                connection=connection if isinstance(connection, dict) else {},
                 smtp_host=str(rec.get("smtp_host") or ""),
                 smtp_port=int(rec.get("smtp_port") or DEFAULT_API_PORT),
                 smtp_username=str(rec.get("smtp_username") or ""),
@@ -398,10 +394,10 @@ def restore_automations_from_disk() -> int:
         except (TypeError, ValueError, KeyError) as exc:
             dropped += 1
             debug_log(f"restore_automations: skipped {aid}: {exc}")
-    # Rewrite the file from the surviving in-memory store so orphaned/invalid
+    # Rewrite the file from the surviving in-memory store so invalid/corrupt
     # records are pruned from disk, not just ignored.
     if dropped:
-        debug_log(f"restore_automations: pruned {dropped} orphaned/invalid record(s) from {AUTOMATIONS_FILE.name}")
+        debug_log(f"restore_automations: pruned {dropped} invalid record(s) from {AUTOMATIONS_FILE.name}")
         persist_automations()
     return restored
 
@@ -451,6 +447,55 @@ def alert_email_subject(severity: str, digest: bool = True) -> str:
     return f"NetWorker dashboard alert (single): {label}"
 
 
+# Automations whose connection snapshot can no longer be decrypted (DPAPI key
+# regenerated for a different Windows account) warn ONCE per process, then stay
+# scheduled-but-inert until re-saved. Fail soft, visible.
+_SNAPSHOT_DECRYPT_WARNED: set[str] = set()
+
+
+def _ensure_automation_session(automation: AlertAutomation) -> bool:
+    """Make sure the automation's dashboard session exists before a run,
+    recreating it (under the original session id) from the automation's stored
+    connection snapshot when needed. NEVER cancels the automation — on any
+    failure the run is skipped and the schedule stays armed for the next tick."""
+    if _session_exists(automation.session_id):
+        return True
+    snapshot = automation.connection if isinstance(automation.connection, dict) else {}
+    if not snapshot:
+        # Legacy automations.json record from before connection snapshots
+        # existed: it cannot reconnect on its own, so it waits (still scheduled)
+        # until a matching session appears again.
+        automation.last_result = (
+            f"Waiting for a dashboard session at {generated_at()} — this schedule was saved by an "
+            "older version; reconnect and re-save it to make it restart-proof."
+        )
+        debug_log(f"automation {automation.automation_id}: session gone and no connection snapshot; run skipped")
+        return False
+    if not decrypt_process_secret(str(snapshot.get("encrypted_networker_password") or "")):
+        if automation.automation_id not in _SNAPSHOT_DECRYPT_WARNED:
+            _SNAPSHOT_DECRYPT_WARNED.add(automation.automation_id)
+            LOG.warning(
+                f"Email automation {automation.automation_id} ({automation.schedule_type}) cannot decrypt its "
+                "saved NetWorker credentials (encryption key regenerated?). It remains scheduled but inert "
+                "until it is re-saved from the Email Alert Automation dialog."
+            )
+        automation.last_result = (
+            f"Saved connection credentials are unreadable ({generated_at()}); re-save this schedule."
+        )
+        return False
+    if recreate_session_from_snapshot(automation.session_id, snapshot):
+        debug_log(f"automation {automation.automation_id}: recreated dashboard session from stored connection")
+        return True
+    automation.last_result = (
+        f"Skipped at {generated_at()}: could not reconnect to NetWorker with the saved connection; will retry."
+    )
+    LOG.warning(
+        f"Email automation {automation.automation_id} could not recreate its NetWorker session; "
+        "run skipped, schedule kept."
+    )
+    return False
+
+
 def run_alert_automation(automation_id: str) -> None:
     automation = _get_automation(automation_id)
     if not automation:
@@ -464,6 +509,8 @@ def run_alert_automation(automation_id: str) -> None:
         if not automation.enabled:
             automation.last_result = "Paused"
             return
+        if not _ensure_automation_session(automation):
+            return  # run skipped; finally-block reschedules the next attempt
         status, dashboard = build_dashboard_from_session(automation.session_id)
         debug_log(f"run_alert_automation build status={status} id={automation_id}")
         if status != HTTPStatus.OK:
@@ -560,11 +607,40 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         f"scheduleType={str(payload.get('scheduleType') or '')!r} "
         f"session={session_id[:8]}… recipients={_recip_count}"
     )
+    # ── Named email notification profiles (form presets, stored on disk) ────
+    if action == "save-profile":
+        name = clean_email_profile_name(payload.get("profileName"))
+        profiles = save_email_profile(name, payload)
+        return HTTPStatus.OK, {
+            "ok": True,
+            "message": f"Email profile '{name}' saved.",
+            "profiles": profiles,
+        }
+    if action == "list-profiles":
+        return HTTPStatus.OK, {"ok": True, "profiles": mask_email_profiles(load_email_profiles())}
+    if action == "get-profile":
+        name = clean_email_profile_name(payload.get("profileName"))
+        profile = get_email_profile_masked(name)
+        if profile is None:
+            raise BadRequest(f"No saved email profile named '{name}'.")
+        return HTTPStatus.OK, {"ok": True, "name": name, "profile": profile}
+    if action == "delete-profile":
+        name = clean_email_profile_name(payload.get("profileName"))
+        profiles = delete_email_profile(name)
+        return HTTPStatus.OK, {
+            "ok": True,
+            "message": f"Email profile '{name}' deleted.",
+            "profiles": profiles,
+        }
+    # A form loaded from a profile submits the "(saved)" password sentinel;
+    # swap in the stored profile password before any SMTP parsing below.
+    payload = resolve_email_profile_password(payload)
     if action == "list":
+        # Deliberately lists ALL schedules, not just the requesting session's:
+        # automations outlive sessions now, and a schedule that is running in
+        # the background must never be invisible/unmanageable in the UI.
         rows = []
         for _key, automation in _automation_items_snapshot():
-            if automation.session_id != session_id:
-                continue
             rows.append({
                 "automationId": automation.automation_id,
                 "scheduleType": automation.schedule_type,
@@ -585,12 +661,15 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 "quietStart": automation.quiet_start,
                 "quietEnd": automation.quiet_end,
                 "digest": automation.digest,
+                "sessionId": automation.session_id,
+                "sessionLive": _session_exists(automation.session_id),
+                "reconnectable": bool(automation.connection),
             })
         return HTTPStatus.OK, {"ok": True, "schedules": rows}
     if action == "set_enabled":
         requested_id = str(payload.get("automationId") or "").strip()
         target = _get_automation(requested_id) if requested_id else None
-        if not target or target.session_id != session_id:
+        if not target:
             return HTTPStatus.OK, {"ok": True, "message": "No such schedule."}
         target.enabled = bool(payload.get("enabled"))
         return HTTPStatus.OK, {
@@ -603,7 +682,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         requested_id = str(payload.get("automationId") or "").strip()
         if requested_id:
             target = _get_automation(requested_id)
-            if target and target.session_id == session_id:
+            if target:
                 cancel_alert_automation(requested_id)
                 persist_automations()
                 return HTTPStatus.OK, {
@@ -655,7 +734,10 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         try:
             raw_schedule_type = str(payload.get("scheduleType") or "").strip().lower()
             schedulable = raw_schedule_type in ("alert", "daily_report")
-            if schedulable and session_id and _session_exists(session_id):
+            # A live session is no longer required: the automation captures a
+            # connection snapshot when one exists, or inherits the snapshot of
+            # the automation it updates.
+            if schedulable and session_id:
                 settings = parse_smtp_settings(payload)
                 can_schedule = (
                     bool(settings["recipients"])
@@ -667,7 +749,10 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 if can_schedule:
                     requested_id = str(payload.get("automationId") or "").strip()
                     existing_by_id = _get_automation(requested_id) if requested_id else None
-                    if existing_by_id and existing_by_id.session_id == session_id:
+                    if existing_by_id:
+                        # Editing keeps the schedule's identity even when it was
+                        # created by a previous (e.g. pre-restart) session —
+                        # otherwise the edit would DUPLICATE the schedule.
                         automation_id = existing_by_id.automation_id
                     else:
                         automation_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
@@ -675,9 +760,13 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                     smtp_password = settings["smtp_password"] or (
                         decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
                     ) or saved_email_smtp_password()
+                    connection = connection_snapshot_for_session(session_id) or (
+                        dict(existing.connection) if existing and existing.connection else {}
+                    )
                     automation = AlertAutomation(
                         automation_id=automation_id,
                         session_id=session_id,
+                        connection=connection,
                         smtp_host=settings["smtp_host"],
                         smtp_port=settings["smtp_port"],
                         smtp_username=settings["smtp_username"],
@@ -715,13 +804,24 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
             "activeAutomations": active_summary,
         }
     if action not in ("start", "test"):
-        raise BadRequest("Alert automation action must be start, test, save, or stop.")
-    if not session_id or not _session_exists(session_id):
-        raise BadRequest("A live dashboard session is required before scheduling email alerts.")
+        raise BadRequest(
+            "Alert automation action must be start, test, save, stop, "
+            "save-profile, list-profiles, get-profile, or delete-profile."
+        )
+    if not session_id:
+        raise BadRequest("A dashboard session id is required before scheduling email alerts.")
+    # NOTE: the session does not have to be LIVE any more. When it is, its
+    # connection snapshot is captured onto the automation so the schedule can
+    # recreate a session after restarts; when it is not, the schedule still
+    # arms (it inherits the snapshot of the automation it updates, or waits
+    # for a session).
     settings = parse_smtp_settings(payload)
     requested_id = str(payload.get("automationId") or "").strip()
     existing_by_id = _get_automation(requested_id) if requested_id else None
-    if existing_by_id and existing_by_id.session_id == session_id:
+    if existing_by_id:
+        # Editing keeps the schedule's identity even when it was created by a
+        # previous (e.g. pre-restart) session; the current session adopts it —
+        # otherwise the edit would DUPLICATE the schedule.
         automation_id = existing_by_id.automation_id
     else:
         automation_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
@@ -736,9 +836,13 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
             save_email_config_from_payload(payload)
         except BadRequest:
             pass
+    connection = connection_snapshot_for_session(session_id) or (
+        dict(existing.connection) if existing and existing.connection else {}
+    )
     automation = AlertAutomation(
         automation_id=automation_id,
         session_id=session_id,
+        connection=connection,
         smtp_host=settings["smtp_host"],
         smtp_port=settings["smtp_port"],
         smtp_username=settings["smtp_username"],
@@ -803,6 +907,11 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         if automation.schedule_type == "daily_report"
         else f"Alert automation scheduled every {automation.interval_minutes} minute(s)."
     )
+    if not connection and not _session_exists(session_id):
+        message += (
+            " Note: no live NetWorker connection was available to snapshot;"
+            " the schedule is saved and will run once a dashboard session exists."
+        )
     if active_summary:
         message = f"{message} Active schedules: {active_summary}."
     return HTTPStatus.OK, {

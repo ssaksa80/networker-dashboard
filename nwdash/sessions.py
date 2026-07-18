@@ -166,6 +166,68 @@ def persist_sessions() -> None:
         pass
 
 
+def _restore_session_record(session_id: str, rec: dict[str, Any], now: float) -> bool:
+    """Re-establish ONE NetWorker session (under its original id) from a
+    persisted record — the JSON shape written by _session_to_dict. Shared by
+    restore_sessions_from_disk (records from sessions.json) and by
+    recreate_session_from_snapshot (an automation's connection snapshot).
+    Raises on login/network failure; returns False for unusable records.
+    """
+    import urllib.request as _urllib_request
+
+    enc_pw = str(rec.get("encrypted_networker_password") or "")
+    password = decrypt_process_secret(enc_pw)
+    if not password:
+        return False  # can't reauth without password
+
+    cfg_raw = rec.get("config", {})
+    config = ApiConfig(
+        rest_api_host=str(cfg_raw.get("rest_api_host") or ""),
+        rest_api_port=int(cfg_raw.get("rest_api_port") or DEFAULT_API_PORT),
+        backup_server_host=str(cfg_raw.get("backup_server_host") or ""),
+        backup_server_port=int(cfg_raw.get("backup_server_port") or DEFAULT_API_PORT),
+        username=str(cfg_raw.get("username") or ""),
+        password=password,
+        api_mode=str(cfg_raw.get("api_mode") or "nwui"),
+        api_version=str(cfg_raw.get("api_version") or "auto"),
+        report_range=str(cfg_raw.get("report_range") or DEFAULT_REPORT_RANGE),
+        custom_start_date=str(cfg_raw.get("custom_start_date") or ""),
+        custom_end_date=str(cfg_raw.get("custom_end_date") or ""),
+        use_wmi_health=bool(cfg_raw.get("use_wmi_health", False)),
+        wmi_username=str(cfg_raw.get("wmi_username") or ""),
+        wmi_password=decrypt_wmi_password(str(rec.get("encrypted_wmi_password") or "")),
+        timeout_seconds=int(cfg_raw.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
+        verify_tls=bool(cfg_raw.get("verify_tls", True)),
+        use_authc_header=bool(cfg_raw.get("use_authc_header", True)),
+    )
+    if not config.rest_api_host or not config.username:
+        return False
+    if _cfg.ALLOWLIST_ENABLED and not (
+        _host_allowed(config.rest_api_host)
+        and _host_allowed(config.backup_server_host or config.rest_api_host)
+    ):
+        return False
+
+    context = ssl_context_for_api(config.verify_tls)
+    cookie_jar = CookieJar()
+    opener = _urllib_request.build_opener(
+        _urllib_request.HTTPCookieProcessor(cookie_jar),
+        _urllib_request.HTTPSHandler(context=context),
+    )
+    auth_headers, _ = nwui_login(config, opener)
+
+    _put_session(session_id, DashboardSession(
+        config=replace(config, password="", wmi_password=""),
+        cookie_jar=cookie_jar,
+        auth_headers=dict(auth_headers),
+        encrypted_networker_password=enc_pw,
+        encrypted_wmi_password=str(rec.get("encrypted_wmi_password") or ""),
+        created_at=float(rec.get("created_at") or now),
+        last_used=now,
+    ))
+    return True
+
+
 def restore_sessions_from_disk() -> int:
     """Re-establish sessions saved by a previous process run.
     Returns count of sessions successfully restored.
@@ -181,67 +243,43 @@ def restore_sessions_from_disk() -> int:
 
     restored = 0
     now = time.time()
-    import urllib.request as _urllib_request
-
     for session_id, rec in records.items():
         try:
             if now - float(rec.get("last_used", 0)) > SESSION_TTL_SECONDS:
                 continue
-            enc_pw = str(rec.get("encrypted_networker_password") or "")
-            password = decrypt_process_secret(enc_pw)
-            if not password:
-                continue  # can't reauth without password
-
-            cfg_raw = rec.get("config", {})
-            config = ApiConfig(
-                rest_api_host=str(cfg_raw.get("rest_api_host") or ""),
-                rest_api_port=int(cfg_raw.get("rest_api_port") or DEFAULT_API_PORT),
-                backup_server_host=str(cfg_raw.get("backup_server_host") or ""),
-                backup_server_port=int(cfg_raw.get("backup_server_port") or DEFAULT_API_PORT),
-                username=str(cfg_raw.get("username") or ""),
-                password=password,
-                api_mode=str(cfg_raw.get("api_mode") or "nwui"),
-                api_version=str(cfg_raw.get("api_version") or "auto"),
-                report_range=str(cfg_raw.get("report_range") or DEFAULT_REPORT_RANGE),
-                custom_start_date=str(cfg_raw.get("custom_start_date") or ""),
-                custom_end_date=str(cfg_raw.get("custom_end_date") or ""),
-                use_wmi_health=bool(cfg_raw.get("use_wmi_health", False)),
-                wmi_username=str(cfg_raw.get("wmi_username") or ""),
-                wmi_password=decrypt_wmi_password(str(rec.get("encrypted_wmi_password") or "")),
-                timeout_seconds=int(cfg_raw.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
-                verify_tls=bool(cfg_raw.get("verify_tls", True)),
-                use_authc_header=bool(cfg_raw.get("use_authc_header", True)),
-            )
-            if not config.rest_api_host or not config.username:
-                continue
-            if _cfg.ALLOWLIST_ENABLED and not (
-                _host_allowed(config.rest_api_host)
-                and _host_allowed(config.backup_server_host or config.rest_api_host)
-            ):
-                continue
-
-            context = ssl_context_for_api(config.verify_tls)
-            cookie_jar = CookieJar()
-            opener = _urllib_request.build_opener(
-                _urllib_request.HTTPCookieProcessor(cookie_jar),
-                _urllib_request.HTTPSHandler(context=context),
-            )
-            auth_headers, _ = nwui_login(config, opener)
-
-            _put_session(session_id, DashboardSession(
-                config=replace(config, password="", wmi_password=""),
-                cookie_jar=cookie_jar,
-                auth_headers=dict(auth_headers),
-                encrypted_networker_password=enc_pw,
-                encrypted_wmi_password=str(rec.get("encrypted_wmi_password") or ""),
-                created_at=float(rec.get("created_at") or now),
-                last_used=now,
-            ))
-            restored += 1
+            if _restore_session_record(session_id, rec, now):
+                restored += 1
         except Exception:
             continue
 
     return restored
+
+
+def connection_snapshot_for_session(session_id: str) -> dict[str, Any]:
+    """JSON-safe connection snapshot of a live session (sanitized config +
+    encrypted credentials — the same shape sessions.json stores). Captured onto
+    email automations at schedule time so they can outlive the session. Returns
+    {} when the session does not exist."""
+    session = _get_session(session_id)
+    if not session:
+        return {}
+    return _session_to_dict(session_id, session)
+
+
+def recreate_session_from_snapshot(session_id: str, snapshot: dict[str, Any]) -> bool:
+    """Recreate a dashboard session under its ORIGINAL id from the connection
+    snapshot an automation captured at schedule time. Used at fire time when
+    the session no longer exists (restart, TTL expiry). Returns True when the
+    NetWorker login succeeded and the session is registered again."""
+    if not isinstance(snapshot, dict) or not snapshot:
+        return False
+    try:
+        if _restore_session_record(session_id, snapshot, time.time()):
+            persist_sessions()
+            return True
+    except Exception as exc:  # login/network failure — caller keeps the schedule armed
+        debug_log(f"recreate_session_from_snapshot: {session_id[:8]}… failed: {exc}")
+    return False
 
 
 def create_dashboard_session(
@@ -267,7 +305,9 @@ def create_dashboard_session(
 
 
 def cleanup_dashboard_sessions() -> None:
-    from .emailer import cancel_session_automations  # late import: avoids circular module import
+    # NOTE: expiring a session deliberately does NOT cancel its email
+    # automations any more — automations carry their own connection snapshot
+    # and recreate a session at fire time (see emailer.run_alert_automation).
     now = time.time()
     stale = [
         session_id
@@ -276,7 +316,6 @@ def cleanup_dashboard_sessions() -> None:
     ]
     for session_id in stale:
         _pop_session(session_id)
-        cancel_session_automations(session_id)
     if stale:
         persist_sessions()
 

@@ -1198,7 +1198,6 @@
     }
 
     async function deleteEmailRow(id) {
-      if (!sessionId) return;
       try {
         await fetch("/api/alert-automation", {
           method: "POST",
@@ -1212,7 +1211,6 @@
     }
 
     async function toggleEmailRow(id, active) {
-      if (!sessionId) return;
       try {
         await fetch("/api/alert-automation", {
           method: "POST",
@@ -1225,9 +1223,11 @@
     }
 
     async function refreshEmailScheduleList() {
+      // Schedules outlive dashboard sessions (they persist server-side and
+      // reconnect on their own), so the list is fetched even before connect —
+      // otherwise restored schedules would look "vanished" after a restart.
       const list = document.getElementById("emailScheduleList");
       if (!list) return;
-      if (!sessionId) { list.innerHTML = ""; const cnt0 = document.getElementById("emailScheduleCount"); if (cnt0) cnt0.textContent = "0"; return; }
       try {
         const r = await fetch("/api/alert-automation", {
           method: "POST",
@@ -1246,11 +1246,15 @@
             ? ("at " + (s.reportTime || "08:00"))
             : ("every " + (s.intervalMinutes || 0) + " min");
           const paused = s.enabled === false;
+          // Schedules survive restarts/session loss; show how each one will run.
+          const linkNote = s.sessionLive === false
+            ? (s.reconnectable ? " · reconnects automatically" : " · waiting for a connection")
+            : "";
           return '<div class="email-row' + (paused ? " is-disabled" : "") + '" data-id="' + _emailEscape(s.automationId) + '">'
             + '<label class="em-toggle"><input type="checkbox" class="em-active" data-id="' + _emailEscape(s.automationId) + '"' + (paused ? "" : " checked") + '> Active</label>'
             + '<strong>' + _emailEscape(typeLabel) + '</strong>'
             + '<span class="em-meta">' + _emailEscape(s.recipients || "") + ' &middot; '
-            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + (paused ? ' &middot; (paused)' : '') + '</span>'
+            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + (paused ? ' &middot; (paused)' : '') + _emailEscape(linkNote) + '</span>'
             + '<div class="em-actions">'
             + '<button type="button" class="ghost em-edit" data-id="' + _emailEscape(s.automationId) + '">Edit</button>'
             + '<button type="button" class="ghost em-del" data-id="' + _emailEscape(s.automationId) + '">Delete</button>'
@@ -1262,6 +1266,132 @@
       } catch (_e) { list.innerHTML = ""; const cnt2 = document.getElementById("emailScheduleCount"); if (cnt2) cnt2.textContent = "0"; }
     }
 
+    // ── Named email notification profiles (form presets saved server-side) ──
+    // Loading a profile fills the form; the password field carries the
+    // "(saved)" sentinel, which the server swaps for the stored password.
+    const EMAIL_PROFILE_PW_SAVED = "(saved)";
+    let loadedEmailProfileName = "";
+    const emailProfileSelect = document.getElementById("emailProfileSelect");
+    const emailProfileNameInput = document.getElementById("emailProfileName");
+    const emailProfileSaveBtn = document.getElementById("emailProfileSaveBtn");
+    const emailProfileLoadBtn = document.getElementById("emailProfileLoadBtn");
+    const emailProfileDeleteBtn = document.getElementById("emailProfileDeleteBtn");
+
+    function renderEmailProfileOptions(profiles, selected) {
+      if (!emailProfileSelect) return;
+      const names = Object.keys(profiles || {}).sort((a, b) => a.localeCompare(b));
+      emailProfileSelect.innerHTML = '<option value="">-- select a profile --</option>'
+        + names.map(n => '<option value="' + _emailEscape(n) + '"'
+          + (n === selected ? " selected" : "") + '>' + _emailEscape(n) + '</option>').join("");
+    }
+
+    async function emailProfileRequest(body) {
+      const r = await fetch("/api/alert-automation", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+        cache: "no-store",
+      });
+      const data = await r.json();
+      if (!r.ok || data.ok === false) {
+        throw new Error(data.error || ("Email profile request failed with HTTP " + r.status));
+      }
+      return data;
+    }
+
+    async function refreshEmailProfileList(selected) {
+      try {
+        const data = await emailProfileRequest({action: "list-profiles"});
+        renderEmailProfileOptions(data.profiles || {}, selected || "");
+      } catch (_e) { /* keep the current option list */ }
+    }
+
+    function applyEmailProfileToForm(name, p) {
+      if (!p) return;
+      document.getElementById("smtpHost").value = p.smtpHost || "";
+      smtpPort.value = p.smtpPort || "587";
+      smtpSecurity.value = p.smtpSecurity || "starttls";
+      smtpUsername.value = p.smtpUsername || "";
+      document.getElementById("smtpFrom").value = p.smtpFrom || "";
+      document.getElementById("smtpTo").value = p.smtpTo || "";
+      document.getElementById("emailScheduleType").value = p.scheduleType || "alert";
+      document.getElementById("alertIntervalMinutes").value = p.intervalMinutes || 60;
+      document.getElementById("dailyReportTime").value = p.reportTime || "08:00";
+      document.getElementById("alertTrigger").value = p.trigger || "critical";
+      document.getElementById("quietStart").value = p.quietStart || "";
+      document.getElementById("quietEnd").value = p.quietEnd || "";
+      document.getElementById("emailDigest").checked = p.digest !== false;
+      // "(saved)" sentinel = keep the profile's stored password on submit.
+      smtpPassword.value = p.smtpPassword === EMAIL_PROFILE_PW_SAVED ? EMAIL_PROFILE_PW_SAVED : "";
+      loadedEmailProfileName = name;
+      if (emailProfileNameInput) emailProfileNameInput.value = name;
+      syncSmtpSecurityFields();
+      syncEmailTypeFields();
+      alertAutomationStatus.textContent =
+        'Loaded email profile "' + name + '" - review, then Schedule, Save, or Send test.';
+    }
+
+    async function saveEmailProfile() {
+      const name = ((emailProfileNameInput && emailProfileNameInput.value) || "").trim()
+        || (emailProfileSelect && emailProfileSelect.value) || "";
+      if (!name) {
+        alertAutomationStatus.textContent = "Enter a profile name before saving.";
+        setStatus("Profile name required", "warn");
+        return;
+      }
+      const payload = alertAutomationPayload("save-profile");
+      payload.profileName = name;
+      if (emailProfileSaveBtn) emailProfileSaveBtn.disabled = true;
+      try {
+        const data = await emailProfileRequest(payload);
+        renderEmailProfileOptions(data.profiles || {}, name);
+        loadedEmailProfileName = name;
+        alertAutomationStatus.textContent = data.message || ('Email profile "' + name + '" saved.');
+        setStatus("Email profile saved", "ok");
+      } catch (error) {
+        alertAutomationStatus.textContent = error.message || "Saving email profile failed";
+        setStatus("Email profile save failed", "bad");
+      } finally {
+        if (emailProfileSaveBtn) emailProfileSaveBtn.disabled = false;
+      }
+    }
+
+    async function loadEmailProfile() {
+      const name = (emailProfileSelect && emailProfileSelect.value)
+        || ((emailProfileNameInput && emailProfileNameInput.value) || "").trim();
+      if (!name) {
+        alertAutomationStatus.textContent = "Pick a saved profile to load.";
+        return;
+      }
+      try {
+        const data = await emailProfileRequest({action: "get-profile", profileName: name});
+        applyEmailProfileToForm(name, data.profile || null);
+      } catch (error) {
+        alertAutomationStatus.textContent = error.message || "Loading email profile failed";
+        setStatus("Email profile load failed", "bad");
+      }
+    }
+
+    async function deleteEmailProfile() {
+      const name = (emailProfileSelect && emailProfileSelect.value)
+        || ((emailProfileNameInput && emailProfileNameInput.value) || "").trim();
+      if (!name) {
+        alertAutomationStatus.textContent = "Pick a saved profile to delete.";
+        return;
+      }
+      try {
+        const data = await emailProfileRequest({action: "delete-profile", profileName: name});
+        renderEmailProfileOptions(data.profiles || {}, "");
+        if (loadedEmailProfileName === name) loadedEmailProfileName = "";
+        if (emailProfileNameInput && emailProfileNameInput.value === name) emailProfileNameInput.value = "";
+        alertAutomationStatus.textContent = data.message || ('Email profile "' + name + '" deleted.');
+        setStatus("Email profile deleted", "neutral");
+      } catch (error) {
+        alertAutomationStatus.textContent = error.message || "Deleting email profile failed";
+        setStatus("Email profile delete failed", "bad");
+      }
+    }
+
     function openAlertAutomationModal() {
       alertAutomationModal.classList.add("open");
       alertAutomationModal.setAttribute("aria-hidden", "false");
@@ -1269,6 +1399,7 @@
       loadEmailConfigIntoForm();
       applyEmailTypeBlock();
       refreshEmailScheduleList();
+      refreshEmailProfileList(loadedEmailProfileName);
       setTimeout(() => document.getElementById("smtpHost").focus(), 0);
     }
 
@@ -1277,6 +1408,7 @@
       alertAutomationModal.setAttribute("aria-hidden", "true");
       smtpPassword.value = "";
       currentEmailAutomationId = "";
+      loadedEmailProfileName = "";
       alertConfigBtn.focus();
     }
 
@@ -1285,6 +1417,9 @@
         action,
         sessionId,
         automationId: currentEmailAutomationId || "",
+        // Lets the server resolve the "(saved)" password sentinel against the
+        // loaded profile's stored password.
+        emailProfileName: loadedEmailProfileName || "",
         smtpHost: document.getElementById("smtpHost").value.trim(),
         smtpPort: smtpPort.value.trim(),
         smtpSecurity: smtpSecurity.value,
@@ -1669,6 +1804,13 @@
 
     emailSaveConfigBtn.addEventListener("click", () => {
       submitAlertAutomation("save");
+    });
+
+    if (emailProfileSaveBtn) emailProfileSaveBtn.addEventListener("click", () => { saveEmailProfile(); });
+    if (emailProfileLoadBtn) emailProfileLoadBtn.addEventListener("click", () => { loadEmailProfile(); });
+    if (emailProfileDeleteBtn) emailProfileDeleteBtn.addEventListener("click", () => { deleteEmailProfile(); });
+    if (emailProfileSelect) emailProfileSelect.addEventListener("change", () => {
+      if (emailProfileSelect.value && emailProfileNameInput) emailProfileNameInput.value = emailProfileSelect.value;
     });
 
     // Switching Email type swaps to that type's separately-saved recipients and

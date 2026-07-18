@@ -218,8 +218,15 @@ def run(argv: list[str] | None = None) -> int:
     )
     shared_refresh_thread.start()
 
-    # Restore sessions from previous run in background — non-blocking
+    # Restore persisted state from the previous run in background — non-blocking
     def _restore_sessions_bg() -> None:
+        # Email automations first: pure local-disk work, independent of session
+        # restore (which performs slow network logins). Automations no longer
+        # require a session to be rescheduled — they recreate one at fire time
+        # from their stored connection snapshot.
+        automations = restore_automations_from_disk()
+        if automations:
+            print(f"Restored {automations} scheduled email automation(s) from previous run.")
         count = restore_sessions_from_disk()
         if count:
             print(f"Restored {count} dashboard session(s) from previous run.")
@@ -230,10 +237,6 @@ def run(argv: list[str] | None = None) -> int:
                     SHARED_DASHBOARD_STATE["sessionId"] = ids[0]
         else:
             print("No previous sessions to restore (connect via browser to begin monitoring).")
-        # Reschedule saved email automations now that their sessions exist again.
-        automations = restore_automations_from_disk()
-        if automations:
-            print(f"Restored {automations} scheduled email automation(s) from previous run.")
 
     threading.Thread(target=_restore_sessions_bg, name="session-restore", daemon=True).start()
     threading.Thread(target=auto_snapshot_worker, name="auto-snapshot", daemon=True).start()

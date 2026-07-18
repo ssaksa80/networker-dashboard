@@ -660,6 +660,16 @@
     .email-checkbox input { width: auto; }
     .email-row.is-disabled { opacity: 0.5; }
     .email-row .em-toggle { margin-right: 8px; }
+    .email-profile-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      margin: 10px 14px 0; padding: 8px 10px;
+      border: 1px solid var(--line); border-radius: 8px;
+      background: var(--surface-2); font-size: 12px;
+    }
+    .email-profile-bar .ep-label { color: var(--muted); font-weight: 700; }
+    .email-profile-bar select,
+    .email-profile-bar input { flex: 1 1 150px; min-width: 130px; }
+    .email-profile-bar button { font-size: 12px; padding: 4px 10px; }
 
     .snapshot-controls {
       display: flex;

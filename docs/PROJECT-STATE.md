@@ -36,9 +36,10 @@ extraction (SHA-256 against the prior revision).
   `__SHARE_TOKEN__`, `__NETWORKER_LOGO_SRC__`). Edit the assets, not
   Python strings. `.gitattributes` pins them to LF; the loader uses
   universal-newline decoding so served bytes are checkout-invariant.
-- Six deliberate function-level imports break circular module edges;
+- Five deliberate function-level imports break circular module edges;
   each is commented at the import site. Don't "clean them up" into
-  top-level imports.
+  top-level imports. (The sessions→emailer edge was removed when session
+  cleanup stopped cancelling automations.)
 
 ## Security model
 
@@ -64,6 +65,36 @@ ruff check .                              # must be clean
 CI (`.github/workflows/tests.yml`) runs both on windows-latest /
 Python 3.14 for every push and PR. Run the suite locally before any
 release claim — `py_compile` or a clean boot is not evidence.
+
+## Persistence guarantees
+
+Every config/state store lives under `data/`, which the installer
+(`scripts/Setup-NWDash.cmd`) preserves on upgrade (only non-`data\`,
+non-`logs\`, non-`.certs\` files are replaced). What each file holds and
+how it comes back after a restart/update/crash:
+
+| File | Contents | Restore path |
+|---|---|---|
+| `data/automations.json` | Scheduled email alert/report automations, incl. each schedule's encrypted connection snapshot | `restore_automations_from_disk()` at boot — **unconditional** (no session required); the scheduler loop re-arms them; sessions are recreated lazily at fire time from the snapshot |
+| `data/email_profiles.json` | Named email notification profiles (SMTP + schedule presets; password encrypted, API always masks it) | Read on demand by the `/api/alert-automation` profile actions |
+| `data/email_config.json` | Shared SMTP transport + per-type recipients | Read on demand (`load_email_config`) |
+| `data/sessions.json` | Encrypted NetWorker dashboard sessions | `restore_sessions_from_disk()` at boot (re-login; best effort) |
+| `data/profiles.json` | Connection profiles (encrypted passwords) | Read on demand (`load_profiles`) |
+| `data/ui_prefs.json` | Dashboard theme | Read on demand (`load_ui_theme`) |
+| `data/auth.json` | Gateway password hash | Read at boot by `auth.py` |
+| `data/networker_snapshots.json`, `data/auto_snapshot_config.json` | Local snapshots + auto-save flag | Read on demand |
+| `data/last_good_dashboard.json` | Last successful dashboard (stale fallback) | Read on demand |
+| `data/.session_key`, `data/.auth_key` | DPAPI-wrapped encryption/HMAC keys | Loaded at import in `secrets.py` |
+
+Email automations are deliberately **decoupled from dashboard sessions**
+(v2.5.x fix for "schedules vanish after restart"): a missing session
+never cancels a schedule. At fire time the automation reuses the live
+session or recreates one from its stored connection snapshot; on failure
+the run is skipped and retried — never auto-cancelled. Legacy
+`automations.json` records without a snapshot stay scheduled and wait
+for a matching session. If the encryption key was regenerated (DPAPI),
+the schedule stays armed but inert, with one loud log warning, until
+re-saved.
 
 ## Operational gotchas
 
