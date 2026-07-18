@@ -21,7 +21,15 @@ REM                                         and application files; KEEPS data\,
 REM                                         .certs\ and logs\ (keys, snapshots,
 REM                                         saved profiles)
 REM    Setup-NWDash.cmd -Uninstall -Purge   full removal including runtime state
+REM    Setup-NWDash.cmd -NoUpdate           skip the latest-release check and
+REM                                         use only the bundle beside this
+REM                                         script (air-gapped hosts)
 REM    (add the install dir as first argument if it is not the default)
+REM
+REM  Version detection: setup checks GitHub for the newest published release
+REM  (via an authenticated gh CLI, else a GITHUB_TOKEN env var) and downloads
+REM  a newer bundle automatically. Offline or credential-less hosts fall back
+REM  to the local bundle - the check never blocks an install.
 REM
 REM  The dashboard always runs in the BACKGROUND after setup (scheduled task
 REM  with -Service, hidden process otherwise) and the start is health-gated
@@ -41,7 +49,7 @@ exit /b %ERRORLEVEL%
 
 REM Everything below runs as PowerShell, not cmd.
 #PSBEGIN
-param([string]$ScriptDir, [string]$InstallDir = "C:\apps\networker-dashboard", [switch]$Silent, [switch]$Service, [int]$Port = 8443, [switch]$Uninstall, [switch]$Purge)
+param([string]$ScriptDir, [string]$InstallDir = "C:\apps\networker-dashboard", [switch]$Silent, [switch]$Service, [int]$Port = 8443, [switch]$Uninstall, [switch]$Purge, [switch]$NoUpdate)
 
 $ErrorActionPreference = "Stop"
 
@@ -153,10 +161,80 @@ function Show-Bar([string]$label, [int]$pct) {
 }
 
 # --- 1. Find the newest bundle next to this script ---------------------------
-$bundle = Get-ChildItem -Path $ScriptDir -Filter "networker-dashboard-*-bundle.zip" |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+function Get-BundleVersion([string]$name) {
+    if ($name -match "networker-dashboard-(\d+\.\d+\.\d+)-bundle\.zip") { return [version]$Matches[1] }
+    return $null
+}
+function Select-NewestBundle {
+    Get-ChildItem -Path $ScriptDir -Filter "networker-dashboard-*-bundle.zip" |
+        Where-Object { Get-BundleVersion $_.Name } |
+        Sort-Object { Get-BundleVersion $_.Name } -Descending | Select-Object -First 1
+}
+$bundle = Select-NewestBundle
+$localVer = if ($bundle) { Get-BundleVersion $bundle.Name } else { $null }
+
+# --- 1b. Detect the latest published release and self-update the bundle -------
+# Fail-soft by design: air-gapped hosts, missing credentials, or GitHub being
+# unreachable all fall back to whatever bundle sits next to this script.
+# Skip entirely with -NoUpdate.
+if (-not $NoUpdate) {
+    $repo = "ssaksa80/networker-dashboard"
+    $latestTag = $null
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    if ($gh) {
+        try {
+            $json = & gh release view --repo $repo --json tagName,assets 2>$null | ConvertFrom-Json
+            if ($json -and $json.tagName) { $latestTag = $json.tagName }
+        } catch { }
+    }
+    if (-not $latestTag -and $env:GITHUB_TOKEN) {
+        try {
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" `
+                -Headers @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = "application/vnd.github+json" } -TimeoutSec 15
+            if ($rel.tag_name) { $latestTag = $rel.tag_name }
+        } catch { }
+    }
+    if ($latestTag -and $latestTag -match "^v?(\d+\.\d+\.\d+)$") {
+        $latestVer = [version]$Matches[1]
+        $localText = if ($localVer) { "v$localVer" } else { "none" }
+        Write-Host "Version : latest published $latestTag, local bundle $localText"
+        if (-not $localVer -or $latestVer -gt $localVer) {
+            Write-Host "Update  : downloading networker-dashboard-$latestVer-bundle.zip ..."
+            $ok = $false
+            if ($gh) {
+                try {
+                    & gh release download $latestTag --repo $repo --pattern "networker-dashboard-*-bundle.zip" --dir $ScriptDir --clobber 2>$null
+                    $ok = ($LASTEXITCODE -eq 0)
+                } catch { }
+            }
+            if (-not $ok -and $env:GITHUB_TOKEN) {
+                try {
+                    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/$latestTag" `
+                        -Headers @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = "application/vnd.github+json" } -TimeoutSec 15
+                    $asset = $rel.assets | Where-Object { $_.name -like "networker-dashboard-*-bundle.zip" } | Select-Object -First 1
+                    if ($asset) {
+                        Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$($asset.id)" `
+                            -Headers @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = "application/octet-stream" } `
+                            -OutFile (Join-Path $ScriptDir $asset.name) -TimeoutSec 300
+                        $ok = $true
+                    }
+                } catch { }
+            }
+            if ($ok) {
+                $bundle = Select-NewestBundle
+                $localVer = if ($bundle) { Get-BundleVersion $bundle.Name } else { $null }
+                if ($localVer -ne $latestVer) { Write-Host "Update  : download did not produce v$latestVer; continuing with local bundle" }
+            } else {
+                Write-Host "Update  : download unavailable (no gh auth / GITHUB_TOKEN); continuing with local bundle"
+            }
+        }
+    } else {
+        Write-Host "Version : latest-release check unavailable (offline or no gh/GITHUB_TOKEN); using local bundle"
+    }
+}
+
 if (-not $bundle) {
-    Fail "No networker-dashboard-*-bundle.zip found next to this script. Download the bundle from the GitHub release and place it in the same folder."
+    Fail "No networker-dashboard-*-bundle.zip found next to this script and no release could be downloaded. Download the bundle from the GitHub release and place it in the same folder."
 }
 Write-Host "Bundle : $($bundle.Name)"
 
