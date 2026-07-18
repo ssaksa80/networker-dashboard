@@ -15,6 +15,7 @@
       --blue: #2457a6;
       --shadow: 0 14px 32px rgba(18, 41, 52, 0.10);
       --radius: 8px;
+      --glow: rgba(18, 110, 130, 0.35);
     }
 
     body[data-theme="midnight"] {
@@ -31,6 +32,7 @@
       --amber: #f2c14e;
       --blue: #7db7ff;
       --shadow: 0 16px 36px rgba(0, 0, 0, 0.30);
+      --glow: rgba(42, 166, 184, 0.40);
     }
 
     body[data-theme="graphite"] {
@@ -47,6 +49,7 @@
       --amber: #ad7300;
       --blue: #3d64a8;
       --shadow: 0 12px 28px rgba(31, 35, 38, 0.10);
+      --glow: rgba(61, 90, 95, 0.35);
     }
 
     body[data-theme="contrast"] {
@@ -63,6 +66,7 @@
       --amber: #8a5a00;
       --blue: #004fb8;
       --shadow: none;
+      --glow: rgba(0, 95, 204, 0.35);
     }
 
     body[data-theme="ocean"] {
@@ -79,6 +83,7 @@
       --amber: #b27900;
       --blue: #1c6eb8;
       --shadow: 0 12px 28px rgba(8, 72, 86, 0.12);
+      --glow: rgba(8, 127, 140, 0.35);
     }
 
     body[data-theme="forest"] {
@@ -95,6 +100,7 @@
       --amber: #a06c00;
       --blue: #3867a8;
       --shadow: 0 12px 28px rgba(25, 66, 36, 0.11);
+      --glow: rgba(47, 111, 69, 0.35);
     }
 
     body[data-theme="ruby"] {
@@ -111,6 +117,7 @@
       --amber: #aa7200;
       --blue: #445ca8;
       --shadow: 0 12px 28px rgba(111, 31, 58, 0.12);
+      --glow: rgba(159, 45, 85, 0.35);
     }
 
     body[data-theme="steel"] {
@@ -127,6 +134,7 @@
       --amber: #9a6b12;
       --blue: #376da9;
       --shadow: 0 12px 28px rgba(47, 67, 91, 0.11);
+      --glow: rgba(66, 92, 120, 0.35);
     }
 
     body[data-theme="arctic"] {
@@ -143,6 +151,7 @@
       --amber: #9e7207;
       --blue: #2d68a7;
       --shadow: 0 12px 28px rgba(31, 91, 103, 0.11);
+      --glow: rgba(13, 120, 145, 0.35);
     }
 
     body[data-theme="citrus"] {
@@ -159,6 +168,7 @@
       --amber: #a16d00;
       --blue: #3f6fa5;
       --shadow: 0 12px 28px rgba(76, 96, 31, 0.12);
+      --glow: rgba(97, 125, 24, 0.35);
     }
 
     body[data-theme="harbor"] {
@@ -175,6 +185,7 @@
       --amber: #9d6e08;
       --blue: #335fa3;
       --shadow: 0 12px 28px rgba(35, 78, 93, 0.11);
+      --glow: rgba(35, 95, 115, 0.35);
     }
 
     body[data-theme="ember"] {
@@ -191,6 +202,7 @@
       --amber: #9b6a10;
       --blue: #3c67a2;
       --shadow: 0 12px 28px rgba(96, 59, 43, 0.12);
+      --glow: rgba(141, 74, 54, 0.35);
     }
 
     body[data-theme="violet"] {
@@ -207,6 +219,7 @@
       --amber: #9c6b00;
       --blue: #4a5fb0;
       --shadow: 0 12px 28px rgba(60, 35, 110, 0.12);
+      --glow: rgba(109, 63, 191, 0.35);
     }
 
     body[data-theme="sandstone"] {
@@ -223,6 +236,7 @@
       --amber: #996a00;
       --blue: #4a6ba0;
       --shadow: 0 12px 28px rgba(92, 74, 46, 0.12);
+      --glow: rgba(138, 109, 59, 0.35);
     }
 
     /* True-black dark theme (AMOLED friendly). Follows midnight's approach:
@@ -242,6 +256,7 @@
       --amber: #fbbf24;
       --blue: #60a5fa;
       --shadow: 0 16px 36px rgba(0, 0, 0, 0.60);
+      --glow: rgba(77, 208, 225, 0.40);
     }
 
     * {
@@ -726,16 +741,104 @@
     .email-checkbox input { width: auto; }
     .email-row.is-disabled { opacity: 0.5; }
     .email-row .em-toggle { margin-right: 8px; }
-    .email-profile-bar {
-      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-      margin: 10px 14px 0; padding: 8px 10px;
-      border: 1px solid var(--line); border-radius: 8px;
+    /* ── Saved email profile cards (ON/OFF toggle = schedule/stop) ─────── */
+    .email-profiles {
+      margin: 10px 14px 0; padding: 10px;
+      border: 1px solid var(--line); border-radius: 12px;
       background: var(--surface-2); font-size: 12px;
     }
-    .email-profile-bar .ep-label { color: var(--muted); font-weight: 700; }
-    .email-profile-bar select,
-    .email-profile-bar input { flex: 1 1 150px; min-width: 130px; }
-    .email-profile-bar button { font-size: 12px; padding: 4px 10px; }
+    .email-profiles .ep-head {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+      margin: 0 2px 8px;
+    }
+    .email-profiles .ep-label { color: var(--ink); font-weight: 760; }
+    .email-profiles .ep-hint { color: var(--muted); }
+    .email-profile-cards {
+      display: flex; flex-direction: column; gap: 8px;
+      max-height: 232px; /* ~4 cards, then scroll */
+      overflow-y: auto; overscroll-behavior: contain;
+      padding: 2px; /* room for the hover glow ring */
+    }
+    .ep-empty { color: var(--muted); padding: 6px 4px; }
+    .ep-card {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--line); border-radius: 12px;
+      background: var(--surface);
+      transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+    }
+    .ep-card:hover {
+      transform: translateY(-1px);
+      border-color: var(--brand);
+      box-shadow: 0 0 0 1px var(--brand), 0 4px 18px var(--glow);
+    }
+    .ep-card.is-on { border-color: var(--brand); }
+    .ep-dot {
+      flex: none; width: 10px; height: 10px; border-radius: 50%;
+      background: var(--line);
+      transition: background 150ms ease, box-shadow 150ms ease;
+    }
+    .ep-dot.on { background: var(--green); box-shadow: 0 0 8px var(--glow); }
+    .ep-card-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+    .ep-card-name {
+      color: var(--ink); font-weight: 740;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .ep-card-sub {
+      color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .ep-card-actions { display: flex; align-items: center; gap: 6px; }
+    .ep-btn { font-size: 12px; padding: 4px 10px; min-height: 30px; }
+    /* Animated ON/OFF switch (pure CSS: checkbox + track/knob spans). */
+    .ep-switch { position: relative; display: inline-flex; flex: none; margin-left: 4px; cursor: pointer; }
+    .ep-switch .ep-toggle {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      opacity: 0; margin: 0; cursor: pointer;
+    }
+    .ep-slider {
+      display: block; width: 42px; height: 24px; border-radius: 999px;
+      background: var(--line); border: 1px solid var(--line);
+      transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+    }
+    .ep-slider::after {
+      content: ""; display: block; width: 18px; height: 18px;
+      margin: 2px; border-radius: 50%;
+      background: var(--surface);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+      transition: transform 150ms ease;
+    }
+    .ep-toggle:checked + .ep-slider {
+      background: var(--brand); border-color: var(--brand);
+      box-shadow: 0 0 10px var(--glow);
+    }
+    .ep-toggle:checked + .ep-slider::after {
+      transform: translateX(18px);
+      background: var(--brand-ink);
+    }
+    .ep-toggle:focus-visible + .ep-slider { box-shadow: 0 0 0 2px var(--glow); }
+    .ep-toggle:disabled + .ep-slider { opacity: 0.55; cursor: wait; }
+    .email-profiles .ep-save-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      margin-top: 10px;
+    }
+    .email-profiles .ep-save-row input { flex: 1 1 160px; min-width: 140px; }
+    .email-profiles .ep-save-row button { font-size: 12px; padding: 4px 12px; }
+    /* Modern press/glow feedback, scoped to the automation modal only. */
+    .automation-modal button {
+      transition: transform 120ms ease, box-shadow 150ms ease, background 150ms ease;
+    }
+    .automation-modal button:hover:not(:disabled),
+    .automation-modal button:focus-visible {
+      box-shadow: 0 0 0 1px var(--brand), 0 3px 14px var(--glow);
+    }
+    .automation-modal button:active:not(:disabled) { transform: scale(0.98); }
+    @media (prefers-reduced-motion: reduce) {
+      .ep-card, .ep-slider, .ep-slider::after, .ep-dot,
+      .automation-modal button { transition: none; }
+      .ep-card:hover { transform: none; }
+      .automation-modal button:active:not(:disabled) { transform: none; }
+    }
 
     .snapshot-controls {
       display: flex;
@@ -2287,8 +2390,13 @@
       .conn-collapsed-bar { font-size: 15px; }
       .pagination-bar { font-size: 15px; }
       .pagination-bar button { font-size: 14px; }
-      .email-row, .email-profile-bar, .automation-status { font-size: 14px; }
-      .email-row button, .email-profile-bar button { font-size: 14px; }
+      .email-row, .email-profiles, .automation-status { font-size: 14px; }
+      .email-row button, .email-profiles button, .ep-btn { font-size: 14px; }
+      .ep-card { padding: 12px 14px; }
+      .email-profile-cards { max-height: 280px; }
+      .ep-slider { width: 50px; height: 28px; }
+      .ep-slider::after { width: 22px; height: 22px; }
+      .ep-toggle:checked + .ep-slider::after { transform: translateX(22px); }
       .heatmap-cell { width: 42px; height: 42px; font-size: 12px; }
       .heatmap-legend { font-size: 14px; }
       .server-card-host { font-size: 15px; max-width: 190px; }
@@ -2367,8 +2475,13 @@
       .conn-collapsed-bar { font-size: 18px; }
       .pagination-bar { font-size: 18px; }
       .pagination-bar button { font-size: 16px; }
-      .email-row, .email-profile-bar, .automation-status { font-size: 16px; }
-      .email-row button, .email-profile-bar button { font-size: 16px; }
+      .email-row, .email-profiles, .automation-status { font-size: 16px; }
+      .email-row button, .email-profiles button, .ep-btn { font-size: 16px; }
+      .ep-card { padding: 14px 16px; }
+      .email-profile-cards { max-height: 320px; }
+      .ep-slider { width: 56px; height: 32px; }
+      .ep-slider::after { width: 26px; height: 26px; }
+      .ep-toggle:checked + .ep-slider::after { transform: translateX(24px); }
       .heatmap-cell { width: 50px; height: 50px; font-size: 13px; }
       .heatmap-legend { font-size: 16px; }
       .server-card-host { font-size: 18px; max-width: 230px; }
@@ -2447,8 +2560,13 @@
       .conn-collapsed-bar { font-size: 21px; }
       .pagination-bar { font-size: 21px; }
       .pagination-bar button { font-size: 19px; }
-      .email-row, .email-profile-bar, .automation-status { font-size: 19px; }
-      .email-row button, .email-profile-bar button { font-size: 19px; }
+      .email-row, .email-profiles, .automation-status { font-size: 19px; }
+      .email-row button, .email-profiles button, .ep-btn { font-size: 19px; }
+      .ep-card { padding: 16px 18px; }
+      .email-profile-cards { max-height: 360px; }
+      .ep-slider { width: 64px; height: 36px; }
+      .ep-slider::after { width: 30px; height: 30px; }
+      .ep-toggle:checked + .ep-slider::after { transform: translateX(28px); }
       .heatmap-cell { width: 58px; height: 58px; font-size: 15px; }
       .heatmap-legend { font-size: 19px; }
       .server-card-host { font-size: 21px; max-width: 270px; }

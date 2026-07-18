@@ -502,7 +502,10 @@ def write_email_profiles(profiles: dict[str, Any]) -> None:
 
 
 def _mask_email_profile(profile: dict[str, Any]) -> dict[str, Any]:
-    masked = {k: v for k, v in profile.items() if k != "_enc_smtpPassword"}
+    # Underscore-prefixed keys are server-side secrets/snapshots and NEVER
+    # leave the API: _enc_smtpPassword (encrypted SMTP password) and
+    # _connection (encrypted NetWorker connection snapshot).
+    masked = {k: v for k, v in profile.items() if not str(k).startswith("_")}
     masked["smtpPassword"] = _PROFILE_PW_SAVED if profile.get("_enc_smtpPassword") else ""
     return masked
 
@@ -543,6 +546,10 @@ def save_email_profile(name: str, payload: dict[str, Any]) -> dict[str, Any]:
             "quietEnd": settings["quiet_end"],
             "digest": settings["digest"],
             "_enc_smtpPassword": encrypted,
+            # Re-saving keeps the previously captured connection snapshot; the
+            # caller refreshes it separately when a live session is available
+            # (set_email_profile_connection).
+            "_connection": existing.get("_connection") if isinstance(existing.get("_connection"), dict) else {},
         }
         write_email_profiles(profiles)
         return mask_email_profiles(profiles)
@@ -554,6 +561,29 @@ def delete_email_profile(name: str) -> dict[str, Any]:
         profiles.pop(name, None)
         write_email_profiles(profiles)
         return mask_email_profiles(profiles)
+
+
+def get_email_profile_raw(name: str) -> dict[str, Any] | None:
+    """Full stored record (INCLUDING _enc_smtpPassword/_connection) for
+    server-side use only — arming a schedule from a profile. Never return
+    this from the API; use the masked variants for that."""
+    with EMAIL_PROFILES_LOCK:
+        profile = load_email_profiles().get(name)
+    return dict(profile) if isinstance(profile, dict) else None
+
+
+def set_email_profile_connection(name: str, connection: dict[str, Any]) -> None:
+    """Store/refresh the encrypted NetWorker connection snapshot captured for
+    a profile so toggling it ON can arm a restart-proof schedule even when no
+    live dashboard session exists."""
+    if not isinstance(connection, dict) or not connection:
+        return
+    with EMAIL_PROFILES_LOCK:
+        profiles = load_email_profiles()
+        profile = profiles.get(name)
+        if isinstance(profile, dict) and profile.get("_connection") != connection:
+            profile["_connection"] = connection
+            write_email_profiles(profiles)
 
 
 def get_email_profile_masked(name: str) -> dict[str, Any] | None:

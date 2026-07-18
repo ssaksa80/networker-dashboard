@@ -87,6 +87,12 @@ class AlertAutomation:
     last_signature: str = ""
     timer: threading.Timer | None = None
     next_run_at: float = 0.0  # epoch seconds; driven by the scheduler loop
+    # Name of the saved email profile this schedule was armed FROM (empty for
+    # schedules armed directly from the form). Persisted and restored so a
+    # profile's ON/OFF state — which is DERIVED from whether a matching
+    # automation exists — survives restarts. Additive/backward compatible:
+    # legacy automations.json records simply restore with "".
+    profile_name: str = ""
     # Connection snapshot captured at schedule time (same JSON shape that
     # sessions.py persists to sessions.json: sanitized config + encrypted
     # credentials). Lets the automation recreate its dashboard session at fire

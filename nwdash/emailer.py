@@ -19,7 +19,7 @@ from http import HTTPStatus
 from typing import Any
 
 from .config import APP_NAME, AUTOMATIONS_FILE, DATA_DIR, DEFAULT_API_PORT, LOG, debug_log, safe_log_text
-from .secrets import WMI_CIPHER, decrypt_process_secret, encrypt_process_secret
+from .secrets import WMI_CIPHER, decrypt_process_secret, decrypt_profile_secret, encrypt_process_secret
 from .models import (
     AlertAutomation,
     BadRequest,
@@ -48,6 +48,7 @@ from .snapshots import (
     clean_email_profile_name,
     delete_email_profile,
     get_email_profile_masked,
+    get_email_profile_raw,
     load_email_profiles,
     load_ui_theme,
     mask_email_profiles,
@@ -57,6 +58,7 @@ from .snapshots import (
     save_email_config_from_payload,
     save_email_profile,
     saved_email_smtp_password,
+    set_email_profile_connection,
 )
 from .reports import dashboard_alert_lines, dashboard_report_email, render_dashboard_snapshot_png
 
@@ -274,6 +276,132 @@ def find_automations_by_identity(
     ]
 
 
+# ── Profile-driven schedules (ON/OFF toggle per saved email profile) ─────────
+# A profile's enabled state is DERIVED, never stored: it is "on" iff a live
+# automation exists whose profile_name matches OR whose identity equals the
+# profile's identity. Toggling ON arms a schedule from the STORED profile via
+# the same identity-replace path the Schedule button uses; toggling OFF cancels
+# every matching schedule.
+
+
+def _profile_identity(profile: dict[str, Any]) -> tuple[str, frozenset[str], str, str] | None:
+    """Identity of the schedule a stored profile would arm, or None when the
+    stored record cannot yield a valid recipient list (corrupt/legacy)."""
+    try:
+        recipients = parse_email_recipients(profile.get("smtpTo"))
+    except BadRequest:
+        return None
+    return automation_identity(
+        str(profile.get("scheduleType") or "alert"),
+        recipients,
+        str(profile.get("smtpHost") or ""),
+        str(profile.get("smtpFrom") or ""),
+    )
+
+
+def _profile_automations(name: str, profile: dict[str, Any] | None) -> list[AlertAutomation]:
+    """Every live automation that belongs to this profile: stamped with its
+    name, or matching its identity (covers schedules armed from the form with
+    the same type/recipients/server/sender)."""
+    identity = _profile_identity(profile) if isinstance(profile, dict) else None
+    return [
+        automation
+        for _key, automation in _automation_items_snapshot()
+        if automation.profile_name == name
+        or (identity is not None and automation_identity_of(automation) == identity)
+    ]
+
+
+def _profile_form_payload(profile: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the SMTP form payload from a stored profile record so arming a
+    profile flows through parse_smtp_settings — the exact validation pathway
+    the modal submit uses (no duplicated parsing)."""
+    return {
+        "smtpHost": profile.get("smtpHost"),
+        "smtpPort": profile.get("smtpPort"),
+        "smtpSecurity": profile.get("smtpSecurity"),
+        "smtpUsername": profile.get("smtpUsername"),
+        "smtpPassword": "",  # decrypted separately from _enc_smtpPassword
+        "smtpFrom": profile.get("smtpFrom"),
+        "smtpTo": profile.get("smtpTo"),
+        "intervalMinutes": profile.get("intervalMinutes"),
+        "trigger": profile.get("trigger"),
+        "scheduleType": profile.get("scheduleType"),
+        "reportTime": profile.get("reportTime"),
+        "theme": profile.get("theme"),
+        "quietStart": profile.get("quietStart"),
+        "quietEnd": profile.get("quietEnd"),
+        "digest": bool(profile.get("digest", False)),
+    }
+
+
+def _email_profile_state() -> dict[str, Any]:
+    """Masked profiles plus the DERIVED per-profile schedule state the cards
+    render: enabled (a matching automation is armed) and its automationId."""
+    profiles = load_email_profiles()
+    masked = mask_email_profiles(profiles)
+    for name, masked_profile in masked.items():
+        matches = _profile_automations(name, profiles.get(name))
+        masked_profile["enabled"] = bool(matches)
+        masked_profile["automationId"] = matches[0].automation_id if matches else ""
+    return masked
+
+
+def _arm_profile_automation(name: str, profile: dict[str, Any], session_id: str) -> AlertAutomation:
+    """Arm (or replace) the schedule a stored profile describes, stamped with
+    the profile's name. Identity-replace semantics: every same-identity or
+    same-profile schedule is cancelled first, so toggling/re-saving never
+    accumulates duplicates."""
+    settings = parse_smtp_settings(_profile_form_payload(profile))
+    matches = _profile_automations(name, profile)
+    existing = matches[0] if matches else None
+    smtp_password = (
+        decrypt_profile_secret(str(profile.get("_enc_smtpPassword") or ""))
+        or (decrypt_process_secret(existing.encrypted_smtp_password) if existing else "")
+        or saved_email_smtp_password()
+    )
+    resolved_session = session_id or (existing.session_id if existing else "") or uuid.uuid4().hex
+    stored_connection = profile.get("_connection") if isinstance(profile.get("_connection"), dict) else {}
+    connection = (
+        connection_snapshot_for_session(resolved_session)
+        or dict(stored_connection)
+        or (dict(existing.connection) if existing and existing.connection else {})
+    )
+    automation = AlertAutomation(
+        automation_id=f"{resolved_session}:{uuid.uuid4().hex[:8]}",
+        session_id=resolved_session,
+        connection=connection,
+        smtp_host=settings["smtp_host"],
+        smtp_port=settings["smtp_port"],
+        smtp_username=settings["smtp_username"],
+        encrypted_smtp_password=encrypt_process_secret(smtp_password),
+        smtp_from=settings["smtp_from"],
+        recipients=settings["recipients"],
+        smtp_security=settings["smtp_security"],
+        interval_minutes=settings["interval_minutes"],
+        trigger=settings["trigger"],
+        schedule_type=settings["schedule_type"],
+        report_time=settings["report_time"],
+        created_at=time.time(),
+        theme=settings["theme"],
+        quiet_start=settings["quiet_start"],
+        quiet_end=settings["quiet_end"],
+        digest=settings["digest"],
+        profile_name=name,
+    )
+    for stale in matches + find_automations_by_identity(automation_identity_of(automation)):
+        if stale.automation_id != automation.automation_id:
+            debug_log(
+                f"toggle-profile: replacing schedule {stale.automation_id} "
+                f"with {automation.automation_id} (profile {name!r})"
+            )
+        cancel_alert_automation(stale.automation_id)
+    _put_automation(automation.automation_id, automation)
+    schedule_alert_automation(automation)
+    persist_automations()
+    return automation
+
+
 # ── Cross-automation duplicate-send guard (belt & braces) ────────────────────
 # Two schedules with the same identity must never both deliver the same
 # content, even if a duplicate automation somehow exists in the registry. Keyed
@@ -390,6 +518,7 @@ def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
         "quiet_end": automation.quiet_end,
         "digest": automation.digest,
         "connection": automation.connection if isinstance(automation.connection, dict) else {},
+        "profile_name": automation.profile_name,
     }
 
 
@@ -455,6 +584,7 @@ def restore_automations_from_disk() -> int:
                 quiet_start=str(rec.get("quiet_start") or ""),
                 quiet_end=str(rec.get("quiet_end") or ""),
                 digest=bool(rec.get("digest", True)),
+                profile_name=str(rec.get("profile_name") or ""),
             )
             _put_automation(automation.automation_id, automation)
             schedule_alert_automation(automation)
@@ -716,14 +846,83 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
     # ── Named email notification profiles (form presets, stored on disk) ────
     if action == "save-profile":
         name = clean_email_profile_name(payload.get("profileName"))
-        profiles = save_email_profile(name, payload)
+        was_on = bool(_profile_automations(name, get_email_profile_raw(name)))
+        save_email_profile(name, payload)
+        # Capture a connection snapshot for the profile: live session first,
+        # else inherit one from an automation that belongs to this profile.
+        connection = connection_snapshot_for_session(session_id) if session_id else {}
+        profile = get_email_profile_raw(name) or {}
+        if not connection:
+            for automation in _profile_automations(name, profile):
+                if automation.connection:
+                    connection = dict(automation.connection)
+                    break
+        if connection:
+            set_email_profile_connection(name, connection)
+            profile["_connection"] = connection
+        message = f"Email profile '{name}' saved."
+        if was_on:
+            # Re-saving a profile that is ON keeps it on: re-arm the schedule
+            # from the NEW settings (identity-replace swaps the old one out).
+            _arm_profile_automation(name, profile, session_id)
+            message = f"Email profile '{name}' saved and its schedule updated."
         return HTTPStatus.OK, {
             "ok": True,
-            "message": f"Email profile '{name}' saved.",
-            "profiles": profiles,
+            "message": message,
+            "profiles": _email_profile_state(),
         }
     if action == "list-profiles":
-        return HTTPStatus.OK, {"ok": True, "profiles": mask_email_profiles(load_email_profiles())}
+        return HTTPStatus.OK, {"ok": True, "profiles": _email_profile_state()}
+    if action == "toggle-profile":
+        name = clean_email_profile_name(payload.get("profileName"))
+        profile = get_email_profile_raw(name)
+        if profile is None:
+            raise BadRequest(f"No saved email profile named '{name}'.")
+        if not bool(payload.get("enabled")):
+            stopped = 0
+            for automation in _profile_automations(name, profile):
+                if cancel_alert_automation(automation.automation_id):
+                    stopped += 1
+            if stopped:
+                persist_automations()
+            return HTTPStatus.OK, {
+                "ok": True,
+                "enabled": False,
+                "profileName": name,
+                "automationId": "",
+                "message": (
+                    f"Profile '{name}' switched off — stopped {stopped} schedule(s)."
+                    if stopped else f"Profile '{name}' is off (nothing was scheduled)."
+                ),
+                "profiles": _email_profile_state(),
+            }
+        automation = _arm_profile_automation(name, profile, session_id)
+        # Keep the freshest connection snapshot on the profile so future
+        # toggles (e.g. after a restart, with no live session) still arm a
+        # reconnectable schedule.
+        set_email_profile_connection(name, automation.connection)
+        cadence = (
+            f"daily at {automation.report_time}"
+            if automation.schedule_type == "daily_report"
+            else f"every {automation.interval_minutes} minute(s)"
+        )
+        return HTTPStatus.OK, {
+            "ok": True,
+            "enabled": True,
+            "profileName": name,
+            "automationId": automation.automation_id,
+            "message": f"Profile '{name}' switched on — {cadence} to {len(automation.recipients)} recipient(s).",
+            "schedule": {
+                "automationId": automation.automation_id,
+                "scheduleType": automation.schedule_type,
+                "recipients": ", ".join(automation.recipients or []),
+                "intervalMinutes": automation.interval_minutes,
+                "reportTime": automation.report_time,
+                "profileName": automation.profile_name,
+                "reconnectable": bool(automation.connection),
+            },
+            "profiles": _email_profile_state(),
+        }
     if action == "get-profile":
         name = clean_email_profile_name(payload.get("profileName"))
         profile = get_email_profile_masked(name)
@@ -732,11 +931,14 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         return HTTPStatus.OK, {"ok": True, "name": name, "profile": profile}
     if action == "delete-profile":
         name = clean_email_profile_name(payload.get("profileName"))
-        profiles = delete_email_profile(name)
+        # Deliberately does NOT stop schedules: a running automation stays
+        # visible/manageable in the Saved schedules list (same behavior as
+        # before profile toggles existed).
+        delete_email_profile(name)
         return HTTPStatus.OK, {
             "ok": True,
             "message": f"Email profile '{name}' deleted.",
-            "profiles": profiles,
+            "profiles": _email_profile_state(),
         }
     # A form loaded from a profile submits the "(saved)" password sentinel;
     # swap in the stored profile password before any SMTP parsing below.
@@ -770,6 +972,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 "sessionId": automation.session_id,
                 "sessionLive": _session_exists(automation.session_id),
                 "reconnectable": bool(automation.connection),
+                "profileName": automation.profile_name,
             })
         return HTTPStatus.OK, {"ok": True, "schedules": rows}
     if action == "set_enabled":
@@ -848,7 +1051,8 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
     if action not in ("start", "test"):
         raise BadRequest(
             "Alert automation action must be start, test, save, stop, "
-            "save-profile, list-profiles, get-profile, or delete-profile."
+            "save-profile, list-profiles, get-profile, delete-profile, "
+            "or toggle-profile."
         )
     if not session_id:
         raise BadRequest("A dashboard session id is required before scheduling email alerts.")

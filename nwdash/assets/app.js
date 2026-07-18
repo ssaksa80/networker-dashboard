@@ -1313,18 +1313,81 @@
     // "(saved)" sentinel, which the server swaps for the stored password.
     const EMAIL_PROFILE_PW_SAVED = "(saved)";
     let loadedEmailProfileName = "";
-    const emailProfileSelect = document.getElementById("emailProfileSelect");
+    let emailProfilesCache = {};
+    const emailProfileCards = document.getElementById("emailProfileCards");
     const emailProfileNameInput = document.getElementById("emailProfileName");
     const emailProfileSaveBtn = document.getElementById("emailProfileSaveBtn");
-    const emailProfileLoadBtn = document.getElementById("emailProfileLoadBtn");
-    const emailProfileDeleteBtn = document.getElementById("emailProfileDeleteBtn");
 
-    function renderEmailProfileOptions(profiles, selected) {
-      if (!emailProfileSelect) return;
-      const names = Object.keys(profiles || {}).sort((a, b) => a.localeCompare(b));
-      emailProfileSelect.innerHTML = '<option value="">-- select a profile --</option>'
-        + names.map(n => '<option value="' + _emailEscape(n) + '"'
-          + (n === selected ? " selected" : "") + '>' + _emailEscape(n) + '</option>').join("");
+    function emailProfileSummary(p) {
+      const typeLabel = p.scheduleType === "daily_report" ? "Daily report" : "Alert check";
+      const recips = String(p.smtpTo || "").split(/[;,]/).map(s => s.trim()).filter(Boolean);
+      const recipLabel = recips.length
+        ? (recips[0] + (recips.length > 1 ? " +" + (recips.length - 1) : ""))
+        : "no recipients";
+      const cadence = p.scheduleType === "daily_report"
+        ? "at " + (p.reportTime || "08:00")
+        : "every " + (p.intervalMinutes || 60) + " min";
+      return typeLabel + " · " + recipLabel + " · " + cadence;
+    }
+
+    // Profile CARD list: name + summary + status dot + animated ON/OFF switch
+    // (toggle = schedule/stop that profile) + Edit/Delete.
+    function renderEmailProfileCards(profiles) {
+      emailProfilesCache = profiles || {};
+      if (!emailProfileCards) return;
+      const names = Object.keys(emailProfilesCache).sort((a, b) => a.localeCompare(b));
+      if (!names.length) {
+        emailProfileCards.innerHTML = '<div class="ep-empty">No saved profiles yet — fill the form and save one below.</div>';
+        return;
+      }
+      emailProfileCards.innerHTML = names.map(n => {
+        const p = emailProfilesCache[n] || {};
+        const on = p.enabled === true;
+        return '<div class="ep-card' + (on ? " is-on" : "") + '" data-name="' + _emailEscape(n) + '">'
+          + '<span class="ep-dot' + (on ? " on" : "") + '" aria-hidden="true"></span>'
+          + '<div class="ep-card-main">'
+          + '<strong class="ep-card-name">' + _emailEscape(n) + '</strong>'
+          + '<span class="ep-card-sub">' + _emailEscape(emailProfileSummary(p)) + '</span>'
+          + '</div>'
+          + '<div class="ep-card-actions">'
+          + '<button type="button" class="ghost ep-btn ep-edit" data-name="' + _emailEscape(n) + '">&#9998; Edit</button>'
+          + '<button type="button" class="ghost ep-btn ep-del" data-name="' + _emailEscape(n) + '">&#128465; Delete</button>'
+          + '<label class="ep-switch" title="' + (on ? "Scheduled - click to stop" : "Off - click to schedule") + '">'
+          + '<input type="checkbox" class="ep-toggle" data-name="' + _emailEscape(n) + '"' + (on ? " checked" : "")
+          + ' aria-label="Toggle schedule for profile ' + _emailEscape(n) + '">'
+          + '<span class="ep-slider" aria-hidden="true"></span>'
+          + '</label>'
+          + '</div></div>';
+      }).join("");
+      emailProfileCards.querySelectorAll(".ep-edit").forEach(b =>
+        b.addEventListener("click", () => loadEmailProfile(b.getAttribute("data-name"))));
+      emailProfileCards.querySelectorAll(".ep-del").forEach(b =>
+        b.addEventListener("click", () => deleteEmailProfile(b.getAttribute("data-name"))));
+      emailProfileCards.querySelectorAll(".ep-toggle").forEach(t =>
+        t.addEventListener("change", () => toggleEmailProfile(t.getAttribute("data-name"), t.checked, t)));
+    }
+
+    async function toggleEmailProfile(name, enabled, inputEl) {
+      // Optimistic: the checkbox has already animated; reconcile from the
+      // server response (or revert on failure).
+      const card = inputEl && inputEl.closest ? inputEl.closest(".ep-card") : null;
+      if (card) card.classList.toggle("is-on", enabled);
+      if (inputEl) inputEl.disabled = true;
+      try {
+        const data = await emailProfileRequest({
+          action: "toggle-profile", profileName: name, enabled: !!enabled, sessionId,
+        });
+        renderEmailProfileCards(data.profiles || emailProfilesCache);
+        alertAutomationStatus.textContent = data.message
+          || ('Profile "' + name + '" ' + (enabled ? "scheduled." : "stopped."));
+        setStatus(enabled ? "Profile scheduled" : "Profile stopped", enabled ? "ok" : "neutral");
+      } catch (error) {
+        if (inputEl) { inputEl.checked = !enabled; inputEl.disabled = false; }
+        if (card) card.classList.toggle("is-on", !enabled);
+        alertAutomationStatus.textContent = error.message || "Toggling email profile failed";
+        setStatus("Profile toggle failed", "bad");
+      }
+      refreshEmailScheduleList();
     }
 
     async function emailProfileRequest(body) {
@@ -1341,11 +1404,11 @@
       return data;
     }
 
-    async function refreshEmailProfileList(selected) {
+    async function refreshEmailProfileList() {
       try {
         const data = await emailProfileRequest({action: "list-profiles"});
-        renderEmailProfileOptions(data.profiles || {}, selected || "");
-      } catch (_e) { /* keep the current option list */ }
+        renderEmailProfileCards(data.profiles || {});
+      } catch (_e) { /* keep the current card list */ }
     }
 
     function applyEmailProfileToForm(name, p) {
@@ -1375,7 +1438,7 @@
 
     async function saveEmailProfile() {
       const name = ((emailProfileNameInput && emailProfileNameInput.value) || "").trim()
-        || (emailProfileSelect && emailProfileSelect.value) || "";
+        || loadedEmailProfileName || "";
       if (!name) {
         alertAutomationStatus.textContent = "Enter a profile name before saving.";
         setStatus("Profile name required", "warn");
@@ -1386,10 +1449,12 @@
       if (emailProfileSaveBtn) emailProfileSaveBtn.disabled = true;
       try {
         const data = await emailProfileRequest(payload);
-        renderEmailProfileOptions(data.profiles || {}, name);
+        renderEmailProfileCards(data.profiles || emailProfilesCache);
         loadedEmailProfileName = name;
         alertAutomationStatus.textContent = data.message || ('Email profile "' + name + '" saved.');
         setStatus("Email profile saved", "ok");
+        // Re-saving an ON profile re-arms its schedule server-side.
+        refreshEmailScheduleList();
       } catch (error) {
         alertAutomationStatus.textContent = error.message || "Saving email profile failed";
         setStatus("Email profile save failed", "bad");
@@ -1398,8 +1463,8 @@
       }
     }
 
-    async function loadEmailProfile() {
-      const name = (emailProfileSelect && emailProfileSelect.value)
+    async function loadEmailProfile(profileName) {
+      const name = (profileName || "").trim()
         || ((emailProfileNameInput && emailProfileNameInput.value) || "").trim();
       if (!name) {
         alertAutomationStatus.textContent = "Pick a saved profile to load.";
@@ -1414,16 +1479,17 @@
       }
     }
 
-    async function deleteEmailProfile() {
-      const name = (emailProfileSelect && emailProfileSelect.value)
+    async function deleteEmailProfile(profileName) {
+      const name = (profileName || "").trim()
         || ((emailProfileNameInput && emailProfileNameInput.value) || "").trim();
       if (!name) {
         alertAutomationStatus.textContent = "Pick a saved profile to delete.";
         return;
       }
+      if (!window.confirm('Delete email profile "' + name + '"?')) return;
       try {
         const data = await emailProfileRequest({action: "delete-profile", profileName: name});
-        renderEmailProfileOptions(data.profiles || {}, "");
+        renderEmailProfileCards(data.profiles || {});
         if (loadedEmailProfileName === name) loadedEmailProfileName = "";
         if (emailProfileNameInput && emailProfileNameInput.value === name) emailProfileNameInput.value = "";
         alertAutomationStatus.textContent = data.message || ('Email profile "' + name + '" deleted.');
@@ -1441,7 +1507,7 @@
       loadEmailConfigIntoForm();
       applyEmailTypeBlock();
       refreshEmailScheduleList();
-      refreshEmailProfileList(loadedEmailProfileName);
+      refreshEmailProfileList();
       setTimeout(() => document.getElementById("smtpHost").focus(), 0);
     }
 
@@ -1849,11 +1915,6 @@
     });
 
     if (emailProfileSaveBtn) emailProfileSaveBtn.addEventListener("click", () => { saveEmailProfile(); });
-    if (emailProfileLoadBtn) emailProfileLoadBtn.addEventListener("click", () => { loadEmailProfile(); });
-    if (emailProfileDeleteBtn) emailProfileDeleteBtn.addEventListener("click", () => { deleteEmailProfile(); });
-    if (emailProfileSelect) emailProfileSelect.addEventListener("change", () => {
-      if (emailProfileSelect.value && emailProfileNameInput) emailProfileNameInput.value = emailProfileSelect.value;
-    });
 
     // Switching Email type swaps to that type's separately-saved recipients and
     // settings without losing the other type's values.

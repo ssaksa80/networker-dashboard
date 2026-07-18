@@ -432,7 +432,7 @@
       </div>
 
       <div id="alertAutomationModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="alertAutomationTitle" aria-hidden="true">
-        <div class="modal-panel">
+        <div class="modal-panel automation-modal">
           <div class="modal-head">
             <h2 id="alertAutomationTitle">Email Alert Automation</h2>
             <span id="alertAutomationStatus" class="automation-status">Not scheduled</span>
@@ -444,15 +444,16 @@
           <div id="emailScheduleListWrap" class="collapsible">
             <div id="emailScheduleList" class="email-schedule-list" aria-label="Saved schedules"></div>
           </div>
-          <div class="email-profile-bar" aria-label="Saved email profiles">
-            <span class="ep-label">Saved profiles</span>
-            <select id="emailProfileSelect" aria-label="Saved email profile list">
-              <option value="">-- select a profile --</option>
-            </select>
-            <input id="emailProfileName" placeholder="Profile name" autocomplete="off" spellcheck="false" aria-label="Email profile name">
-            <button id="emailProfileSaveBtn" class="ghost" type="button">Save profile</button>
-            <button id="emailProfileLoadBtn" class="ghost" type="button">Load</button>
-            <button id="emailProfileDeleteBtn" class="ghost" type="button">Delete</button>
+          <div class="email-profiles" aria-label="Saved email profiles">
+            <div class="ep-head">
+              <span class="ep-label">Saved profiles</span>
+              <span class="ep-hint">Toggle a profile on to schedule it; off to stop it.</span>
+            </div>
+            <div id="emailProfileCards" class="email-profile-cards" aria-label="Saved email profile cards"></div>
+            <div class="ep-save-row">
+              <input id="emailProfileName" placeholder="Profile name" autocomplete="off" spellcheck="false" aria-label="Email profile name">
+              <button id="emailProfileSaveBtn" class="ghost" type="button">Save as profile</button>
+            </div>
           </div>
           <div class="automation-grid">
             <label>
