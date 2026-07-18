@@ -1,0 +1,5 @@
+# UI assets are read with universal-newline decoding, but pin LF so the
+# served bytes are identical across checkouts regardless of core.autocrlf.
+nwdash/assets/*.html text eol=lf
+nwdash/assets/*.css  text eol=lf
+nwdash/assets/*.js   text eol=lf

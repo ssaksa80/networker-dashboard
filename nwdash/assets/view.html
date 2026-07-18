@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NetWorker Dashboard – Read Only</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #eef3f6; color: #172026; min-height: 100vh; }
+  .topbar { background: #126e82; color: #fff; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .topbar h1 { font-size: 18px; font-weight: 600; }
+  .topbar .meta { font-size: 13px; opacity: 0.8; }
+  .shell { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
+  .status-bar { background: #fff; border: 1px solid #d7e1e7; border-radius: 10px; padding: 14px 18px; margin-bottom: 20px;
+                 display: flex; align-items: center; gap: 12px; font-size: 14px; color: #5f6d76; }
+  .pill { padding: 3px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+  .pill.ok   { background: #d1f0e0; color: #18764a; }
+  .pill.warn { background: #fef3cd; color: #a96800; }
+  .pill.bad  { background: #fde2e4; color: #bd2b3a; }
+  .pill.load { background: #f0f4f6; color: #5f6d76; }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .metric-card { background: #fff; border: 1px solid #d7e1e7; border-radius: 10px; padding: 16px 18px; }
+  .metric-card .label { font-size: 12px; color: #5f6d76; margin-bottom: 4px; }
+  .metric-card .value { font-size: 28px; font-weight: 700; color: #172026; }
+  .metric-card .value.red { color: #bd2b3a; }
+  .metric-card .value.green { color: #18764a; }
+  .metric-card .value.amber { color: #a96800; }
+  .readonly-badge { background: rgba(255,255,255,0.2); border-radius: 6px; padding: 3px 10px; font-size: 12px; }
+  .refresh-hint { font-size: 12px; color: #5f6d76; text-align: right; margin-top: 12px; }
+  .error-box { background: #fde2e4; border: 1px solid #f0b8bc; border-radius: 10px; padding: 16px 18px; color: #bd2b3a; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>Backup &amp; Recovery Dashboard</h1>
+  <span class="readonly-badge">Read-only view</span>
+</div>
+<div class="shell">
+  <div id="content"><div class="status-bar"><span class="pill load">Loading…</span><span id="statusText">Fetching dashboard data…</span></div></div>
+</div>
+<script>
+  async function load() {
+    try {
+      const r = await fetch('/api/view/__SHARE_TOKEN__', {cache: 'no-store'});
+      const data = await r.json();
+      render(data);
+    } catch(e) {
+      document.getElementById('content').innerHTML = '<div class="error-box">Failed to load dashboard data: ' + (e.message || 'unknown error') + '</div>';
+    }
+  }
+
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function render(data) {
+    const s = data.dashboard?.summary || {};
+    const health = String(s.health || 'unknown').toLowerCase();
+    const pillCls = health === 'ok' ? 'ok' : health === 'critical' ? 'bad' : health === 'warning' ? 'warn' : 'load';
+    const pillLabel = health === 'ok' ? 'Healthy' : health === 'critical' ? 'Critical' : health === 'warning' ? 'Warning' : 'Unknown';
+
+    const metrics = [
+      ['Total Jobs',   s.totalJobs   || 0, ''],
+      ['Succeeded',    s.successfulJobs || 0, 'green'],
+      ['Failed',       s.failedJobs  || 0, 'red'],
+      ['Active',       s.activeJobs  || 0, ''],
+      ['Restores',     s.recoveryJobs || 0, ''],
+      ['Alerts',       s.totalAlerts || 0, s.totalAlerts > 0 ? 'amber' : ''],
+    ];
+
+    const cards = metrics.map(([lbl, val, cls]) =>
+      '<div class="metric-card"><div class="label">' + esc(lbl) + '</div><div class="value ' + cls + '">' + val + '</div></div>'
+    ).join('');
+
+    const ts = data.dashboard?.generatedAt || data.updatedAt || '';
+    document.getElementById('content').innerHTML =
+      '<div class="status-bar"><span class="pill ' + pillCls + '">' + pillLabel + '</span>' +
+      '<span id="statusText">Server: ' + esc(data.dashboard?.target?.restApiBase || 'unknown') + '</span>' +
+      '<span style="margin-left:auto;font-size:12px">' + esc(ts) + '</span></div>' +
+      '<div class="metric-grid">' + cards + '</div>' +
+      '<p class="refresh-hint">Auto-refreshes every 60 s · Token: __SHARE_TOKEN__</p>';
+  }
+
+  load();
+  setInterval(load, 60000);
+</script>
+</body>
+</html>

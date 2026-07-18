@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store">
+  <title>NetWorker Backup & Recovery Dashboard</title>
+  <style>__APP_CSS__</style>
+</head>
+<body class="connection-open">
+  <header class="topbar">
+    <div class="topbar-brand">
+      <div class="topbar-logo" aria-hidden="true">
+        <img src="__NETWORKER_LOGO_SRC__" alt="">
+      </div>
+      <div class="title-group">
+        <h1>Backup & Recovery Dashboard</h1>
+        <p class="subtitle">Dell NetWorker REST API over HTTPS</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <div id="topStatus" class="status-pill">Not connected</div>
+      <button class="collapse-toggle" type="button" data-toggle-target="accountMenu" aria-expanded="false">
+        <span class="caret">&#9656;</span> Account
+      </button>
+      <div id="accountMenu" class="account-menu collapsible">
+        <button id="showConnectionBtn" class="topbar-button" type="button">Connection</button>
+        <button id="addServerBtn" class="topbar-button" type="button">+ Server</button>
+        <button id="shareBtn" class="topbar-button hidden" type="button">Share</button>
+        <button id="logoutBtn" class="topbar-button danger hidden" type="button">Logout</button>
+        <button id="alertConfigBtn" class="topbar-button" type="button">Email</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Collapsed connection bar (visible when connected) -->
+  <div id="connCollapsedBar" class="conn-collapsed-bar">
+    <span>Connected to <strong id="collapsedHost">—</strong></span>
+    <span id="collapsedRange" style="margin-left:4px"></span>
+    <button id="collapsedEditBtn" class="ghost" type="button" style="margin-left:auto;font-size:12px;padding:4px 10px">Edit connection</button>
+  </div>
+
+  <main id="mainShell" class="shell">
+    <aside id="connectionPanel" class="panel connection">
+      <div class="panel-head">
+        <h2>Connection</h2>
+      </div>
+      <!-- Profile bar -->
+      <div class="profile-bar">
+        <select id="profileSelect" aria-label="Saved connection profiles">
+          <option value="">— Select saved profile —</option>
+        </select>
+        <button id="profileSaveBtn" class="ghost" type="button">Save</button>
+        <button id="profileDeleteBtn" class="ghost" type="button">Delete</button>
+      </div>
+      <form id="connectionForm" autocomplete="off">
+        <label>
+          API / NWUI server IP/DNS
+          <input id="restApiHost" name="restApiHost" placeholder="10.10.10.20" required autocomplete="off" spellcheck="false">
+        </label>
+
+        <label>
+          API source
+          <select id="apiMode" name="apiMode">
+            <option value="auto" selected>Auto discover</option>
+            <option value="nwui">NWUI API</option>
+            <option value="rest">NetWorker REST API</option>
+          </select>
+        </label>
+
+        <div class="row-2">
+          <label>
+            API / NWUI port
+            <input id="restApiPort" name="restApiPort" value="9090" inputmode="numeric" autocomplete="off">
+          </label>
+          <label>
+            API version
+            <select id="apiVersion" name="apiVersion">
+              <option value="auto" selected>Auto</option>
+              <option value="v3">v3</option>
+              <option value="v2">v2</option>
+              <option value="v1">v1</option>
+            </select>
+          </label>
+        </div>
+
+        <label>
+          Backup server IP/DNS
+          <input id="backupServerHost" name="backupServerHost" placeholder="10.10.10.30" autocomplete="off" spellcheck="false">
+        </label>
+
+        <div class="row-2">
+          <label>
+            AuthC port
+            <input id="backupServerPort" name="backupServerPort" value="9090" inputmode="numeric" autocomplete="off">
+          </label>
+          <label>
+            Timeout seconds
+            <input id="timeoutSeconds" name="timeoutSeconds" value="30" inputmode="numeric" autocomplete="off">
+          </label>
+        </div>
+
+        <label>
+          Report range
+          <select id="reportRange" name="reportRange">
+            <option value="24h" selected>Last 24 hours</option>
+            <option value="7d">Last week</option>
+            <option value="30d">Last month</option>
+            <option value="custom">Custom dates</option>
+          </select>
+        </label>
+
+        <div class="row-2 custom-date-field" data-custom-range hidden>
+          <label>
+            Start date
+            <input id="customStartDate" name="customStartDate" placeholder="DD-MM-YYYY" autocomplete="off" inputmode="numeric">
+          </label>
+          <label>
+            End date
+            <input id="customEndDate" name="customEndDate" placeholder="DD-MM-YYYY" autocomplete="off" inputmode="numeric">
+          </label>
+        </div>
+
+        <label>
+          Username
+          <input id="username" name="username" placeholder="Administrator" required autocomplete="off" spellcheck="false">
+        </label>
+
+        <label>
+          Password
+          <input id="password" name="password" type="password" required autocomplete="new-password">
+        </label>
+
+        <label class="check-row">
+          <input id="useWmiHealth" name="useWmiHealth" type="checkbox" checked>
+          <span>Use WMI for Windows CPU/RAM health</span>
+        </label>
+
+        <label>
+          WMI username
+          <input id="wmiUsername" name="wmiUsername" placeholder="DOMAIN\\svc_networker_health" autocomplete="off" spellcheck="false">
+        </label>
+
+        <label>
+          WMI password
+          <input id="wmiPassword" name="wmiPassword" type="password" autocomplete="new-password">
+        </label>
+
+        <label class="check-row">
+          <input id="useAuthcHeader" name="useAuthcHeader" type="checkbox" checked>
+          <span>Send X-NW-AUTHC-BASE-URL for backup server</span>
+        </label>
+
+        <label class="check-row">
+          <input id="verifyTls" name="verifyTls" type="checkbox" checked>
+          <span>Verify REST API TLS certificate</span>
+        </label>
+
+        <div class="actions">
+          <button id="connectBtn" class="primary" type="submit">Connect</button>
+          <button id="discoverBtn" class="ghost" type="button">Discover</button>
+          <button id="refreshBtn" class="ghost" type="button">Refresh</button>
+          <button id="clearBtn" class="ghost icon" type="button" title="Clear form">x</button>
+        </div>
+      </form>
+    </aside>
+
+    <section class="dashboard">
+      <section id="dashboardToolbar" class="dashboard-toolbar" aria-label="Dashboard controls">
+        <div class="collapse-bar">
+          <button class="collapse-toggle" type="button" data-toggle-target="viewControls" aria-expanded="false">
+            <span class="caret">&#9656;</span> View settings
+          </button>
+          <div class="toolbar-actions">
+            <button id="manualRefreshBtn" class="ghost" type="button">Refresh now</button>
+          </div>
+        </div>
+        <div id="viewControls" class="toolbar-controls collapsible">
+          <label>
+            Report range
+            <select id="dashReportRange">
+              <option value="24h" selected>Last 24 hours</option>
+              <option value="7d">Last week</option>
+              <option value="30d">Last month</option>
+              <option value="custom">Custom dates</option>
+            </select>
+          </label>
+          <label class="custom-date-field" data-custom-range hidden>
+            Start date
+            <input id="dashCustomStartDate" placeholder="DD-MM-YYYY" autocomplete="off" inputmode="numeric">
+          </label>
+          <label class="custom-date-field" data-custom-range hidden>
+            End date
+            <input id="dashCustomEndDate" placeholder="DD-MM-YYYY" autocomplete="off" inputmode="numeric">
+          </label>
+          <label>
+            Auto-refresh
+            <select id="autoRefreshMode">
+              <option value="on" selected>On</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+          <label>
+            Interval minutes
+            <input id="refreshMinutes" value="5" inputmode="numeric" autocomplete="off">
+          </label>
+          <label>
+            Theme
+            <select id="themeSelect">
+              <option value="default">Default</option>
+              <option value="midnight">Midnight</option>
+              <option value="graphite">Graphite</option>
+              <option value="contrast">High contrast</option>
+              <option value="ocean">Ocean</option>
+              <option value="forest">Forest</option>
+              <option value="ruby">Ruby</option>
+              <option value="steel">Steel</option>
+              <option value="arctic">Arctic</option>
+              <option value="citrus">Citrus</option>
+              <option value="harbor">Harbor</option>
+              <option value="ember">Ember</option>
+            </select>
+          </label>
+          <label>
+            Export
+            <button id="exportBtn" class="primary" type="button">Excel report</button>
+          </label>
+        </div>
+      </section>
+
+      <section class="management-grid" aria-label="Management dashboard">
+        <article class="management-card brand-card">
+          <div class="brand-top">
+            <div class="networker-mark" aria-hidden="true">
+              <img src="__NETWORKER_LOGO_SRC__" alt="">
+            </div>
+            <div class="brand-copy">
+              <strong>DELL EMC NetWorker</strong>
+              <span>Backup & Recovery Status</span>
+            </div>
+          </div>
+          <div id="mgmtConnection" class="connection-line">
+            <span class="connection-dot" aria-hidden="true"></span>
+            <strong id="mgmtStatus">Not connected</strong>
+          </div>
+          <div class="brand-details">
+            <div class="brand-detail">
+              <span>API source</span>
+              <strong id="mgmtApi">--</strong>
+            </div>
+            <div class="brand-detail">
+              <span>Backup server</span>
+              <strong id="mgmtBackupServer">--</strong>
+            </div>
+            <div class="brand-detail">
+              <span>Updated</span>
+              <strong id="mgmtUpdated">--</strong>
+            </div>
+          </div>
+          <div class="brand-signature">
+            <span>Maintained &amp; developed by</span>
+            <strong>SHAIKH SHOAIB</strong>
+            <span>Sr. Advisor Delivery Specialist</span>
+            <span>DELL Technologies</span>
+          </div>
+        </article>
+
+        <article class="management-card">
+          <header>
+            <h2>Activity Mix</h2>
+            <span id="mgmtRange" class="card-meta">--</span>
+          </header>
+          <div id="mgmtDonut" class="chart-empty">No backup data yet</div>
+        </article>
+
+        <article class="management-card">
+          <header>
+            <h2>Backup SLA</h2>
+            <span id="mgmtSlaMeta" class="card-meta">Jobs ran</span>
+          </header>
+          <div id="mgmtSlaPie" class="chart-empty">No SLA data yet</div>
+        </article>
+
+        <article class="management-card">
+          <header>
+            <h2>Management Overview</h2>
+            <span class="card-meta">Live API</span>
+          </header>
+          <div id="mgmtBars" class="chart-empty">No management data yet</div>
+        </article>
+
+        <article class="management-card">
+          <header>
+            <h2>Recovery Health</h2>
+            <span class="card-meta">Restores</span>
+          </header>
+          <div id="mgmtRestorePanel" class="summary-list">
+            <div class="summary-band">
+              <strong>--</strong>
+              <span>Restore jobs in selected range</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="management-card">
+          <header>
+            <h2>Clone Jobs</h2>
+            <span class="card-meta">Actions</span>
+          </header>
+          <div id="mgmtClonePanel" class="summary-list">
+            <div class="summary-band">
+              <strong>--</strong>
+              <span>Clone jobs in selected range</span>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="metric-grid" aria-label="Dashboard metrics">
+        <div class="metric" data-tone="blue">
+          <span>Clients</span>
+          <strong id="metricClients">--</strong>
+        </div>
+        <div class="metric" data-tone="green">
+          <span>Successful Jobs</span>
+          <strong id="metricSuccess">--</strong>
+        </div>
+        <div class="metric" data-tone="red">
+          <span>Failed Backups</span>
+          <strong id="metricFailed">--</strong>
+        </div>
+        <div class="metric" data-tone="red">
+          <span>Failed Restores</span>
+          <strong id="metricFailedRestores">--</strong>
+        </div>
+        <div class="metric" data-tone="red">
+          <span>Failed Clones</span>
+          <strong id="metricFailedClones">--</strong>
+        </div>
+        <div class="metric" data-tone="blue">
+          <span>Active Jobs</span>
+          <strong id="metricActive">--</strong>
+        </div>
+        <div class="metric" data-tone="amber">
+          <span>Recovery Jobs</span>
+          <strong id="metricRecovery">--</strong>
+        </div>
+        <div class="metric" data-tone="amber">
+          <span>Alerts</span>
+          <strong id="metricAlerts">--</strong>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>NetWorker Server Health</h2>
+          <span id="generatedAt" class="meta">Waiting for connection</span>
+        </div>
+        <p id="notice" class="notice"></p>
+        <div id="healthGrid" class="health-grid">
+          <div class="health-item">
+            <span>Server status</span>
+            <strong>Waiting</strong>
+            <small>Connect to load server health.</small>
+          </div>
+          <div class="health-item">
+            <span>CPU usage</span>
+            <strong>--</strong>
+            <small>Awaiting NetWorker health data.</small>
+          </div>
+          <div class="health-item">
+            <span>Memory usage</span>
+            <strong>--</strong>
+            <small>Awaiting NetWorker health data.</small>
+          </div>
+          <div class="health-item">
+            <span>Server Protection Job</span>
+            <strong>--</strong>
+            <small>No job data loaded.</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-label="Local snapshot growth">
+        <div class="section-head">
+          <h2>Local Snapshot Growth</h2>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span id="snapshotMeta" class="meta">No local snapshots loaded</span>
+            <div id="slaGaugeInline"></div>
+          </div>
+        </div>
+        <button class="collapse-toggle" type="button" data-toggle-target="snapshotControls" aria-expanded="false" style="margin:0 16px 4px">
+          <span class="caret">&#9656;</span> Snapshots
+        </button>
+        <div id="snapshotControls" class="snapshot-controls collapsible">
+          <div class="snap-range-tabs" id="snapRangeTabs">
+            <button class="snap-tab active" data-range="7d" type="button">7 days</button>
+            <button class="snap-tab" data-range="30d" type="button">30 days</button>
+            <button class="snap-tab" data-range="90d" type="button">90 days</button>
+          </div>
+          <div class="snap-btn-group">
+            <label class="snap-auto-label">
+              <input type="checkbox" id="autoSnapshotToggle"> Auto-save daily
+            </label>
+            <button id="snapshotSaveBtn" class="primary" type="button" disabled>Save snapshot</button>
+            <button id="snapshotCompareBtn" class="ghost" type="button">Compare growth</button>
+            <button id="snapshotManageBtn" class="ghost" type="button">Manage</button>
+            <button id="snapshotExportBtn" class="ghost" type="button">Export CSV</button>
+          </div>
+        </div>
+        <div id="snapshotGrid" class="snapshot-grid">
+          <div class="snapshot-cell snapshot-empty">
+            <span>No comparison available</span>
+            <strong style="font-size:15px">No local snapshots found.</strong>
+            <small>Use <strong>Save snapshot</strong> after each connection to track growth over time.</small>
+          </div>
+        </div>
+      </section>
+
+      <div id="snapshotPanel" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="snapshotPanelTitle" aria-hidden="true">
+        <div class="modal-panel" style="max-width:720px">
+          <div class="modal-head">
+            <h3 id="snapshotPanelTitle">Snapshot History</h3>
+            <button id="snapshotPanelCloseBtn" class="modal-close" type="button" aria-label="Close">×</button>
+          </div>
+          <div id="snapshotPanelBody" style="padding:16px;overflow-y:auto;max-height:60vh"></div>
+        </div>
+      </div>
+
+      <div id="alertAutomationModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="alertAutomationTitle" aria-hidden="true">
+        <div class="modal-panel">
+          <div class="modal-head">
+            <h2 id="alertAutomationTitle">Email Alert Automation</h2>
+            <span id="alertAutomationStatus" class="automation-status">Not scheduled</span>
+            <button id="alertModalCloseBtn" class="ghost modal-close" type="button" aria-label="Close email automation popup">x</button>
+          </div>
+          <button class="collapse-toggle" type="button" data-toggle-target="emailScheduleListWrap" aria-expanded="false" style="margin:8px 14px 0">
+            <span class="caret">&#9656;</span> Saved schedules (<span id="emailScheduleCount">0</span>)
+          </button>
+          <div id="emailScheduleListWrap" class="collapsible">
+            <div id="emailScheduleList" class="email-schedule-list" aria-label="Saved schedules"></div>
+          </div>
+          <div class="automation-grid">
+            <label>
+              SMTP host
+              <input id="smtpHost" placeholder="smtp.company.com" autocomplete="off" spellcheck="false">
+            </label>
+            <label>
+              SMTP port
+              <input id="smtpPort" value="587" inputmode="numeric" autocomplete="off">
+            </label>
+            <label>
+              Security
+              <select id="smtpSecurity">
+                <option value="starttls" selected>STARTTLS</option>
+                <option value="ssl">SSL/TLS</option>
+                <option value="none">None</option>
+              </select>
+            </label>
+            <label>
+              Email type
+              <select id="emailScheduleType">
+                <option value="alert" selected>Alert check</option>
+                <option value="daily_report">Daily backup/SLA report</option>
+              </select>
+            </label>
+            <label>
+              Alert interval minutes
+              <input id="alertIntervalMinutes" value="60" inputmode="numeric" autocomplete="off">
+            </label>
+            <label>
+              Daily report time
+              <input id="dailyReportTime" value="08:00" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
+            </label>
+            <label>
+              Quiet hours start
+              <input id="quietStart" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
+            </label>
+            <label>
+              Quiet hours end
+              <input id="quietEnd" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
+            </label>
+            <label class="email-checkbox">
+              <input id="emailDigest" type="checkbox" checked>
+              Digest (one email per interval)
+            </label>
+            <label>
+              SMTP username
+              <input id="smtpUsername" autocomplete="off" spellcheck="false">
+            </label>
+            <label>
+              SMTP password
+              <input id="smtpPassword" type="password" autocomplete="new-password">
+            </label>
+            <label>
+              From address
+              <input id="smtpFrom" placeholder="networker-dashboard@company.com" autocomplete="off" spellcheck="false">
+            </label>
+            <label>
+              To recipients
+              <input id="smtpTo" placeholder="ops@company.com; backup@company.com" autocomplete="off" spellcheck="false">
+            </label>
+            <label>
+              Trigger
+              <select id="alertTrigger">
+                <option value="critical" selected>Critical only</option>
+                <option value="warning">Warnings and critical</option>
+                <option value="all">Every scheduled check</option>
+              </select>
+            </label>
+          </div>
+          <div class="automation-actions">
+            <button id="alertScheduleBtn" class="primary" type="button">Schedule selected report</button>
+            <button id="emailSaveConfigBtn" class="ghost" type="button">Save configuration</button>
+            <button id="alertTestBtn" class="ghost" type="button">Send test</button>
+            <button id="alertStopBtn" class="ghost" type="button">Stop selected schedule</button>
+          </div>
+          <p class="automation-hint" style="margin:0 16px 12px;color:var(--muted);font-size:12px">
+            SMTP settings are shared. <strong>Alert check</strong> and
+            <strong>Daily backup/SLA report</strong> keep separate recipients and
+            settings — switch <em>Email type</em> to edit each. Save configuration
+            stores both independently and survives restarts.
+          </p>
+        </div>
+      </div>
+
+      <!-- Share modal -->
+      <div id="shareModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="shareModalTitle" aria-hidden="true">
+        <div class="modal-panel">
+          <div class="modal-head">
+            <h2 id="shareModalTitle">Share Read-Only View</h2>
+            <button id="shareModalCloseBtn" class="ghost modal-close" type="button" aria-label="Close share popup">x</button>
+          </div>
+          <p class="share-info">Generate a read-only URL showing the current live dashboard. The link uses a token valid for 24 hours. No credentials are embedded in the URL.</p>
+          <div id="shareTokenSection" class="hidden">
+            <div class="share-url-row">
+              <input id="shareUrlInput" class="share-url-input" readonly type="text" placeholder="Generating...">
+              <button id="copyShareUrlBtn" class="primary" type="button">Copy</button>
+            </div>
+          </div>
+          <div class="share-token-actions">
+            <button id="generateShareTokenBtn" class="primary" type="button">Generate Link</button>
+            <button id="revokeShareTokenBtn" class="ghost hidden" type="button">Revoke</button>
+          </div>
+          <p id="shareModalStatus" class="share-info"></p>
+        </div>
+      </div>
+
+      <!-- Add-server modal -->
+      <div id="addServerModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="addServerModalTitle" aria-hidden="true">
+        <div class="modal-panel">
+          <div class="modal-head">
+            <h2 id="addServerModalTitle">Add NetWorker Server</h2>
+            <button id="addServerModalCloseBtn" class="ghost modal-close" type="button" aria-label="Close add server popup">x</button>
+          </div>
+          <div class="add-server-form">
+            <label>REST API Host<input id="asHost" placeholder="networker.corp.com" autocomplete="off" spellcheck="false"></label>
+            <label>REST API Port<input id="asPort" value="9090" inputmode="numeric" autocomplete="off"></label>
+            <label>Username<input id="asUsername" autocomplete="off" spellcheck="false"></label>
+            <label>Password<input id="asPassword" type="password" autocomplete="new-password"></label>
+            <label>API Mode
+              <select id="asApiMode">
+                <option value="auto">Auto</option>
+                <option value="nwui">NWUI</option>
+                <option value="rest">REST</option>
+              </select>
+            </label>
+            <label class="check-row">
+              <input id="asVerifyTls" type="checkbox" checked>
+              <span>Verify REST API TLS certificate</span>
+            </label>
+          </div>
+          <div class="add-server-actions">
+            <button id="addServerCancelBtn" class="ghost" type="button">Cancel</button>
+            <button id="addServerConnectBtn" class="primary" type="button">Connect</button>
+          </div>
+          <p id="addServerStatus" class="share-info"></p>
+        </div>
+      </div>
+
+      <!-- Tooltip elements -->
+      <div id="tlTooltip" class="tl-tooltip"></div>
+      <div id="hmTooltip" class="heatmap-tooltip"></div>
+
+      <!-- Job detail drawer -->
+      <div id="drawerOverlay" class="drawer-overlay"></div>
+      <div id="jobDetailDrawer" class="detail-drawer" role="dialog" aria-label="Job details">
+        <div class="detail-drawer-head">
+          <h3 id="drawerTitle">Job Details</h3>
+          <button id="drawerCloseBtn" class="detail-drawer-close" type="button" aria-label="Close">&#x2715;</button>
+        </div>
+        <div id="drawerBody" class="detail-drawer-body"></div>
+      </div>
+
+      <!-- What-changed toast -->
+      <div id="changeToast" class="change-toast" role="status" aria-live="polite"></div>
+
+      <section class="section">
+        <div class="section-head">
+          <h2 id="tableTitle">Recent Jobs</h2>
+          <span id="tableMeta" class="meta">0 rows</span>
+        </div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" type="button" data-table="jobs">Recent Jobs</button>
+          <button class="tab" type="button" data-table="failedJobs">Failed Jobs</button>
+          <button class="tab" type="button" data-table="recovery">Restores</button>
+          <button class="tab" type="button" data-table="cloneJobs">Clone Jobs</button>
+          <button class="tab" type="button" data-table="logs">Logs</button>
+          <button class="tab" type="button" data-table="alerts">Alerts</button>
+          <button class="tab" type="button" data-table="clients">Clients</button>
+          <button class="tab" type="button" data-table="timeline">Timeline</button>
+          <button class="tab" type="button" data-table="heatmap">Heatmap</button>
+        </div>
+        <div id="emptyState" class="empty">Enter connection details and connect.</div>
+        <div id="tableWrap" class="table-wrap hidden">
+          <table>
+            <thead id="tableHead"></thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+        <div id="paginationBar" class="pagination-bar hidden">
+          <span id="paginationMeta"></span>
+          <button id="showMoreBtn" class="ghost" type="button">Show more</button>
+          <button id="showAllBtn" class="ghost" type="button">Show all</button>
+          <button id="showLessBtn" class="ghost hidden" type="button">Show less</button>
+        </div>
+        <div id="timelineWrap" class="timeline-wrap hidden"></div>
+        <div id="heatmapWrap" class="heatmap-wrap hidden"></div>
+      </section>
+
+      <section id="multiServerSection" class="section hidden">
+        <div class="section-head">
+          <h2>Multi-Server Overview</h2>
+          <span id="multiServerMeta" class="meta">0 servers</span>
+        </div>
+        <div id="serverCards" class="server-cards"></div>
+      </section>
+    </section>
+  </main>
+
+  <script>__APP_JS__</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NetWorker Dashboard — Sign in</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif;background:#eef3f6;color:#172026;min-height:100vh;display:flex;align-items:center;justify-content:center}
+  .card{background:#fff;border:1px solid #d7e1e7;border-radius:12px;padding:32px;width:340px;box-shadow:0 4px 16px rgba(0,0,0,.06)}
+  h1{font-size:18px;margin-bottom:6px}
+  p{font-size:13px;color:#5f6d76;margin-bottom:20px}
+  label{display:block;font-size:13px;margin-bottom:6px}
+  input{width:100%;padding:10px 12px;border:1px solid #d7e1e7;border-radius:8px;font-size:14px;margin-bottom:16px}
+  button{width:100%;padding:10px;border:0;border-radius:8px;background:#126e82;color:#fff;font-size:14px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  .err{background:#fde2e4;border:1px solid #f0b8bc;color:#bd2b3a;border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:16px;display:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>NetWorker Dashboard</h1>
+  <p>Enter the dashboard access password to continue.</p>
+  <div class="err" id="err"></div>
+  <form id="loginForm">
+    <label for="pw">Password</label>
+    <input type="password" id="pw" autocomplete="current-password" autofocus>
+    <button type="submit" id="btn">Sign in</button>
+  </form>
+</div>
+<script>
+  const form=document.getElementById('loginForm');
+  const err=document.getElementById('err');
+  const btn=document.getElementById('btn');
+  form.addEventListener('submit',async(e)=>{
+    e.preventDefault();
+    btn.disabled=true;err.style.display='none';
+    try{
+      const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('pw').value})});
+      if(r.ok){location.reload();return;}
+      const d=await r.json().catch(()=>({}));
+      err.textContent=d.error||'Sign in failed.';err.style.display='block';
+    }catch(_){err.textContent='Network error.';err.style.display='block';}
+    btn.disabled=false;
+  });
+</script>
+</body>
+</html>
