@@ -5,7 +5,8 @@
 # .certs\) is created by the app on first start and is never bundled.
 #
 # Usage:  powershell -ExecutionPolicy Bypass -File scripts\build-bundle.ps1
-# Requires only Windows PowerShell 5.1+ on the build machine. The target
+#    or:  pwsh -File scripts\build-bundle.ps1
+# Verified under both Windows PowerShell 5.1 and PowerShell 7. The target
 # machine needs Python 3.11+; the optional 'cryptography' package enables
 # encrypted credential storage but is not required.
 
