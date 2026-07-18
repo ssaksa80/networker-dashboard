@@ -765,8 +765,25 @@
     .snapshot-cell[data-trend="bad"]  { border-left: 3px solid var(--red); }
     .snapshot-cell[data-trend="neutral"] { border-left: 3px solid var(--line); }
 
-    .snap-badge {
+    /* Title row of a comparison card: the delta pill must never collide with
+       the title, even when the title wraps — reserve space with a flex gap
+       and keep the pill at its natural size on one line. */
+    .snap-cell-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .snap-cell-head > span:first-child {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .snapshot-cell .snap-badge {
       display: inline-block;
+      flex: 0 0 auto;
+      white-space: nowrap;
       padding: 2px 7px;
       border-radius: 999px;
       font-size: 11px;
@@ -1943,6 +1960,13 @@
     .pagination-bar button {
       font-size: 12px;
       padding: 4px 12px;
+    }
+    /* .pagination-bar's display:flex is declared later in the sheet than the
+       generic .hidden rule and won (equal specificity, later source order),
+       so the bar — and its buttons — stayed visible pre-connect and on the
+       Timeline/Heatmap tabs where the buttons do nothing. */
+    .pagination-bar.hidden {
+      display: none;
     }
 
     /* ── Job detail drawer ───────────────────────────────────── */

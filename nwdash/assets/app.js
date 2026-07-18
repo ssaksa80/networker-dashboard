@@ -475,7 +475,7 @@
           const currColor = trend === "good" ? "var(--green)" : trend === "bad" ? "var(--red)" : "var(--brand)";
           return `
           <div class="snapshot-cell" data-trend="${trend}">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+            <div class="snap-cell-head">
               <span>${escapeHtml(item.label)}</span>
               <span class="snap-badge ${badgeClass}">${arrow} ${pct}</span>
             </div>
@@ -877,7 +877,15 @@
 
       emptyState.classList.add("hidden");
       tableWrap.classList.remove("hidden");
-      pageLimit = PAGE_SIZE;
+      // Reset pagination only when the visible table actually changed.
+      // renderTable() also re-runs for data refreshes of the SAME table (SSE
+      // /api/stream pushes every SHARED_REFRESH_SECONDS, auto-refresh, manual
+      // refresh); resetting here collapsed the list right back to 25 rows and
+      // made the Show more / Show all buttons appear dead.
+      if (pageLimitTable !== activeTable) {
+        pageLimit = PAGE_SIZE;
+        pageLimitTable = activeTable;
+      }
       renderTablePage(rows, def);
     }
 
@@ -1885,8 +1893,26 @@
       return "unknown";
     }
 
+    // The backend formats job timestamps for display as strftime
+    // "%d-%m-%Y %H:%M:%S %Z" (e.g. "18-07-2026 08:45:12 +04"), which
+    // new Date() cannot parse — every job came back NaN, leaving the Timeline
+    // empty ("No parseable timestamps") and the Heatmap without job recency.
+    // Parse DD-MM-YYYY [HH:MM[:SS]] positionally as LOCAL time (the server
+    // formats in its own local zone and viewers are on the same site) and
+    // ignore any trailing timezone token ("+04", "Arabian Standard Time", …).
+    // Anything else (ISO strings, epoch numbers) falls back to new Date().
+    const DDMMYYYY_TS_RE = /^(\d{1,2})-(\d{1,2})-(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?(?:\s|$)/;
     function parseTs(str) {
-      if (!str) return NaN;
+      if (!str && str !== 0) return NaN;
+      const m = typeof str === "string" ? DDMMYYYY_TS_RE.exec(str.trim()) : null;
+      if (m) {
+        const day = Number(m[1]), month = Number(m[2]), year = Number(m[3]);
+        if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+          const d = new Date(year, month - 1, day,
+            Number(m[4] || 0), Number(m[5] || 0), Number(m[6] || 0));
+          return isNaN(d.getTime()) ? NaN : d.getTime();
+        }
+      }
       const d = new Date(str);
       return isNaN(d.getTime()) ? NaN : d.getTime();
     }
@@ -2474,6 +2500,9 @@
     const showLessBtn    = document.getElementById("showLessBtn");
     const PAGE_SIZE      = 25;
     let   pageLimit      = PAGE_SIZE;
+    // Which table pageLimit currently belongs to; renderTable() resets the
+    // limit when this differs from activeTable (i.e. on a real tab switch).
+    let   pageLimitTable = null;
 
     function renderTablePage(rows, def) {
       const showing = Math.min(pageLimit, rows.length);
