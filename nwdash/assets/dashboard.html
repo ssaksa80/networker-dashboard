@@ -37,7 +37,7 @@
   <div id="connCollapsedBar" class="conn-collapsed-bar">
     <span>Connected to <strong id="collapsedHost">—</strong></span>
     <span id="collapsedRange" style="margin-left:4px"></span>
-    <button id="collapsedEditBtn" class="ghost" type="button" style="margin-left:auto;font-size:12px;padding:4px 10px">Edit connection</button>
+    <button id="collapsedEditBtn" class="ghost conn-edit-btn" type="button">Edit connection</button>
   </div>
 
   <main id="mainShell" class="shell">
@@ -205,8 +205,13 @@
             <input id="refreshMinutes" value="5" inputmode="numeric" autocomplete="off">
           </label>
           <label>
-            Theme
-            <select id="themeSelect">
+            Export
+            <button id="exportBtn" class="primary" type="button">Excel report</button>
+          </label>
+          <div class="theme-field">
+            <span>Theme</span>
+            <div id="themePicker" class="theme-picker" role="group" aria-label="Theme picker"></div>
+            <select id="themeSelect" class="hidden" aria-hidden="true" tabindex="-1">
               <option value="default">Default</option>
               <option value="midnight">Midnight</option>
               <option value="graphite">Graphite</option>
@@ -219,12 +224,11 @@
               <option value="citrus">Citrus</option>
               <option value="harbor">Harbor</option>
               <option value="ember">Ember</option>
+              <option value="violet">Violet</option>
+              <option value="sandstone">Sandstone</option>
+              <option value="carbon">Carbon</option>
             </select>
-          </label>
-          <label>
-            Export
-            <button id="exportBtn" class="primary" type="button">Excel report</button>
-          </label>
+          </div>
         </div>
       </section>
 
@@ -411,7 +415,7 @@
         <div id="snapshotGrid" class="snapshot-grid">
           <div class="snapshot-cell snapshot-empty">
             <span>No comparison available</span>
-            <strong style="font-size:15px">No local snapshots found.</strong>
+            <strong class="snap-note">No local snapshots found.</strong>
             <small>Use <strong>Save snapshot</strong> after each connection to track growth over time.</small>
           </div>
         </div>

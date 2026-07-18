@@ -81,6 +81,9 @@ THEME_PALETTES: dict[str, dict[str, str]] = {
     "citrus": {"bg": "#f5f7ec", "surface": "#ffffff", "surface2": "#fbfcf3", "ink": "#202817", "muted": "#68705b", "line": "#dde5ca", "brand": "#617d18", "brandInk": "#ffffff", "green": "#23733f", "red": "#b43a47", "amber": "#a16d00", "blue": "#3f6fa5"},
     "harbor": {"bg": "#eef3f4", "surface": "#ffffff", "surface2": "#f5f8f9", "ink": "#17242a", "muted": "#5e7077", "line": "#d0dce0", "brand": "#235f73", "brandInk": "#ffffff", "green": "#24764f", "red": "#b63548", "amber": "#9d6e08", "blue": "#335fa3"},
     "ember": {"bg": "#f6f1ee", "surface": "#ffffff", "surface2": "#fbf7f4", "ink": "#2a1f1a", "muted": "#75665f", "line": "#e2d4cd", "brand": "#8d4a36", "brandInk": "#ffffff", "green": "#26734a", "red": "#b23545", "amber": "#9b6a10", "blue": "#3c67a2"},
+    "violet": {"bg": "#f2effa", "surface": "#ffffff", "surface2": "#f7f4fc", "ink": "#221a33", "muted": "#6b6280", "line": "#ddd3ec", "brand": "#6d3fbf", "brandInk": "#ffffff", "green": "#1f7a4d", "red": "#b93049", "amber": "#9c6b00", "blue": "#4a5fb0"},
+    "sandstone": {"bg": "#f5efe4", "surface": "#fffdf8", "surface2": "#faf5ea", "ink": "#2e2417", "muted": "#7a6c58", "line": "#e3d8c4", "brand": "#8a6d3b", "brandInk": "#ffffff", "green": "#2b7442", "red": "#b03a3f", "amber": "#996a00", "blue": "#4a6ba0"},
+    "carbon": {"bg": "#000000", "surface": "#0d0d0d", "surface2": "#161616", "ink": "#f2f2f2", "muted": "#9a9a9a", "line": "#2a2a2a", "brand": "#4dd0e1", "brandInk": "#001114", "green": "#4ade80", "red": "#ff6b6b", "amber": "#fbbf24", "blue": "#60a5fa"},
 }
 # The dashboard brand/header card uses a fixed navy->teal gradient over the
 # brand color (see the in-page .brand-card CSS). Email reports and the PNG

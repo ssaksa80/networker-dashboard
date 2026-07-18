@@ -193,6 +193,57 @@
       --shadow: 0 12px 28px rgba(96, 59, 43, 0.12);
     }
 
+    body[data-theme="violet"] {
+      --bg: #f2effa;
+      --surface: #ffffff;
+      --surface-2: #f7f4fc;
+      --ink: #221a33;
+      --muted: #6b6280;
+      --line: #ddd3ec;
+      --brand: #6d3fbf;
+      --brand-ink: #ffffff;
+      --green: #1f7a4d;
+      --red: #b93049;
+      --amber: #9c6b00;
+      --blue: #4a5fb0;
+      --shadow: 0 12px 28px rgba(60, 35, 110, 0.12);
+    }
+
+    body[data-theme="sandstone"] {
+      --bg: #f5efe4;
+      --surface: #fffdf8;
+      --surface-2: #faf5ea;
+      --ink: #2e2417;
+      --muted: #7a6c58;
+      --line: #e3d8c4;
+      --brand: #8a6d3b;
+      --brand-ink: #ffffff;
+      --green: #2b7442;
+      --red: #b03a3f;
+      --amber: #996a00;
+      --blue: #4a6ba0;
+      --shadow: 0 12px 28px rgba(92, 74, 46, 0.12);
+    }
+
+    /* True-black dark theme (AMOLED friendly). Follows midnight's approach:
+       lifted surfaces, light ink, brightened status hues for table/modal
+       readability on dark backgrounds. */
+    body[data-theme="carbon"] {
+      --bg: #000000;
+      --surface: #0d0d0d;
+      --surface-2: #161616;
+      --ink: #f2f2f2;
+      --muted: #9a9a9a;
+      --line: #2a2a2a;
+      --brand: #4dd0e1;
+      --brand-ink: #001114;
+      --green: #4ade80;
+      --red: #ff6b6b;
+      --amber: #fbbf24;
+      --blue: #60a5fa;
+      --shadow: 0 16px 36px rgba(0, 0, 0, 0.60);
+    }
+
     * {
       box-sizing: border-box;
     }
@@ -309,6 +360,21 @@
     body[data-theme="ember"] .topbar {
       background: #7a3e2d;
       border-bottom-color: #d99a78;
+    }
+
+    body[data-theme="violet"] .topbar {
+      background: #3c2a66;
+      border-bottom-color: #b195e8;
+    }
+
+    body[data-theme="sandstone"] .topbar {
+      background: #5c4a2e;
+      border-bottom-color: #d8bc80;
+    }
+
+    body[data-theme="carbon"] .topbar {
+      background: #000000;
+      border-bottom-color: #4dd0e1;
     }
 
     .title-group {
@@ -2083,4 +2149,315 @@
     /* ── Table row click hint ────────────────────────────────── */
     tbody tr { cursor: pointer; }
     tbody tr:hover td { background: var(--surface-2); }
+
+    /* ── Utility classes (moved out of inline styles so the ≥1920px
+       media queries below can scale them — inline styles would win) ── */
+    strong.snap-note { font-size: 15px; }
+    .cell-small { font-size: 12px; }
+    .snap-del-btn { color: var(--red); font-size: 12px; }
+    .conn-edit-btn { margin-left: auto; font-size: 12px; padding: 4px 10px; }
+
+    /* ── One-click theme picker ──────────────────────────────── */
+    .theme-field {
+      grid-column: 1 / -1;
+      display: grid;
+      gap: 6px;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 680;
+    }
+    .theme-picker {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .theme-chip {
+      display: grid;
+      justify-items: center;
+      gap: 4px;
+      min-height: 0;
+      padding: 6px 7px 5px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    .theme-chip:hover {
+      border-color: var(--line);
+      background: var(--surface-2);
+    }
+    .theme-chip.active {
+      border-color: var(--brand);
+      background: var(--surface-2);
+    }
+    .theme-chip-dot {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      display: grid;
+      place-items: center;
+      background: var(--chip-bg, var(--surface));
+    }
+    .theme-chip-dot::after {
+      content: "";
+      display: block;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--chip-brand, var(--brand));
+    }
+    .theme-chip-name {
+      font-size: 10px;
+      line-height: 1.1;
+      color: var(--muted);
+    }
+    .theme-chip.active .theme-chip-name {
+      color: var(--brand);
+      font-weight: 800;
+    }
+
+    /* ── Large-display scaling (1440p+/4K) ───────────────────────
+       The sheet is px-based, so each breakpoint rescales the key
+       layout primitives. Nothing below 1920px is touched. */
+    @media (min-width: 1920px) {
+      body { font-size: 18px; }
+      .topbar { min-height: 86px; padding: 20px 34px; }
+      .topbar-logo { width: 62px; height: 62px; }
+      h1 { font-size: 26px; }
+      .subtitle { font-size: 15px; }
+      .status-pill { min-height: 42px; font-size: 15px; }
+      .topbar-button { min-height: 38px; font-size: 14px; }
+      .shell { padding: 24px; gap: 22px; }
+      .dashboard { gap: 22px; }
+      .connection { top: 108px; width: min(440px, calc(100vw - 48px)); }
+      .panel-head h2, .section-head h2 { font-size: 17px; }
+      label, .check-row { font-size: 14px; }
+      input, select { min-height: 46px; }
+      button { min-height: 48px; }
+      button.icon { font-size: 21px; }
+      .modal-close { width: 42px; height: 42px; min-height: 42px; }
+      .modal-head h2 { font-size: 18px; }
+      .modal-panel { width: min(1080px, 100%); }
+      .metric { min-height: 120px; }
+      .metric span { font-size: 14px; }
+      .metric strong { font-size: 38px; }
+      .snapshot-cell strong { font-size: 28px; }
+      .snapshot-cell span { font-size: 14px; }
+      .snapshot-cell small { font-size: 12px; }
+      strong.snap-note { font-size: 17px; }
+      .snap-bar-row { font-size: 11px; }
+      .snap-badge, .snapshot-header { font-size: 12px; }
+      .snap-tab { font-size: 14px; }
+      .summary-band strong { font-size: 28px; }
+      .summary-band span { font-size: 14px; }
+      .health-item strong { font-size: 23px; }
+      .health-item span { font-size: 14px; }
+      .health-item small { font-size: 12px; }
+      th, td { padding: 13px 14px; font-size: 15px; }
+      th { font-size: 14px; }
+      table { min-width: 900px; }
+      .snap-panel-table { font-size: 15px; }
+      .snap-panel-table th { font-size: 12px; }
+      .cell-small, .snap-del-btn, .conn-edit-btn { font-size: 14px; }
+      .tab { min-height: 44px; font-size: 15px; }
+      .badge { min-height: 28px; font-size: 14px; }
+      .empty { font-size: 16px; }
+      .management-card { min-height: 280px; }
+      .management-card h2, .management-card h3 { font-size: 16px; }
+      .brand-copy strong { font-size: 21px; }
+      .brand-copy span, .card-meta, .section-head .meta { font-size: 14px; }
+      .brand-detail, .summary-row { font-size: 14px; }
+      .brand-detail strong, .summary-row strong { font-size: 14px; }
+      .brand-signature { font-size: 12px; }
+      .brand-signature strong { font-size: 14px; }
+      .connection-line { font-size: 15px; }
+      .donut-chart { width: min(200px, 100%); }
+      .donut-center span { font-size: 12px; }
+      .legend-item, .legend-item strong, .bar-row { font-size: 14px; }
+      .source-chip { font-size: 14px; }
+      .notice { font-size: 15px; }
+      .collapse-toggle { font-size: 15px; }
+      .conn-collapsed-bar { font-size: 15px; }
+      .pagination-bar { font-size: 15px; }
+      .pagination-bar button { font-size: 14px; }
+      .email-row, .email-profile-bar, .automation-status { font-size: 14px; }
+      .email-row button, .email-profile-bar button { font-size: 14px; }
+      .heatmap-cell { width: 42px; height: 42px; font-size: 12px; }
+      .heatmap-legend { font-size: 14px; }
+      .server-card-host { font-size: 15px; max-width: 190px; }
+      .server-card-stats { font-size: 14px; }
+      .server-card-badge { font-size: 12px; }
+      .detail-drawer { width: 460px; right: -480px; }
+      .detail-drawer.open { right: 0; }
+      .detail-drawer-head h3 { font-size: 17px; }
+      .detail-field .detail-label { font-size: 12px; }
+      .detail-field .detail-value { font-size: 15px; }
+      .change-toast { font-size: 15px; }
+      .theme-chip-dot { width: 30px; height: 30px; }
+      .theme-chip-dot::after { width: 16px; height: 16px; }
+      .theme-chip-name { font-size: 11px; }
+      .theme-field { font-size: 14px; }
+    }
+
+    @media (min-width: 2560px) {
+      body { font-size: 22px; }
+      .topbar { min-height: 100px; padding: 24px 40px; }
+      .topbar-logo { width: 73px; height: 73px; }
+      h1 { font-size: 31px; }
+      .subtitle { font-size: 18px; }
+      .status-pill { min-height: 50px; font-size: 18px; }
+      .topbar-button { min-height: 46px; font-size: 16px; }
+      .shell { padding: 30px; gap: 26px; }
+      .dashboard { gap: 26px; }
+      .connection { top: 124px; width: min(520px, calc(100vw - 60px)); }
+      .panel-head h2, .section-head h2 { font-size: 20px; }
+      label, .check-row { font-size: 16px; }
+      input, select { min-height: 54px; }
+      button { min-height: 56px; }
+      button.icon { font-size: 25px; }
+      .modal-close { width: 48px; height: 48px; min-height: 48px; }
+      .modal-head h2 { font-size: 21px; }
+      .modal-panel { width: min(1280px, 100%); }
+      .metric { min-height: 140px; }
+      .metric span { font-size: 16px; }
+      .metric strong { font-size: 44px; }
+      .snapshot-cell strong { font-size: 32px; }
+      .snapshot-cell span { font-size: 16px; }
+      .snapshot-cell small { font-size: 14px; }
+      strong.snap-note { font-size: 20px; }
+      .snap-bar-row { font-size: 13px; }
+      .snap-badge, .snapshot-header { font-size: 14px; }
+      .snap-tab { font-size: 16px; }
+      .summary-band strong { font-size: 32px; }
+      .summary-band span { font-size: 16px; }
+      .health-item strong { font-size: 27px; }
+      .health-item span { font-size: 16px; }
+      .health-item small { font-size: 14px; }
+      th, td { padding: 15px 17px; font-size: 18px; }
+      th { font-size: 16px; }
+      table { min-width: 1100px; }
+      .snap-panel-table { font-size: 18px; }
+      .snap-panel-table th { font-size: 14px; }
+      .cell-small, .snap-del-btn, .conn-edit-btn { font-size: 16px; }
+      .tab { min-height: 50px; font-size: 18px; }
+      .badge { min-height: 32px; font-size: 16px; }
+      .empty { font-size: 19px; }
+      .management-card { min-height: 320px; }
+      .management-card h2, .management-card h3 { font-size: 19px; }
+      .brand-copy strong { font-size: 24px; }
+      .brand-copy span, .card-meta, .section-head .meta { font-size: 16px; }
+      .brand-detail, .summary-row { font-size: 16px; }
+      .brand-detail strong, .summary-row strong { font-size: 16px; }
+      .brand-signature { font-size: 14px; }
+      .brand-signature strong { font-size: 16px; }
+      .connection-line { font-size: 18px; }
+      .donut-chart { width: min(236px, 100%); }
+      .donut-center span { font-size: 14px; }
+      .legend-item, .legend-item strong, .bar-row { font-size: 16px; }
+      .source-chip { font-size: 16px; }
+      .notice { font-size: 18px; }
+      .collapse-toggle { font-size: 18px; }
+      .conn-collapsed-bar { font-size: 18px; }
+      .pagination-bar { font-size: 18px; }
+      .pagination-bar button { font-size: 16px; }
+      .email-row, .email-profile-bar, .automation-status { font-size: 16px; }
+      .email-row button, .email-profile-bar button { font-size: 16px; }
+      .heatmap-cell { width: 50px; height: 50px; font-size: 13px; }
+      .heatmap-legend { font-size: 16px; }
+      .server-card-host { font-size: 18px; max-width: 230px; }
+      .server-card-stats { font-size: 16px; }
+      .server-card-badge { font-size: 14px; }
+      .detail-drawer { width: 540px; right: -560px; }
+      .detail-drawer.open { right: 0; }
+      .detail-drawer-head h3 { font-size: 20px; }
+      .detail-field .detail-label { font-size: 14px; }
+      .detail-field .detail-value { font-size: 18px; }
+      .change-toast { font-size: 18px; }
+      .theme-chip-dot { width: 36px; height: 36px; }
+      .theme-chip-dot::after { width: 19px; height: 19px; }
+      .theme-chip-name { font-size: 13px; }
+      .theme-field { font-size: 16px; }
+    }
+
+    @media (min-width: 3000px) {
+      body { font-size: 26px; }
+      .topbar { min-height: 118px; padding: 28px 48px; }
+      .topbar-logo { width: 86px; height: 86px; }
+      h1 { font-size: 37px; }
+      .subtitle { font-size: 21px; }
+      .status-pill { min-height: 58px; font-size: 21px; }
+      .topbar-button { min-height: 54px; font-size: 19px; }
+      .shell { padding: 36px; gap: 30px; }
+      .dashboard { gap: 30px; }
+      .connection { top: 142px; width: min(600px, calc(100vw - 72px)); }
+      .panel-head h2, .section-head h2 { font-size: 24px; }
+      label, .check-row { font-size: 19px; }
+      input, select { min-height: 64px; }
+      button { min-height: 64px; }
+      button.icon { font-size: 30px; }
+      .modal-close { width: 56px; height: 56px; min-height: 56px; }
+      .modal-head h2 { font-size: 25px; }
+      .modal-panel { width: min(1480px, 100%); }
+      .metric { min-height: 165px; }
+      .metric span { font-size: 19px; }
+      .metric strong { font-size: 52px; }
+      .snapshot-cell strong { font-size: 38px; }
+      .snapshot-cell span { font-size: 19px; }
+      .snapshot-cell small { font-size: 17px; }
+      strong.snap-note { font-size: 24px; }
+      .snap-bar-row { font-size: 15px; }
+      .snap-badge, .snapshot-header { font-size: 17px; }
+      .snap-tab { font-size: 19px; }
+      .summary-band strong { font-size: 38px; }
+      .summary-band span { font-size: 19px; }
+      .health-item strong { font-size: 32px; }
+      .health-item span { font-size: 19px; }
+      .health-item small { font-size: 17px; }
+      th, td { padding: 18px 20px; font-size: 21px; }
+      th { font-size: 19px; }
+      table { min-width: 1300px; }
+      .snap-panel-table { font-size: 21px; }
+      .snap-panel-table th { font-size: 17px; }
+      .cell-small, .snap-del-btn, .conn-edit-btn { font-size: 19px; }
+      .tab { min-height: 58px; font-size: 21px; }
+      .badge { min-height: 38px; font-size: 19px; }
+      .empty { font-size: 22px; }
+      .management-card { min-height: 370px; }
+      .management-card h2, .management-card h3 { font-size: 22px; }
+      .brand-copy strong { font-size: 29px; }
+      .brand-copy span, .card-meta, .section-head .meta { font-size: 19px; }
+      .brand-detail, .summary-row { font-size: 19px; }
+      .brand-detail strong, .summary-row strong { font-size: 19px; }
+      .brand-signature { font-size: 17px; }
+      .brand-signature strong { font-size: 19px; }
+      .connection-line { font-size: 21px; }
+      .donut-chart { width: min(272px, 100%); }
+      .donut-center span { font-size: 17px; }
+      .legend-item, .legend-item strong, .bar-row { font-size: 19px; }
+      .source-chip { font-size: 19px; }
+      .notice { font-size: 21px; }
+      .collapse-toggle { font-size: 21px; }
+      .conn-collapsed-bar { font-size: 21px; }
+      .pagination-bar { font-size: 21px; }
+      .pagination-bar button { font-size: 19px; }
+      .email-row, .email-profile-bar, .automation-status { font-size: 19px; }
+      .email-row button, .email-profile-bar button { font-size: 19px; }
+      .heatmap-cell { width: 58px; height: 58px; font-size: 15px; }
+      .heatmap-legend { font-size: 19px; }
+      .server-card-host { font-size: 21px; max-width: 270px; }
+      .server-card-stats { font-size: 19px; }
+      .server-card-badge { font-size: 17px; }
+      .detail-drawer { width: 620px; right: -640px; }
+      .detail-drawer.open { right: 0; }
+      .detail-drawer-head h3 { font-size: 23px; }
+      .detail-field .detail-label { font-size: 16px; }
+      .detail-field .detail-value { font-size: 21px; }
+      .change-toast { font-size: 21px; }
+      .theme-chip-dot { width: 42px; height: 42px; }
+      .theme-chip-dot::after { width: 22px; height: 22px; }
+      .theme-chip-name { font-size: 15px; }
+      .theme-field { font-size: 19px; }
+    }
   

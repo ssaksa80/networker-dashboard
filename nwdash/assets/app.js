@@ -449,7 +449,7 @@
         snapshotGrid.innerHTML = `
           <div class="snapshot-cell snapshot-empty">
             <span>No comparison available</span>
-            <strong style="font-size:15px">${escapeHtml(data.message || "Save at least two snapshots to compare growth.")}</strong>
+            <strong class="snap-note">${escapeHtml(data.message || "Save at least two snapshots to compare growth.")}</strong>
             <small>Use <strong>Save snapshot</strong> after each connection to track growth over time.</small>
           </div>`;
         return;
@@ -1063,10 +1063,52 @@
       }, currentRefreshMs());
     }
 
+    // One-click theme picker. Names must stay in lockstep with the CSS
+    // body[data-theme] blocks, the hidden #themeSelect options, and the
+    // backend config.THEME_PALETTES (email/PNG report rendering).
+    const THEMES = [
+      ["default", "Default", "#126e82", "#eef3f6"],
+      ["midnight", "Midnight", "#2aa6b8", "#101719"],
+      ["graphite", "Graphite", "#3d5a5f", "#f1f2f3"],
+      ["contrast", "High contrast", "#005fcc", "#ffffff"],
+      ["ocean", "Ocean", "#087f8c", "#e8f4f6"],
+      ["forest", "Forest", "#2f6f45", "#eef5ef"],
+      ["ruby", "Ruby", "#9f2d55", "#f8eef1"],
+      ["steel", "Steel", "#425c78", "#edf1f5"],
+      ["arctic", "Arctic", "#0d7891", "#edf7f8"],
+      ["citrus", "Citrus", "#617d18", "#f5f7ec"],
+      ["harbor", "Harbor", "#235f73", "#eef3f4"],
+      ["ember", "Ember", "#8d4a36", "#f6f1ee"],
+      ["violet", "Violet", "#6d3fbf", "#f2effa"],
+      ["sandstone", "Sandstone", "#8a6d3b", "#f5efe4"],
+      ["carbon", "Carbon", "#4dd0e1", "#000000"],
+    ];
+    const themePicker = document.getElementById("themePicker");
+
+    function renderThemePicker() {
+      if (!themePicker) return;
+      themePicker.innerHTML = THEMES.map(([name, label, brand, bg]) => `
+        <button type="button" class="theme-chip" data-theme="${name}" title="${label}" aria-label="Theme: ${label}">
+          <span class="theme-chip-dot" style="--chip-bg:${bg};--chip-brand:${brand}"></span>
+          <span class="theme-chip-name">${label}</span>
+        </button>`).join("");
+      themePicker.querySelectorAll(".theme-chip").forEach((chip) => {
+        chip.addEventListener("click", () => applyTheme(chip.dataset.theme));
+      });
+    }
+
+    function syncThemeChips(value) {
+      if (!themePicker) return;
+      themePicker.querySelectorAll(".theme-chip").forEach((chip) => {
+        chip.classList.toggle("active", chip.dataset.theme === value);
+      });
+    }
+
     function applyTheme(theme) {
       const value = theme || "default";
       document.body.dataset.theme = value === "default" ? "" : value;
       themeSelect.value = value;
+      syncThemeChips(value);
       try {
         localStorage.setItem("nw_dashboard_theme", value);
       } catch (error) {}
@@ -1531,7 +1573,7 @@
           snapshotGrid.innerHTML = `
             <div class="snapshot-cell snapshot-empty">
               <span>Snapshot status</span>
-              <strong style="font-size:15px">${count} snapshot(s) saved</strong>
+              <strong class="snap-note">${count} snapshot(s) saved</strong>
               <small>Save another (or wait for tomorrow's auto-save) to compare growth.</small>
             </div>`;
         } else {
@@ -1539,7 +1581,7 @@
           snapshotGrid.innerHTML = `
             <div class="snapshot-cell snapshot-empty">
               <span>Snapshot status</span>
-              <strong style="font-size:15px">${latestDashboard ? "Ready — no snapshots yet" : "Waiting"}</strong>
+              <strong class="snap-note">${latestDashboard ? "Ready — no snapshots yet" : "Waiting"}</strong>
               <small>${latestDashboard ? "Use <strong>Save snapshot</strong> or enable Auto-save daily to start tracking growth." : "Connect to NetWorker, then save a local snapshot."}</small>
             </div>`;
         }
@@ -1601,7 +1643,7 @@
       snapshotGrid.innerHTML = `
         <div class="snapshot-cell snapshot-empty">
           <span>Comparison running</span>
-          <strong style="font-size:15px">Checking saved snapshot history.</strong>
+          <strong class="snap-note">Checking saved snapshot history.</strong>
           <small>Comparing the latest saved snapshot with the nearest previous snapshot in the selected range.</small>
         </div>`;
       try {
@@ -1894,11 +1936,11 @@
         <tbody>${snapshots.map((s) => `
           <tr data-date="${escapeHtml(s.date)}">
             <td><strong>${escapeHtml(s.date)}</strong></td>
-            <td style="color:var(--muted);font-size:12px">${escapeHtml(s.server || "—")}</td>
-            <td style="font-size:12px">${escapeHtml(s.health || "—")}</td>
-            <td style="font-size:12px">${Number(s.slaPercent || 0).toFixed(1)}%</td>
+            <td class="cell-muted cell-small">${escapeHtml(s.server || "—")}</td>
+            <td class="cell-small">${escapeHtml(s.health || "—")}</td>
+            <td class="cell-small">${Number(s.slaPercent || 0).toFixed(1)}%</td>
             <td><button class="snap-panel-annotation" data-date="${escapeHtml(s.date)}" title="Click to edit note">${escapeHtml(s.annotation || "Add note…")}</button></td>
-            <td><button class="ghost snap-del-btn" data-date="${escapeHtml(s.date)}" style="color:var(--red);font-size:12px" type="button">Delete</button></td>
+            <td><button class="ghost snap-del-btn" data-date="${escapeHtml(s.date)}" type="button">Delete</button></td>
           </tr>`).join("")}
         </tbody>
       </table>`;
@@ -2759,6 +2801,7 @@
 
     refreshBtn.disabled = false;
     syncRangeToToolbar();
+    renderThemePicker();
     applyTheme((() => {
       try { return localStorage.getItem("nw_dashboard_theme") || "default"; }
       catch (error) { return "default"; }
