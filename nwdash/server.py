@@ -50,7 +50,7 @@ from .auth import (
     _verify_csrf_token,
     verify_auth_password,
 )
-from .ui import FAVICON_SVG, NETWORKER_LOGO_PATH, dashboard_html, login_page_html, read_only_view_html
+from .ui import FAVICON_SVG, NETWORKER_LOGO_PATH, dashboard_html, login_page_html, read_only_view_html, tv_page_html
 from .models import (
     BadRequest,
     SHARED_DASHBOARD_LOCK,
@@ -382,6 +382,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_bytes(HTTPStatus.OK, login_page_html().encode("utf-8"), "text/html; charset=utf-8")
                 else:
                     self._send_bytes(HTTPStatus.OK, dashboard_html().encode("utf-8"), "text/html; charset=utf-8")
+                return
+
+            # --- TV wall-display mode: auth-gated exactly like / ---
+            if path == "/tv":
+                if _cfg.AUTH_ENABLED and not self._authenticated():
+                    self._send_bytes(HTTPStatus.OK, login_page_html().encode("utf-8"), "text/html; charset=utf-8")
+                else:
+                    self._send_bytes(HTTPStatus.OK, tv_page_html().encode("utf-8"), "text/html; charset=utf-8")
                 return
 
             # --- Everything below requires authentication ---

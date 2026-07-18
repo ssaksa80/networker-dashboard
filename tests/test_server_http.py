@@ -217,6 +217,33 @@ class TestServerHttp(unittest.TestCase):
         self.assertIn(b"/api/login", body)
         self.assertNotIn(b"__NETWORKER_LOGO_SRC__", body)
 
+    def test_tv_without_cookie_serves_login_page(self):
+        # /tv is auth-gated exactly like /
+        status, body, _ = self._raw_request("GET", "/tv")
+        self.assertEqual(status, 200)
+        self.assertIn(b"/api/login", body)
+        self.assertNotIn(b"calc(100vw / 240)", body)
+
+    def test_tv_with_cookie_serves_tv_page(self):
+        cookie, _ = self._login()
+        status, body, _ = self._raw_request("GET", "/tv", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn(b"calc(100vw / 240)", body, "fluid scaling rule missing")
+        self.assertIn(b"jobs-min", body, "minimize wiring missing")
+        self.assertIn(b"data:image/", body, "embedded logo data URI missing")
+        self.assertIn(b"/api/current-dashboard", body, "bootstrap fetch missing")
+        self.assertIn(b"/api/stream", body, "SSE wiring missing")
+        self.assertNotIn(b"__NETWORKER_LOGO_SRC__", body)
+
+    def test_current_dashboard_with_cookie_returns_json(self):
+        cookie, _ = self._login()
+        status, body, _ = self._raw_request("GET", "/api/current-dashboard", cookie=cookie)
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertIn("ok", payload)  # fresh boot: ok=False with a message is fine
+        if not payload.get("ok"):
+            self.assertTrue(payload.get("message"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,136 @@
+/* TV wall-display mode (v2.8.0). Replicates the validated prototype:
+   fluid scaling — 1rem = 100vw/240 (4K reference); every size is rem/vh so the
+   page auto-resizes to any screen with no scrolling, ever. */
+html{font-size:calc(100vw / 240)}
+:root{
+  /* Baked from final_design_selections.json (submitted 2026-07-18 21:08) */
+  --scale:.9; --gap:1.5rem; --r:.7rem;
+  --headH:4.2vh; --clock:1.5rem;
+  --anaH:28vh; --donut:11.5rem;
+  --kpiH:7vh; --kpiNum:2.9rem;
+  --healthH:7.5vh; --healthNum:2rem;
+  --snapH:10vh; --snapNum:1.9rem;
+  --rows:14; --tblFont:1.5rem;
+  --boost:1;  /* grows content when the jobs table is minimized */
+}
+/*__TV_THEME_CSS__*/
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:400 1rem/1.35 Inter,system-ui,sans-serif;background:var(--bg);color:var(--ink);width:calc(100vw / var(--scale));height:calc(100vh / var(--scale));overflow:hidden;display:flex;flex-direction:column;zoom:var(--scale)}
+.card{background:var(--surface);border:.06rem solid var(--line);border-radius:var(--r);box-shadow:0 .1rem .4rem rgba(23,32,38,.05)}
+/* header — real green gradient bar with real logo */
+.head{height:var(--headH);flex:none;background:var(--headbg);color:#fff;display:flex;align-items:center;gap:var(--gap);padding:0 calc(var(--gap)*1.6)}
+.head img{height:68%;border-radius:.5rem;background:#fff;padding:.25rem}
+.head h1{font-size:1.45rem;font-weight:700}
+.head .sub{font-size:.85rem;opacity:.82}
+.hr{margin-left:auto;display:flex;align-items:center;gap:calc(var(--gap)*1.4)}
+.pill{padding:.35rem 1.1rem;border-radius:99rem;font-size:.85rem;font-weight:650;background:rgba(255,255,255,.16);border:.06rem solid rgba(255,255,255,.3)}
+.pill.ok{background:#1f8a55;border-color:transparent}
+.live{display:flex;align-items:center;gap:.5rem;color:#7ff0b8;font-weight:750;font-size:var(--clock)}
+.live i{width:.6em;height:.6em;border-radius:50%;background:#7ff0b8;animation:pulse 2s infinite}
+.live.off{color:#aab7bd}
+.live.off i{background:#aab7bd;animation:none}
+@keyframes pulse{50%{box-shadow:0 0 0 .5em transparent}}
+.clock{font-size:var(--clock);font-weight:650;font-variant-numeric:tabular-nums}
+.connline{flex:none;padding:.35rem calc(var(--gap)*1.6);font-size:.85rem;color:var(--muted);border-bottom:.06rem solid var(--line);background:var(--surface)}
+.connline b{color:var(--ink)}
+/* analytics row — brand card + donuts + overview + recovery + clones */
+.ana{flex:0 0 var(--anaH);min-height:0;display:grid;grid-template-columns:1.25fr 1.35fr 1.35fr 1.3fr 1.1fr 1.1fr;gap:var(--gap);padding:var(--gap) calc(var(--gap)*1.6) 0}
+.brand{background:linear-gradient(135deg,rgba(11,32,42,.98),rgba(18,110,130,.96)),#126e82;color:#fff;border-radius:var(--r);padding:calc(var(--gap)*.9);display:flex;flex-direction:column;gap:.35rem;overflow:hidden}
+.brand .bl{display:flex;gap:.7rem;align-items:center}
+.brand img{height:2.6rem;border-radius:.4rem;background:#fff;padding:.2rem}
+.brand h3{font-size:1.05rem}
+.brand .tagline{font-size:.78rem;opacity:.85}
+.brand .conn{margin:.3rem 0;background:rgba(255,255,255,.14);border-radius:.4rem;padding:.25rem .6rem;font-size:.78rem;font-weight:650;width:max-content}
+.brand .kv{display:grid;grid-template-columns:auto 1fr;gap:.1rem .8rem;font-size:.75rem;opacity:.92}
+.brand .kv b{opacity:.75;font-weight:600}
+.brand .maint{margin-top:auto;font-size:.68rem;line-height:1.3;opacity:.85;border-top:.06rem solid rgba(255,255,255,.25);padding-top:.35rem}
+.brand .maint b{font-size:.74rem}
+.acard{padding:calc(var(--gap)*.8);display:flex;flex-direction:column;min-height:0}
+.acard h4{font-size:.95rem;font-weight:650;display:flex;justify-content:space-between}
+.acard h4 span{color:var(--muted);font-weight:500;font-size:.72rem}
+.abody{flex:1;display:flex;align-items:center;gap:var(--gap);min-height:0}
+.donut{width:calc(var(--donut)*var(--boost));height:calc(var(--donut)*var(--boost));flex:none}
+.leg{flex:1;display:flex;flex-direction:column;gap:.35rem;font-size:.82rem}
+.leg span{display:flex;align-items:center;gap:.5rem;color:var(--muted)}
+.leg i{width:.6rem;height:.6rem;border-radius:50%}
+.leg b{margin-left:auto;color:var(--ink);font-variant-numeric:tabular-nums}
+.ovwrap{flex:1;display:flex;flex-direction:column;justify-content:center}
+.ovrow{display:grid;grid-template-columns:6.5em 1fr 2.5em;gap:.6rem;align-items:center;font-size:.8rem;color:var(--muted);margin:.22rem 0}
+.ovtrack{height:.45rem;background:var(--surface2);border:.06rem solid var(--line);border-radius:99rem;overflow:hidden}
+.ovtrack i{display:block;height:100%;border-radius:99rem}
+.ovrow b{text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
+.bignum{font-size:2.6rem;font-weight:780;color:var(--ink);line-height:1}
+.bigbox{background:var(--surface2);border:.06rem solid var(--line);border-radius:.5rem;padding:.6rem .9rem;margin:.4rem 0}
+.bigbox .cap{font-size:.75rem;color:var(--muted)}
+.mini{display:flex;justify-content:space-between;font-size:.78rem;color:var(--muted);margin:.18rem 0}
+.mini b{color:var(--ink);font-variant-numeric:tabular-nums}
+/* KPI number row — 9 cards like the real page */
+.kpis{flex:0 0 var(--kpiH);min-height:0;display:grid;grid-template-columns:repeat(9,1fr);gap:var(--gap);padding:var(--gap) calc(var(--gap)*1.6) 0}
+.kb{background:var(--surface);border:.06rem solid var(--line);border-radius:var(--r);padding:.5rem 1rem;display:flex;flex-direction:column;justify-content:center;box-shadow:0 .1rem .4rem rgba(23,32,38,.05)}
+.kb .lab{font-size:.8rem;color:var(--muted);font-weight:600}
+.kb .val{font-size:calc(var(--kpiNum)*var(--boost));font-weight:780;color:var(--c);line-height:1.05;font-variant-numeric:tabular-nums}
+/* server health strip */
+.health{flex:0 0 var(--healthH);min-height:0;display:grid;grid-template-columns:1.2fr 1.4fr 1.6fr 1.4fr;gap:var(--gap);padding:var(--gap) calc(var(--gap)*1.6) 0}
+.hc{padding:.6rem 1rem;display:flex;flex-direction:column;justify-content:center}
+.hc .t{font-size:.8rem;color:var(--muted);font-weight:600}
+.hc .v{font-size:calc(var(--healthNum)*var(--boost));font-weight:750;margin:.15rem 0}
+.hc .cap{font-size:.72rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meter{height:.5rem;background:var(--surface2);border:.06rem solid var(--line);border-radius:99rem;overflow:hidden;margin-top:.25rem}
+.meter i{display:block;height:100%;border-radius:99rem}
+/* snapshot growth strip — mini compare cards like the real page */
+.snap{flex:0 0 var(--snapH);min-height:0;padding:var(--gap) calc(var(--gap)*1.6) 0;display:flex;flex-direction:column}
+.snap.hidden{display:none}
+.snap .cap{font-size:.85rem;color:var(--muted);font-weight:650;margin-bottom:.4rem}
+.snapgrid{flex:1;display:grid;grid-template-columns:repeat(9,1fr);gap:var(--gap);min-height:0}
+.sc{border-left:.28rem solid var(--sc,var(--line));padding:.45rem .8rem;display:flex;flex-direction:column;min-height:0}
+.sc .h{display:flex;justify-content:space-between;align-items:flex-start;gap:.4rem}
+.sc .n{font-size:.72rem;color:var(--muted);font-weight:650;line-height:1.15}
+.sc .badge{font-size:.62rem;font-weight:750;padding:.08rem .45rem;border-radius:99rem;white-space:nowrap;flex:none}
+.b-dn{color:var(--red);background:rgba(189,43,58,.1)}
+.b-up{color:var(--green);background:rgba(24,118,74,.12)}
+.b-fl{color:var(--muted);background:var(--surface2)}
+.sc .d{font-size:calc(var(--snapNum)*var(--boost));font-weight:780;line-height:1.1}
+.sc .ba{display:grid;grid-template-columns:3.2em 1fr 2.6em;gap:.35rem;font-size:.62rem;color:var(--muted);align-items:center}
+.sc .tk{height:.3rem;border-radius:99rem;background:var(--surface2);overflow:hidden}
+.sc .tk i{display:block;height:100%}
+/* jobs — real columns incl Policy + Message */
+.jobs{flex:1;margin:var(--gap) calc(var(--gap)*1.6) calc(var(--gap)*1.2);display:flex;flex-direction:column;min-height:0}
+.jhead{padding:.5rem 1rem;display:flex;align-items:center;gap:.8rem;border-bottom:.06rem solid var(--line);flex:none}
+.jhead h4{font-size:1rem}
+.jtabs{display:flex;gap:.15rem;margin-left:.8rem}
+.jtab{padding:.3rem .9rem;font-size:.78rem;font-weight:600;color:var(--muted);border-radius:.4rem .4rem 0 0;border-bottom:.14rem solid transparent}
+.jtab.on{color:var(--brand);border-bottom-color:var(--brand);background:var(--surface2)}
+.autocycle{margin-left:auto;font-size:.75rem;color:var(--muted)}
+.autocycle b{color:var(--brand)}
+.tblbody{flex:1;min-height:0;display:flex;flex-direction:column;font-size:var(--tblFont)}
+.thead,.trow{display:grid;grid-template-columns:var(--tcols,13% 17% 7% 9% 20% 8% 7% 19%);padding:0 1rem;align-items:center}
+.thead{padding:.4rem 1rem;color:var(--muted);font-weight:650;font-size:calc(var(--tblFont)*.78);text-transform:uppercase;letter-spacing:.06em;background:var(--surface2);flex:none}
+.trow{border-top:.06rem solid var(--line);flex:1;min-height:0;font-variant-numeric:tabular-nums}
+.trow>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:.8rem}
+.st{padding:.14rem .8rem;border-radius:99rem;font-size:calc(var(--tblFont)*.82);font-weight:700;width:max-content;color:var(--pillink)}
+.ok3{background:var(--green)} .un3{background:var(--muted)} .bad3{background:var(--red)} .run3{background:var(--blue)}
+.tbempty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:1rem}
+
+/* ── Recent Jobs single-click minimize: others auto-expand proportionally ── */
+.jhead{cursor:pointer;user-select:none}
+.minbtn{margin-left:.6rem;width:1.7rem;height:1.7rem;border:.06rem solid var(--line);background:var(--surface2);color:var(--ink);border-radius:.4rem;font-size:1rem;line-height:1;cursor:pointer;flex:none}
+.minhint{display:none;font-size:.8rem;color:var(--muted);margin-left:.6rem}
+body.jobs-min .tblbody{display:none}
+body.jobs-min .jobs{flex:0 0 auto}
+body.jobs-min .minhint{display:inline}
+/* flex-grow longhand with flex-basis:var(--xH) on purpose — the flex
+   shorthand drops a var() basis, silently breaking proportional expansion */
+body.jobs-min .ana{flex-grow:1;flex-shrink:1;flex-basis:var(--anaH)}
+body.jobs-min .kpis{flex-grow:1;flex-shrink:1;flex-basis:var(--kpiH)}
+body.jobs-min .health{flex-grow:1;flex-shrink:1;flex-basis:var(--healthH)}
+body.jobs-min .snap{flex-grow:1;flex-shrink:1;flex-basis:var(--snapH)}
+body.jobs-min{--boost:1.25}
+
+/* waiting state — fresh boot, nobody connected yet */
+.waiting{flex:1;display:none;align-items:center;justify-content:center}
+body.no-data .waiting{display:flex}
+body.no-data .ana,body.no-data .kpis,body.no-data .health,body.no-data .snap,body.no-data .jobs{display:none}
+.waiting .wcard{background:var(--surface);border:.06rem solid var(--line);border-radius:var(--r);padding:calc(var(--gap)*2) calc(var(--gap)*3);text-align:center;box-shadow:0 .1rem .4rem rgba(23,32,38,.05)}
+.waiting .wcard h2{font-size:1.6rem;margin-bottom:.5rem}
+.waiting .wcard p{font-size:1rem;color:var(--muted)}
+.waiting .wdot{width:1rem;height:1rem;border-radius:50%;background:var(--brand);margin:0 auto var(--gap);animation:pulse 2s infinite}

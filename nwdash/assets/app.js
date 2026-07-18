@@ -2519,6 +2519,11 @@
       resetDashboard();
     });
     shareBtn.addEventListener("click", openShareModal);
+    // TV wall-display mode (v2.8.0): opens /tv in a new tab; the route reuses
+    // the same session cookie so no extra sign-in is needed.
+    document.getElementById("tvModeBtn").addEventListener("click", () => {
+      window.open("/tv", "_blank", "noopener");
+    });
     shareModalClose.addEventListener("click", closeShareModal);
     shareModal.addEventListener("click", (e) => { if (e.target === shareModal) closeShareModal(); });
     generateShareToken.addEventListener("click", doGenerateShareToken);

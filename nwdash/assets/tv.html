@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-store">
+<title>NetWorker TV — Backup &amp; Recovery Wall Display</title>
+<style>__TV_CSS__</style>
+</head>
+<body data-theme="default">
+<div class="head">
+  <img src="__NETWORKER_LOGO_SRC__" alt="NetWorker">
+  <div><h1>Backup &amp; Recovery Dashboard</h1><div class="sub">Dell NetWorker REST API over HTTPS</div></div>
+  <div class="hr"><span class="pill" id="connPill">Waiting</span><span class="live off" id="liveWrap"><i></i> <span id="liveText">LIVE</span></span><span class="clock" id="clock">--:--:--</span></div>
+</div>
+<div class="connline" id="connline">Waiting for a dashboard session&hellip;</div>
+
+<div class="waiting">
+  <div class="wcard">
+    <div class="wdot"></div>
+    <h2>Waiting for dashboard data</h2>
+    <p>Connect from the main dashboard &mdash; this wall display updates automatically.</p>
+  </div>
+</div>
+
+<div class="ana">
+  <div class="brand">
+    <div class="bl"><img src="__NETWORKER_LOGO_SRC__" alt=""><div><h3>DELL EMC NetWorker</h3><div class="tagline">Backup &amp; Recovery Status</div></div></div>
+    <div class="conn" id="brandConn">Connection established</div>
+    <div class="kv"><b>API source</b><span id="brandApi">--</span><b>Backup server</b><span id="brandServer">--</span><b>Updated</b><span id="brandUpdated">--</span></div>
+    <div class="maint">Maintained &amp; developed by<br><b>SHAIKH SHOAIB</b><br>Sr. Advisor Delivery Specialist &middot; DELL Technologies</div>
+  </div>
+  <div class="card acard"><h4>Activity Mix <span id="mixRange">--</span></h4>
+    <div class="abody">
+      <svg class="donut" id="mixDonut" viewBox="0 0 120 120"></svg>
+      <div class="leg" id="mixLeg"></div>
+    </div>
+  </div>
+  <div class="card acard"><h4>Backup SLA <span id="slaMeta">--</span></h4>
+    <div class="abody">
+      <svg class="donut" id="slaDonut" viewBox="0 0 120 120"></svg>
+      <div class="leg" id="slaLeg"></div>
+    </div>
+  </div>
+  <div class="card acard"><h4>Management Overview <span>Live API</span></h4>
+    <div class="ovwrap" id="ovRows"></div>
+  </div>
+  <div class="card acard"><h4>Recovery Health <span>Restores</span></h4>
+    <div class="ovwrap" id="recoveryPanel"></div>
+  </div>
+  <div class="card acard"><h4>Clone Jobs <span>Actions</span></h4>
+    <div class="ovwrap" id="clonePanel"></div>
+  </div>
+</div>
+<div class="kpis" id="kpis"></div>
+<div class="health" id="healthStrip"></div>
+<div class="snap hidden" id="snapStrip">
+  <div class="cap" id="snapCap">Local Snapshot Growth</div>
+  <div class="snapgrid" id="snapgrid"></div>
+</div>
+<div class="jobs card">
+  <div class="jhead" id="jhead" title="Click to minimize / expand"><button class="minbtn" id="minbtn" type="button">&#8722;</button><h4 id="jt">Recent Jobs</h4><span class="minhint">minimized &mdash; click to expand</span>
+    <div class="jtabs" id="jtabs"></div>
+    <span class="autocycle">auto-cycle <b>Recent &rarr; Failed &rarr; Clients</b> &middot; <span id="cycsec">15</span>s &middot; <span id="rowsof">0 of 0 rows</span></span></div>
+  <div class="tblbody">
+    <div class="thead" id="thead"></div>
+    <div id="tb" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
+  </div>
+</div>
+<script>__TV_JS__</script>
+</body>
+</html>
