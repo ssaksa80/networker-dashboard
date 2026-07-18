@@ -36,6 +36,10 @@ REM  with -Service, hidden process otherwise) and the start is health-gated
 REM  against /api/health. When setup completes you are offered a real-time
 REM  log tail (Ctrl+C stops the tail only, never the dashboard).
 REM
+REM  -Service self-elevates via a UAC prompt when needed. The result is a
+REM  TASK SCHEDULER task named 'NetWorkerDashboard' (taskschd.msc) - it does
+REM  NOT appear in services.msc.
+REM
 REM  With the boot task registered the dashboard runs as SYSTEM, starts on
 REM  every Windows boot, and is restarted up to 3 times if it crashes. Note:
 REM  if the app was previously run manually under a user account, its
@@ -44,12 +48,28 @@ REM  prints a warning; saved sessions must be re-entered once).
 REM
 REM  Requires: Windows PowerShell 5.1+ (in-box) and Python 3.11+ on PATH.
 REM ===========================================================================
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$m='#PS'+'BEGIN';$sc=[IO.File]::ReadAllText('%~f0');$ps=$sc.Substring($sc.IndexOf($m)+$m.Length);& ([scriptblock]::Create($ps)) '%~dp0' %*"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$m='#PS'+'BEGIN';$sc=[IO.File]::ReadAllText('%~f0');$ps=$sc.Substring($sc.IndexOf($m)+$m.Length);& ([scriptblock]::Create($ps)) '%~dp0' '%~f0' %*"
 exit /b %ERRORLEVEL%
 
 REM Everything below runs as PowerShell, not cmd.
 #PSBEGIN
-param([string]$ScriptDir, [string]$InstallDir = "C:\apps\networker-dashboard", [switch]$Silent, [switch]$Service, [int]$Port = 8443, [switch]$Uninstall, [switch]$Purge, [switch]$NoUpdate)
+param([string]$ScriptDir, [string]$ScriptPath, [string]$InstallDir = "C:\apps\networker-dashboard", [switch]$Silent, [switch]$Service, [int]$Port = 8443, [switch]$Uninstall, [switch]$Purge, [switch]$NoUpdate, [switch]$Elevated)
+
+# Relaunch this script elevated (UAC prompt), preserving arguments, and exit
+# with the elevated run's code. -Elevated marks the child so a declined or
+# failed elevation cannot loop forever.
+function Invoke-SelfElevated([string[]]$ExtraArgs) {
+    $args = @("/c", "`"$ScriptPath`"", "`"$InstallDir`"") + $ExtraArgs + @("-Elevated")
+    Write-Host "Elevation required - requesting administrator approval (UAC)..."
+    try {
+        $p = Start-Process -FilePath $env:ComSpec -ArgumentList $args -Verb RunAs -Wait -PassThru
+        exit $p.ExitCode
+    } catch {
+        Write-Host ""
+        Write-Host "ERROR: elevation was declined or failed. Re-run this script from an Administrator prompt." -ForegroundColor Red
+        exit 1
+    }
+}
 
 $ErrorActionPreference = "Stop"
 
@@ -73,9 +93,14 @@ if ($Uninstall) {
     if ($task) {
         $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         if (-not $isAdmin) {
-            Write-Host ""
-            Write-Host "ERROR: the 'NetWorkerDashboard' boot task exists; removing it requires an elevated prompt. Re-run as Administrator." -ForegroundColor Red
-            exit 1
+            if ($Elevated) {
+                Write-Host ""
+                Write-Host "ERROR: still not elevated after the UAC relaunch - elevation was declined." -ForegroundColor Red
+                exit 1
+            }
+            $extra = @("-Uninstall")
+            if ($Purge) { $extra += "-Purge" }
+            Invoke-SelfElevated $extra
         }
         try { Stop-ScheduledTask -TaskName "NetWorkerDashboard" -ErrorAction Stop } catch { }
         try { Unregister-ScheduledTask -TaskName "NetWorkerDashboard" -Confirm:$false -ErrorAction Stop; Write-Host "Task    : removed" } catch { Write-Host "Task    : removal failed ($($_.Exception.Message))" }
@@ -339,7 +364,13 @@ if (-not $Silent -and -not $Service) {
 }
 if ($wantService) {
     if (-not $isAdmin) {
-        Fail "Registering the boot task requires an elevated prompt. Re-run this script as Administrator (right-click, 'Run as administrator')."
+        if ($Elevated) {
+            Fail "Still not elevated after the UAC relaunch - elevation was declined. Re-run from an Administrator prompt."
+        }
+        $extra = @("-Service", "-Port", "$Port")
+        if ($Silent) { $extra += "-Silent" }
+        if ($NoUpdate) { $extra += "-NoUpdate" }
+        Invoke-SelfElevated $extra
     }
     $pythonExe = (Get-Command $python).Source
     $action = New-ScheduledTaskAction -Execute $pythonExe `
@@ -357,7 +388,15 @@ if ($wantService) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
         -Principal $principal -Settings $settings | Out-Null
-    Write-Host "Task    : '$taskName' registered (at boot, SYSTEM, 3 crash restarts, port $Port)"
+    # Prove the registration instead of assuming it, and head off the classic
+    # confusion: this is a Task Scheduler task, NOT a services.msc service.
+    $check = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if (-not $check) {
+        Fail "Register-ScheduledTask reported success but the task is not queryable. Check Task Scheduler manually."
+    }
+    Write-Host "Task    : '$taskName' registered (at boot, SYSTEM, 3 crash restarts, port $Port) - state: $($check.State)"
+    Write-Host "Note    : look in TASK SCHEDULER (taskschd.msc > Task Scheduler Library > '$taskName')."
+    Write-Host "          It will NOT appear in services.msc - it is a boot task, not a Windows service."
     Start-ScheduledTask -TaskName $taskName
     if (Wait-DashHealth $Port 20) {
         Write-Host "Health  : dashboard is LIVE at https://localhost:$Port/ (will come back after every reboot)"
@@ -374,7 +413,9 @@ else {
     Write-Host "Start   : dashboard launched in the background (port $Port)"
     if (Wait-DashHealth $Port 20) {
         Write-Host "Health  : dashboard is LIVE at https://localhost:$Port/"
-        Write-Host "Note    : this instance does NOT survive a reboot; re-run with -Service (elevated) for that."
+        Write-Host ""
+        Write-Host "WARNING : no boot task was registered - the dashboard will NOT come back" -ForegroundColor Yellow
+        Write-Host "          after a reboot. Re-run with -Service to register auto-start." -ForegroundColor Yellow
     } else {
         Fail "The dashboard did not answer /api/health on port $Port within 20 seconds. Check the app log in $InstallDir\logs."
     }
