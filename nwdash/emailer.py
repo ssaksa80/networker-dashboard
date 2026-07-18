@@ -49,6 +49,7 @@ from .snapshots import (
     delete_email_profile,
     get_email_profile_masked,
     get_email_profile_raw,
+    load_email_config,
     load_email_profiles,
     load_ui_theme,
     mask_email_profiles,
@@ -538,6 +539,113 @@ def persist_automations() -> None:
         pass
 
 
+def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[str, Any]) -> bool:
+    """Overwrite a CONFIG-DRIVEN schedule's settings from email_config.json —
+    the single source of truth for schedules not armed from a named profile.
+    Fields the config file does not store for that type (quiet hours, digest,
+    the other type's cadence fields) keep the automation's current values.
+    Identity fields (automation_id, session_id, connection, last_signature,
+    enabled) are never touched. Returns True when anything changed. No config
+    entry for the type, or an invalid one, keeps the schedule as-is — config
+    deletion is not schedule deletion (the Stop button is)."""
+    types = cfg.get("types") if isinstance(cfg.get("types"), dict) else {}
+    entry = types.get(automation.schedule_type)
+    if not isinstance(entry, dict):
+        debug_log(
+            f"reconcile: no saved email config for type {automation.schedule_type!r}; "
+            f"schedule {automation.automation_id} kept as-is"
+        )
+        return False
+    smtp = cfg.get("smtp") if isinstance(cfg.get("smtp"), dict) else {}
+
+    def _entry(key: str, current: Any) -> Any:
+        value = entry.get(key)
+        return current if value is None else value
+
+    payload = {
+        "smtpHost": str(smtp.get("host") or ""),
+        "smtpPort": smtp.get("port"),
+        "smtpSecurity": str(smtp.get("security") or "starttls"),
+        "smtpUsername": str(smtp.get("username") or ""),
+        "smtpPassword": "",
+        "smtpFrom": str(smtp.get("from") or ""),
+        "smtpTo": ", ".join(str(r) for r in (entry.get("recipients") or [])),
+        "intervalMinutes": _entry("interval_minutes", automation.interval_minutes),
+        "trigger": _entry("trigger", automation.trigger),
+        "scheduleType": automation.schedule_type,
+        "reportTime": _entry("report_time", automation.report_time),
+        "theme": _entry("theme", automation.theme),
+        "quietStart": _entry("quiet_start", automation.quiet_start),
+        "quietEnd": _entry("quiet_end", automation.quiet_end),
+        "digest": bool(_entry("digest", automation.digest)),
+    }
+    try:
+        settings = parse_smtp_settings(payload)
+    except BadRequest as exc:
+        debug_log(
+            f"reconcile: could not sync schedule {automation.automation_id} "
+            f"from email config: {exc}"
+        )
+        return False
+    changed = False
+    for attr in (
+        "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from",
+        "recipients", "interval_minutes", "trigger", "report_time", "theme",
+        "quiet_start", "quiet_end", "digest",
+    ):
+        if getattr(automation, attr) != settings[attr]:
+            setattr(automation, attr, settings[attr])
+            changed = True
+    if not decrypt_process_secret(automation.encrypted_smtp_password):
+        saved_password = saved_email_smtp_password()
+        if saved_password:
+            automation.encrypted_smtp_password = encrypt_process_secret(saved_password)
+            changed = True
+    if changed:
+        debug_log(
+            f"reconcile: synced {automation.schedule_type} schedule "
+            f"{automation.automation_id} from email_config.json"
+        )
+        # The cadence may have moved (report_time/interval) — recompute.
+        schedule_alert_automation(automation)
+    return changed
+
+
+def _reconcile_config_driven_automations() -> tuple[int, int]:
+    """Enforce the email-config contract on CONFIG-DRIVEN schedules (empty
+    profile_name — includes every legacy record): email_config.json holds
+    exactly ONE configuration per schedule type, so at most ONE such schedule
+    may exist per type, and its settings must match the saved config.
+    Recipients drift over time, so the identity dedup (which keys on
+    recipients) cannot catch these — a stale schedule with yesterday's
+    recipient list has a different identity and would keep firing. Keeps the
+    NEWEST schedule per type, drops the rest, then syncs each survivor from
+    the config file. Profile-driven schedules are untouched: multiple named
+    profiles may be ON concurrently by design. Returns (dropped, synced)."""
+    grouped: dict[str, list[AlertAutomation]] = {}
+    for _key, automation in _automation_items_snapshot():
+        if not automation.profile_name:
+            grouped.setdefault(
+                str(automation.schedule_type or "").strip().lower(), []
+            ).append(automation)
+    dropped = 0
+    synced = 0
+    cfg = load_email_config()
+    for schedule_type, group in grouped.items():
+        group.sort(key=lambda a: a.created_at)
+        keeper = group[-1]
+        for stale in group[:-1]:
+            if cancel_alert_automation(stale.automation_id):
+                dropped += 1
+                LOG.warning(
+                    f"reconcile: dropped stale {schedule_type} schedule "
+                    f"{stale.automation_id} superseded by {keeper.automation_id}"
+                )
+        if _sync_automation_from_email_config(keeper, cfg):
+            synced += 1
+    return dropped, synced
+
+
 def restore_automations_from_disk() -> int:
     """Recreate and reschedule ALL automations saved by a previous run —
     regardless of whether their dashboard session still exists. Sessions are
@@ -613,9 +721,16 @@ def restore_automations_from_disk() -> int:
                     f"restore_automations: dropped duplicate schedule {stale.automation_id} "
                     f"superseded by {keeper.automation_id}"
                 )
+    # Second healing pass: config-driven schedules (no profile_name) follow
+    # email_config.json — one schedule per type, settings synced from the
+    # config file. Catches stale duplicates whose RECIPIENTS drifted, which
+    # the identity dedup above deliberately treats as distinct schedules.
+    reconcile_dropped, reconcile_synced = _reconcile_config_driven_automations()
+    restored = max(0, restored - reconcile_dropped)
     # Rewrite the file from the surviving in-memory store so invalid/corrupt/
-    # duplicate records are pruned from disk, not just ignored.
-    if dropped or duplicates_dropped:
+    # duplicate/stale records are pruned from disk, not just ignored — one
+    # write for the combined result of both healing passes.
+    if dropped or duplicates_dropped or reconcile_dropped or reconcile_synced:
         if dropped:
             debug_log(f"restore_automations: pruned {dropped} invalid record(s) from {AUTOMATIONS_FILE.name}")
         persist_automations()
@@ -1165,6 +1280,24 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 f"with {automation_id}"
             )
         cancel_alert_automation(duplicate.automation_id)
+    # Config-driven singleton: this schedule is armed from the form (no
+    # profile), so it follows email_config.json — which holds exactly ONE
+    # configuration per schedule type. Cancel every other config-driven
+    # schedule of the same type, whatever its recipients: recipients drift
+    # over time, so identity alone (which includes them) cannot catch stale
+    # config-driven duplicates. Named profiles keep their own schedules —
+    # multiple profiles may be ON concurrently by design.
+    for _key, other in _automation_items_snapshot():
+        if (
+            not other.profile_name
+            and str(other.schedule_type or "").strip().lower() == settings["schedule_type"]
+            and other.automation_id != automation_id
+        ):
+            debug_log(
+                f"start: replacing config-driven {settings['schedule_type']} schedule "
+                f"{other.automation_id} with {automation_id}"
+            )
+            cancel_alert_automation(other.automation_id)
     cancel_alert_automation(automation_id)
     _put_automation(automation_id, automation)
     schedule_alert_automation(automation)
