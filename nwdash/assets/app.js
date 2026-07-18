@@ -1911,9 +1911,23 @@
       closeAlertAutomationModal();
     });
 
-    alertAutomationModal.addEventListener("click", (event) => {
-      if (event.target === alertAutomationModal) closeAlertAutomationModal();
-    });
+    // Backdrop dismiss that survives resizing/drag. A bare "click" fires on the
+    // common ancestor of pointerdown+pointerup, so grabbing the .modal-panel
+    // resize grip (down on panel) and releasing over the backdrop would target
+    // the backdrop and falsely close. Only dismiss when BOTH the press and the
+    // release land directly on the backdrop element itself.
+    function bindBackdropDismiss(modalEl, closeFn) {
+      let downOnBackdrop = false;
+      modalEl.addEventListener("pointerdown", (event) => {
+        downOnBackdrop = (event.target === modalEl);
+      });
+      modalEl.addEventListener("click", (event) => {
+        if (downOnBackdrop && event.target === modalEl) closeFn();
+        downOnBackdrop = false;
+      });
+    }
+
+    bindBackdropDismiss(alertAutomationModal, closeAlertAutomationModal);
 
     // Single document-level Escape handler: closes only the topmost open
     // popup per key press (ordered by stacking: drawer > dropdown > modals).
@@ -1976,7 +1990,7 @@
 
     snapshotManageBtn.addEventListener("click", openSnapshotPanel);
     snapshotPanelClose.addEventListener("click", closeSnapshotPanel);
-    snapshotPanel.addEventListener("click", (e) => { if (e.target === snapshotPanel) closeSnapshotPanel(); });
+    bindBackdropDismiss(snapshotPanel, closeSnapshotPanel);
 
     autoSnapshotToggle.addEventListener("change", async () => {
       const enabled = autoSnapshotToggle.checked;
@@ -2467,7 +2481,7 @@
     addServerBtn.addEventListener("click", openAddServerModal);
     addServerModalClose.addEventListener("click", closeAddServerModal);
     addServerCancelBtn.addEventListener("click", closeAddServerModal);
-    addServerModal.addEventListener("click", (e) => { if (e.target === addServerModal) closeAddServerModal(); });
+    bindBackdropDismiss(addServerModal, closeAddServerModal);
     addServerConnectBtn.addEventListener("click", connectExtraServer);
 
     // ── Share ─────────────────────────────────────────────────────────────────
@@ -2559,7 +2573,7 @@
       window.open("/tv", "_blank", "noopener");
     });
     shareModalClose.addEventListener("click", closeShareModal);
-    shareModal.addEventListener("click", (e) => { if (e.target === shareModal) closeShareModal(); });
+    bindBackdropDismiss(shareModal, closeShareModal);
     generateShareToken.addEventListener("click", doGenerateShareToken);
     revokeShareToken.addEventListener("click", doRevokeShareToken);
     copyShareUrlBtn.addEventListener("click", () => {
