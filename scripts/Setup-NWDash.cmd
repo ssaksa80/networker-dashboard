@@ -12,6 +12,15 @@ REM  Usage:
 REM    Setup-NWDash.cmd                     install to C:\apps\networker-dashboard
 REM    Setup-NWDash.cmd D:\some\dir         install to a custom directory
 REM    Setup-NWDash.cmd D:\some\dir -Silent no prompts (no password set, no start)
+REM    Setup-NWDash.cmd -Service            also register the boot task (needs
+REM                                         an elevated prompt); -Port NNNN to
+REM                                         change the HTTPS port (default 8443)
+REM
+REM  With the boot task registered the dashboard runs as SYSTEM, starts on
+REM  every Windows boot, and is restarted up to 3 times if it crashes. Note:
+REM  if the app was previously run manually under a user account, its
+REM  DPAPI-protected keys regenerate once on the first SYSTEM run (the app
+REM  prints a warning; saved sessions must be re-entered once).
 REM
 REM  Requires: Windows PowerShell 5.1+ (in-box) and Python 3.11+ on PATH.
 REM ===========================================================================
@@ -20,7 +29,7 @@ exit /b %ERRORLEVEL%
 
 REM Everything below runs as PowerShell, not cmd.
 #PSBEGIN
-param([string]$ScriptDir, [string]$InstallDir = "C:\apps\networker-dashboard", [switch]$Silent)
+param([string]$ScriptDir, [string]$InstallDir = "C:\apps\networker-dashboard", [switch]$Silent, [switch]$Service, [int]$Port = 8443)
 
 $ErrorActionPreference = "Stop"
 
@@ -142,7 +151,64 @@ if (-not $Silent -and -not (Test-Path $authFile)) {
     }
 }
 
-# --- 5. Offer to start ----------------------------------------------------------
+# --- 5. Boot-survival: register a startup task so the dashboard is live after
+#        every Windows reboot, restarted automatically if it crashes. ----------
+$taskName = "NetWorkerDashboard"
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$wantService = $Service
+if (-not $Silent -and -not $Service) {
+    $ans = Read-Host "Register auto-start at boot (runs as SYSTEM, survives reboot)? [Y/n]"
+    if ($ans -eq "" -or $ans -match "^[Yy]") { $wantService = $true }
+}
+if ($wantService) {
+    if (-not $isAdmin) {
+        Fail "Registering the boot task requires an elevated prompt. Re-run this script as Administrator (right-click, 'Run as administrator')."
+    }
+    $pythonExe = (Get-Command $python).Source
+    $action = New-ScheduledTaskAction -Execute $pythonExe `
+        -Argument "networker_dashboard.py --port $Port --no-launch" `
+        -WorkingDirectory $InstallDir
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+        -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    # Default execution time limit kills the task after 72h; PT0S = unlimited.
+    # (The cmdlet parameter rejects a zero timespan on PowerShell 5.1, so set
+    # it on the settings object directly.)
+    $settings.ExecutionTimeLimit = "PT0S"
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+        -Principal $principal -Settings $settings | Out-Null
+    Write-Host "Task    : '$taskName' registered (at boot, SYSTEM, 3 crash restarts, port $Port)"
+    Start-ScheduledTask -TaskName $taskName
+    # Health-gate the start instead of trusting the task state: poll the app's
+    # own /api/health endpoint over HTTPS (self-signed cert, so bypass trust).
+    $healthy = $false
+    Add-Type -TypeDefinition "using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAll:ICertificatePolicy{public bool CheckValidationResult(ServicePoint a,X509Certificate b,WebRequest c,int d){return true;}}"
+    $oldPolicy = [System.Net.ServicePointManager]::CertificatePolicy
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAll
+    try {
+        foreach ($i in 1..20) {
+            Start-Sleep -Seconds 1
+            try {
+                $resp = (New-Object System.Net.WebClient).DownloadString("https://127.0.0.1:$Port/api/health")
+                if ($resp -match '"ok"\s*:\s*true') { $healthy = $true; break }
+            } catch { }
+        }
+    }
+    finally {
+        [System.Net.ServicePointManager]::CertificatePolicy = $oldPolicy
+    }
+    if ($healthy) {
+        Write-Host "Health  : dashboard is LIVE at https://localhost:$Port/ (will come back after every reboot)"
+    } else {
+        Fail "The boot task was registered but the dashboard did not answer /api/health on port $Port within 20 seconds. Check Task Scheduler ('$taskName') and the app log in $InstallDir\logs."
+    }
+    exit 0
+}
+
+# --- 6. No boot task: offer a foreground start --------------------------------
 Write-Host ""
 Write-Host "Installed. Start later with:"
 Write-Host "  cd `"$InstallDir`" && $python networker_dashboard.py"
