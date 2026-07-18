@@ -234,6 +234,74 @@ def cancel_session_automations(session_id: str) -> int:
     return count
 
 
+def automation_identity(
+    schedule_type: str,
+    recipients: list[str] | tuple[str, ...],
+    smtp_host: str,
+    smtp_from: str,
+) -> tuple[str, frozenset[str], str, str]:
+    """Stable identity of a notification schedule: WHAT it sends and TO WHOM.
+    Session ids and automation ids deliberately do not participate — the same
+    report type to the same recipients through the same SMTP server/sender is
+    the SAME schedule no matter which browser session created it. Recipient
+    order and letter case never change the identity."""
+    return (
+        str(schedule_type or "").strip().lower(),
+        frozenset(str(r).strip().lower() for r in (recipients or []) if str(r).strip()),
+        str(smtp_host or "").strip().lower(),
+        str(smtp_from or "").strip().lower(),
+    )
+
+
+def automation_identity_of(automation: AlertAutomation) -> tuple[str, frozenset[str], str, str]:
+    return automation_identity(
+        automation.schedule_type,
+        automation.recipients,
+        automation.smtp_host,
+        automation.smtp_from,
+    )
+
+
+def find_automations_by_identity(
+    identity: tuple[str, frozenset[str], str, str],
+) -> list[AlertAutomation]:
+    """All registered automations whose identity matches — across ALL sessions,
+    live or dead. Used to replace (never add to) same-identity schedules."""
+    return [
+        automation
+        for _key, automation in _automation_items_snapshot()
+        if automation_identity_of(automation) == identity
+    ]
+
+
+# ── Cross-automation duplicate-send guard (belt & braces) ────────────────────
+# Two schedules with the same identity must never both deliver the same
+# content, even if a duplicate automation somehow exists in the registry. Keyed
+# by identity (not automation id) so EVERY sender shares one dedup slot.
+# In-memory only (per process): restore-time dedup already heals persisted
+# duplicates, this guard covers the running process.
+_SEND_GUARD_LOCK = threading.Lock()
+_LAST_SENT_BY_IDENTITY: dict[tuple[str, frozenset[str], str, str], tuple[str, float]] = {}
+
+
+def _duplicate_send_suppressed(automation: AlertAutomation, signature: str) -> str | None:
+    """Return the formatted local time of a recent identical send by ANY
+    automation with this identity (caller must suppress), else None."""
+    if not signature:
+        return None
+    window_seconds = max(automation.interval_minutes * 60, 600)
+    with _SEND_GUARD_LOCK:
+        previous = _LAST_SENT_BY_IDENTITY.get(automation_identity_of(automation))
+    if previous and previous[0] == signature and (time.time() - previous[1]) < window_seconds:
+        return datetime.fromtimestamp(previous[1]).astimezone().strftime("%d-%m-%Y %H:%M:%S %Z")
+    return None
+
+
+def _record_identity_send(automation: AlertAutomation, signature: str) -> None:
+    with _SEND_GUARD_LOCK:
+        _LAST_SENT_BY_IDENTITY[automation_identity_of(automation)] = (str(signature or ""), time.time())
+
+
 def seconds_until_daily_report(report_time: str, now: datetime | None = None) -> float:
     now = now or datetime.now().astimezone()
     hour, minute = (int(part) for part in report_time.split(":", 1))
@@ -394,10 +462,32 @@ def restore_automations_from_disk() -> int:
         except (TypeError, ValueError, KeyError) as exc:
             dropped += 1
             debug_log(f"restore_automations: skipped {aid}: {exc}")
-    # Rewrite the file from the surviving in-memory store so invalid/corrupt
-    # records are pruned from disk, not just ignored.
-    if dropped:
-        debug_log(f"restore_automations: pruned {dropped} invalid record(s) from {AUTOMATIONS_FILE.name}")
+    # Migration/healing: earlier versions could accumulate several schedules
+    # with the same identity (same type + recipients + SMTP server/sender),
+    # each of which fired — the "duplicate notification" bug. Keep only the
+    # newest per identity and drop the rest, from memory AND from disk.
+    duplicates_dropped = 0
+    grouped: dict[tuple[str, frozenset[str], str, str], list[AlertAutomation]] = {}
+    for _key, automation in _automation_items_snapshot():
+        grouped.setdefault(automation_identity_of(automation), []).append(automation)
+    for group in grouped.values():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda a: a.created_at)
+        keeper = group[-1]
+        for stale in group[:-1]:
+            if cancel_alert_automation(stale.automation_id):
+                duplicates_dropped += 1
+                restored = max(0, restored - 1)
+                LOG.warning(
+                    f"restore_automations: dropped duplicate schedule {stale.automation_id} "
+                    f"superseded by {keeper.automation_id}"
+                )
+    # Rewrite the file from the surviving in-memory store so invalid/corrupt/
+    # duplicate records are pruned from disk, not just ignored.
+    if dropped or duplicates_dropped:
+        if dropped:
+            debug_log(f"restore_automations: pruned {dropped} invalid record(s) from {AUTOMATIONS_FILE.name}")
         persist_automations()
     return restored
 
@@ -540,6 +630,13 @@ def run_alert_automation(automation_id: str) -> None:
                 )
                 automation.last_run = time.time()
                 return
+            duplicate_sent_at = _duplicate_send_suppressed(automation, new_signature)
+            if duplicate_sent_at:
+                automation.last_result = (
+                    f"Duplicate suppressed (same alert already sent at {duplicate_sent_at})"
+                )
+                automation.last_run = time.time()
+                return
             plain, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
             report_password = decrypt_process_secret(automation.encrypted_smtp_password)
             smtp_debug = send_smtp_email(
@@ -550,6 +647,7 @@ def run_alert_automation(automation_id: str) -> None:
                 html_body,
                 attachments=attachments,
             ) or smtp_debug_snapshot(automation, report_password, "sent")
+            _record_identity_send(automation, new_signature)
             automation.last_signature = new_signature or (dashboard.get("generatedAt") or generated_at())
             automation.last_result = (
                 f"Sent daily backup/SLA report at {generated_at()} "
@@ -565,6 +663,13 @@ def run_alert_automation(automation_id: str) -> None:
         signature = "|".join(lines)
         cooldown_ok = (time.time() - automation.last_run) >= (automation.interval_minutes * 60) if automation.last_run else True
         if should_send_alert(automation.trigger, severity) and signature != automation.last_signature and cooldown_ok:
+            duplicate_sent_at = _duplicate_send_suppressed(automation, signature)
+            if duplicate_sent_at:
+                automation.last_result = (
+                    f"Duplicate suppressed (same alert already sent at {duplicate_sent_at})"
+                )
+                automation.last_run = time.time()
+                return
             subject = alert_email_subject(severity, automation.digest)
             alert_password = decrypt_process_secret(automation.encrypted_smtp_password)
             smtp_debug = send_smtp_email(
@@ -573,6 +678,7 @@ def run_alert_automation(automation_id: str) -> None:
                 "\n".join(lines),
                 alert_password,
             ) or smtp_debug_snapshot(automation, alert_password, "sent")
+            _record_identity_send(automation, signature)
             automation.last_signature = signature
             automation.last_result = (
                 f"Sent {severity} alert at {generated_at()} "
@@ -725,83 +831,19 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
             "activeAutomations": active_automation_summary(session_id),
         }
     if action == "save":
+        # Save ONLY persists the email configuration — it never arms a
+        # schedule. (It used to also arm one, which combined with the explicit
+        # Schedule button created duplicate automations and sent alerts the
+        # user never scheduled.) Only action=start creates/updates schedules.
         config = save_email_config_from_payload(payload)
-        # Saving an alert/daily-report config with a live session also arms its
-        # schedule. Users expect "Save" to enable the notification; the separate
-        # "Schedule" button was a hidden second step that left reports inactive.
-        scheduled_message = ""
-        active_summary = ""
-        try:
-            raw_schedule_type = str(payload.get("scheduleType") or "").strip().lower()
-            schedulable = raw_schedule_type in ("alert", "daily_report")
-            # A live session is no longer required: the automation captures a
-            # connection snapshot when one exists, or inherits the snapshot of
-            # the automation it updates.
-            if schedulable and session_id:
-                settings = parse_smtp_settings(payload)
-                can_schedule = (
-                    bool(settings["recipients"])
-                    and (
-                        settings["schedule_type"] != "daily_report"
-                        or bool(settings["report_time"])
-                    )
-                )
-                if can_schedule:
-                    requested_id = str(payload.get("automationId") or "").strip()
-                    existing_by_id = _get_automation(requested_id) if requested_id else None
-                    if existing_by_id:
-                        # Editing keeps the schedule's identity even when it was
-                        # created by a previous (e.g. pre-restart) session —
-                        # otherwise the edit would DUPLICATE the schedule.
-                        automation_id = existing_by_id.automation_id
-                    else:
-                        automation_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
-                    existing = existing_by_id or existing_smtp_automation(session_id, settings["schedule_type"])
-                    smtp_password = settings["smtp_password"] or (
-                        decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
-                    ) or saved_email_smtp_password()
-                    connection = connection_snapshot_for_session(session_id) or (
-                        dict(existing.connection) if existing and existing.connection else {}
-                    )
-                    automation = AlertAutomation(
-                        automation_id=automation_id,
-                        session_id=session_id,
-                        connection=connection,
-                        smtp_host=settings["smtp_host"],
-                        smtp_port=settings["smtp_port"],
-                        smtp_username=settings["smtp_username"],
-                        encrypted_smtp_password=encrypt_process_secret(smtp_password),
-                        smtp_from=settings["smtp_from"],
-                        recipients=settings["recipients"],
-                        smtp_security=settings["smtp_security"],
-                        interval_minutes=settings["interval_minutes"],
-                        trigger=settings["trigger"],
-                        schedule_type=settings["schedule_type"],
-                        report_time=settings["report_time"],
-                        created_at=time.time(),
-                        theme=settings["theme"],
-                        quiet_start=settings["quiet_start"],
-                        quiet_end=settings["quiet_end"],
-                        digest=settings["digest"],
-                    )
-                    cancel_alert_automation(automation_id)
-                    _put_automation(automation_id, automation)
-                    schedule_alert_automation(automation)
-                    persist_automations()
-                    active_summary = active_automation_summary(session_id)
-                    scheduled_message = (
-                        f" Daily backup/SLA report scheduled for {automation.report_time}."
-                        if automation.schedule_type == "daily_report"
-                        else f" Alert automation scheduled every {automation.interval_minutes} minute(s)."
-                    )
-        except BadRequest:
-            # Bad SMTP/schedule fields shouldn't block a plain config save.
-            pass
         return HTTPStatus.OK, {
             "ok": True,
-            "message": "Email notification configuration saved." + scheduled_message,
+            "message": (
+                "Email notification configuration saved. Nothing is scheduled yet — "
+                "use the Schedule selected report button to start sending."
+            ),
             "config": config,
-            "activeAutomations": active_summary,
+            "activeAutomations": active_automation_summary(session_id) if session_id else "",
         }
     if action not in ("start", "test"):
         raise BadRequest(
@@ -816,6 +858,11 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
     # arms (it inherits the snapshot of the automation it updates, or waits
     # for a session).
     settings = parse_smtp_settings(payload)
+    identity = automation_identity(
+        settings["schedule_type"], settings["recipients"],
+        settings["smtp_host"], settings["smtp_from"],
+    )
+    same_identity = find_automations_by_identity(identity)
     requested_id = str(payload.get("automationId") or "").strip()
     existing_by_id = _get_automation(requested_id) if requested_id else None
     if existing_by_id:
@@ -825,7 +872,14 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         automation_id = existing_by_id.automation_id
     else:
         automation_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
-    existing = existing_by_id or existing_smtp_automation(session_id, settings["schedule_type"])
+    # Inherit password/connection from the schedule being replaced even when
+    # the UI did not pass its automationId (e.g. re-scheduling from a new
+    # browser session after a restart).
+    existing = (
+        existing_by_id
+        or (same_identity[0] if same_identity else None)
+        or existing_smtp_automation(session_id, settings["schedule_type"])
+    )
     smtp_password = settings["smtp_password"] or (
         decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
     ) or saved_email_smtp_password()
@@ -897,6 +951,16 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
             }
         return HTTPStatus.OK, {"ok": True, "message": "Test email sent.", "smtpDebug": smtp_debug}
 
+    # Replace, never add: cancel EVERY schedule with the same identity —
+    # regardless of which (possibly dead) session created it. This is what
+    # keeps duplicate schedules from accumulating across restarts.
+    for duplicate in same_identity:
+        if duplicate.automation_id != automation_id:
+            debug_log(
+                f"start: replacing same-identity schedule {duplicate.automation_id} "
+                f"with {automation_id}"
+            )
+        cancel_alert_automation(duplicate.automation_id)
     cancel_alert_automation(automation_id)
     _put_automation(automation_id, automation)
     schedule_alert_automation(automation)
