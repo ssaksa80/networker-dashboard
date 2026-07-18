@@ -33,6 +33,17 @@ function Fail([string]$msg) {
 
 Write-Host "=== NetWorker Dashboard setup ==="
 
+# Console progress bar: [##########------------------]  42%  (ASCII, in-place)
+function Show-Bar([string]$label, [int]$pct) {
+    if ($pct -lt 0) { $pct = 0 }
+    if ($pct -gt 100) { $pct = 100 }
+    $width = 30
+    $filled = [int][math]::Floor($width * $pct / 100)
+    $bar = ("#" * $filled) + ("-" * ($width - $filled))
+    Write-Host -NoNewline ("`r{0,-12} [{1}] {2,3}%" -f $label, $bar, $pct)
+    if ($pct -eq 100) { Write-Host "" }
+}
+
 # --- 1. Find the newest bundle next to this script ---------------------------
 $bundle = Get-ChildItem -Path $ScriptDir -Filter "networker-dashboard-*-bundle.zip" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -66,21 +77,49 @@ Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [System.IO.Compression.ZipFile]::OpenRead($bundle.FullName)
 try {
-    foreach ($entry in $archive.Entries) {
-        if (-not $entry.Name) { continue }  # directory entry
+    $entries = @($archive.Entries | Where-Object { $_.Name })  # skip directory entries
+    $total = $entries.Count
+    $done = 0
+    $installed = @()
+    Show-Bar "Unarchiving" 0
+    foreach ($entry in $entries) {
         $rel = $entry.FullName -replace "/", "\"
         # The bundle never contains runtime state, but guard anyway so a
         # hand-modified zip can never clobber keys or certificates.
-        if ($rel -match '^(data|logs|\.certs)\\') { continue }
-        $dest = Join-Path $InstallDir $rel
-        $destDir = Split-Path -Parent $dest
-        if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
-        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+        if ($rel -notmatch '^(data|logs|\.certs)\\') {
+            $dest = Join-Path $InstallDir $rel
+            $destDir = Split-Path -Parent $dest
+            if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+            $installed += @{ Path = $dest; Size = $entry.Length }
+        }
+        $done++
+        Show-Bar "Unarchiving" ([int](100 * $done / $total))
     }
 }
 finally {
     $archive.Dispose()
 }
+
+# Installation pass: verify every extracted file landed with the right size,
+# and byte-compile the Python sources so first start is import-error-free.
+$done = 0
+Show-Bar "Installing" 0
+foreach ($item in $installed) {
+    $f = Get-Item -LiteralPath $item.Path -ErrorAction SilentlyContinue
+    if (-not $f -or $f.Length -ne $item.Size) {
+        Write-Host ""
+        Fail ("Installed file failed verification: {0}" -f $item.Path)
+    }
+    $done++
+    Show-Bar "Installing" ([int](90 * $done / $installed.Count))
+}
+& $python -m compileall -q $InstallDir 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Fail "Python byte-compilation of the installed sources failed."
+}
+Show-Bar "Installing" 100
 if ($isUpgrade) {
     Write-Host "Result : upgraded application files (data\, .certs\, logs\ untouched)"
 } else {
