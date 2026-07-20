@@ -33,7 +33,9 @@ def _parse_recipients(raw: Any) -> list[str]:
 
 
 def _seal_credential(cred: dict[str, Any]) -> dict[str, Any]:
-    out = {k: v for k, v in cred.items() if k != "password"}
+    # A client-supplied encrypted_password (or password) must never be taken
+    # as-is — only a real plaintext password may cause a re-seal below.
+    out = {k: v for k, v in cred.items() if k not in ("password", "encrypted_password")}
     out["encrypted_password"] = encrypt_credential_password(str(cred.get("password") or ""))
     return out
 
@@ -74,7 +76,10 @@ def handle_report_jobs(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         existing = report_jobs.get_job(job_id)
         if existing and not cred_in.get("password"):
             sealed = dict(existing.credential)
-            sealed.update({k: v for k, v in cred_in.items() if k != "password"})
+            # Only a real new plaintext password may re-seal; a client-supplied
+            # encrypted_password must never override the existing sealed token.
+            sealed.update({k: v for k, v in cred_in.items()
+                           if k not in ("password", "encrypted_password")})
         else:
             sealed = _seal_credential(cred_in)
         job = report_jobs.ReportJob(
@@ -89,6 +94,9 @@ def handle_report_jobs(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             quiet_end=str(payload.get("quietEnd") or ""),
             theme=str(payload.get("theme") or "default"),
         )
+        if job.kind == "digest" and not config.TIME_HHMM_PATTERN.match(job.schedule.report_time):
+            return HTTPStatus.BAD_REQUEST, {"ok": False,
+                                            "message": "Report time must be HH:MM (24h)."}
         smtp, smtp_password = _smtp_config()
         result = report_jobs.validate(job, smtp, smtp_password)
         if not result.ok:

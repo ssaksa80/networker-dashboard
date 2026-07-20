@@ -195,7 +195,14 @@ def compute_next_run(job: "ReportJob") -> float:
 
 
 def fire_job(job: "ReportJob", cfg: dict[str, Any]) -> None:
-    """Render and deliver ONE job. Never raises; records health either way."""
+    """Render and deliver ONE job. Never raises; records health either way.
+
+    Each send_* call (report send, stale fallback, ops alert) is isolated in
+    its own try/except so a raise from one — notably send_smtp_email raising
+    SmtpDeliveryError — can never suppress another send or the health update
+    below. The ops alert is always attempted whenever the job is considered
+    failed, whether that's a render failure or a report-send failure.
+    """
     if not job.enabled:
         return
     smtp = cfg.get("smtp") or {}
@@ -203,19 +210,45 @@ def fire_job(job: "ReportJob", cfg: dict[str, Any]) -> None:
     ops_address = str(cfg.get("ops_address") or "")
     job.health.last_run = time.time()
     try:
-        res = report_render.render(job.credential)
+        try:
+            res = report_render.render(job.credential)
+        except Exception as exc:  # noqa: BLE001 — render must never kill the loop
+            debug_log(f"fire_job {job.id} render crashed: {exc}")
+            res = report_render.RenderResult(False, {}, str(exc))
+
         if res.ok:
-            report_notify.send_report(job, res.dashboard, smtp, smtp_password, stale=False)
-            report_render.cache_put(job.id, res.dashboard)
-            job.health.state = "healthy"
-            job.health.last_success = time.time()
-            job.health.consecutive_failures = 0
-            job.health.last_result = f"Sent at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            send_error: Exception | None = None
+            try:
+                report_notify.send_report(job, res.dashboard, smtp, smtp_password, stale=False)
+            except Exception as exc:  # noqa: BLE001 — isolate this send
+                send_error = exc
+                debug_log(f"fire_job {job.id} send_report crashed: {exc}")
+
+            if send_error is None:
+                report_render.cache_put(job.id, res.dashboard)
+                job.health.state = "healthy"
+                job.health.last_success = time.time()
+                job.health.consecutive_failures = 0
+                job.health.last_result = f"Sent at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            else:
+                job.health.state = "unhealthy"
+                job.health.consecutive_failures += 1
+                job.health.last_result = f"Send failed: {send_error}"
+                try:
+                    report_notify.send_ops_alert(job, str(send_error), smtp, ops_address, smtp_password)
+                except Exception as exc:  # noqa: BLE001 — isolate ops alert
+                    debug_log(f"fire_job {job.id} send_ops_alert crashed: {exc}")
         else:
             cached = report_render.cache_get(job.id)
             if cached:
-                report_notify.send_report(job, cached, smtp, smtp_password, stale=True)
-            report_notify.send_ops_alert(job, res.error, smtp, ops_address, smtp_password)
+                try:
+                    report_notify.send_report(job, cached, smtp, smtp_password, stale=True)
+                except Exception as exc:  # noqa: BLE001 — isolate stale-fallback send
+                    debug_log(f"fire_job {job.id} stale send_report crashed: {exc}")
+            try:
+                report_notify.send_ops_alert(job, res.error, smtp, ops_address, smtp_password)
+            except Exception as exc:  # noqa: BLE001 — isolate ops alert
+                debug_log(f"fire_job {job.id} send_ops_alert crashed: {exc}")
             job.health.state = "unhealthy"
             job.health.consecutive_failures += 1
             job.health.last_result = f"Failed: {res.error}"

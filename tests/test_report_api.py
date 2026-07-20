@@ -50,3 +50,14 @@ def test_delete_removes_job(monkeypatch):
     report_jobs.put_job(report_jobs.ReportJob(id="j1", kind="digest", recipients=["a@x.com"]))
     status, body = report_api.handle_report_jobs({"action": "delete", "id": "j1"})
     assert status == HTTPStatus.OK and report_jobs.get_job("j1") is None
+
+def test_create_rejects_bad_report_time(monkeypatch):
+    import importlib
+    from nwdash import report_api, report_jobs
+    importlib.reload(report_jobs); importlib.reload(report_api)
+    monkeypatch.setattr(report_api, "_smtp_config", lambda: ({"host": "h"}, ""))
+    p = {"action": "create", "kind": "digest", "recipients": "a@x.com", "reportTime": "25:00",
+         "credential": {"rest_api_host": "h", "username": "u", "password": "pw"}}
+    status, body = report_api.handle_report_jobs(p)
+    from http import HTTPStatus
+    assert status == HTTPStatus.BAD_REQUEST and body["ok"] is False

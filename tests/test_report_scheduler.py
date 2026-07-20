@@ -57,3 +57,22 @@ def test_disabled_job_does_not_fire(monkeypatch):
     job = report_jobs.ReportJob(id="j1", kind="digest", recipients=["a@x.com"], enabled=False, credential={})
     report_jobs.fire_job(job, _cfg())
     assert "rendered" not in sent
+
+def test_ops_alert_sent_even_when_report_send_raises(monkeypatch):
+    import importlib
+    from nwdash import report_jobs, report_render
+    from nwdash.emailer import SmtpDeliveryError
+    importlib.reload(report_jobs)
+    sent = {}
+    monkeypatch.setattr(report_jobs.report_render, "render",
+                        lambda cred: report_render.RenderResult(True, {"summary": {}}, ""))
+    def boom(*a, **k):
+        # SmtpDeliveryError.__init__(self, stage, detail, diagnostics) — positional.
+        raise SmtpDeliveryError("connect", "smtp down", {})
+    monkeypatch.setattr(report_jobs.report_notify, "send_report", boom)
+    monkeypatch.setattr(report_jobs.report_notify, "send_ops_alert", lambda *a, **k: sent.update(ops=True))
+    job = report_jobs.ReportJob(id="j1", kind="digest", recipients=["a@x.com"], enabled=True,
+                                credential={"rest_api_host": "h", "username": "u", "encrypted_password": ""})
+    report_jobs.fire_job(job, {"smtp": {"host": "h", "port": 25, "security": "none"}, "smtp_password": "", "ops_address": "ops@x.com"})
+    assert sent.get("ops") is True            # ops alert still sent despite report send raising
+    assert job.health.state == "unhealthy"    # a failed delivery is a failed job
