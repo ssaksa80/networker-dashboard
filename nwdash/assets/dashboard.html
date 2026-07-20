@@ -29,7 +29,6 @@
         <button id="shareBtn" class="topbar-button hidden" type="button">Share</button>
         <button id="tvModeBtn" class="topbar-button" type="button" title="Open the TV wall-display mode in a new tab">&#128250; TV mode</button>
         <button id="logoutBtn" class="topbar-button danger hidden" type="button">Logout</button>
-        <button id="alertConfigBtn" class="topbar-button" type="button">Email</button>
       </div>
     </div>
   </header>
@@ -429,115 +428,6 @@
             <button id="snapshotPanelCloseBtn" class="modal-close" type="button" aria-label="Close">×</button>
           </div>
           <div id="snapshotPanelBody" style="padding:16px"></div>
-        </div>
-      </div>
-
-      <div id="alertAutomationModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="alertAutomationTitle" aria-hidden="true">
-        <div class="modal-panel automation-modal">
-          <div class="modal-head">
-            <h2 id="alertAutomationTitle">Email Alert Automation</h2>
-            <span id="alertAutomationStatus" class="automation-status">Not scheduled</span>
-            <button id="alertModalCloseBtn" class="ghost modal-close" type="button" aria-label="Close email automation popup">x</button>
-          </div>
-          <button class="collapse-toggle" type="button" data-toggle-target="emailScheduleListWrap" aria-expanded="false" style="margin:8px 14px 0">
-            <span class="caret">&#9656;</span> Saved schedules (<span id="emailScheduleCount">0</span>)
-          </button>
-          <div id="emailScheduleListWrap" class="collapsible">
-            <div id="emailScheduleList" class="email-schedule-list" aria-label="Saved schedules"></div>
-          </div>
-          <div class="email-profiles" aria-label="Saved email profiles">
-            <div class="ep-head">
-              <span class="ep-label">Saved profiles</span>
-              <span class="ep-hint">Toggle a profile on to schedule it; off to stop it.</span>
-            </div>
-            <div id="emailProfileCards" class="email-profile-cards" aria-label="Saved email profile cards"></div>
-            <div class="ep-save-row">
-              <input id="emailProfileName" placeholder="Profile name" autocomplete="off" spellcheck="false" aria-label="Email profile name">
-              <button id="emailProfileSaveBtn" class="ghost" type="button">Save as profile</button>
-            </div>
-          </div>
-          <div class="automation-grid">
-            <label>
-              SMTP host
-              <input id="smtpHost" placeholder="smtp.company.com" autocomplete="off" spellcheck="false">
-            </label>
-            <label>
-              SMTP port
-              <input id="smtpPort" value="587" inputmode="numeric" autocomplete="off">
-            </label>
-            <label>
-              Security
-              <select id="smtpSecurity">
-                <option value="starttls" selected>STARTTLS</option>
-                <option value="ssl">SSL/TLS</option>
-                <option value="none">None</option>
-              </select>
-            </label>
-            <label>
-              Email type
-              <select id="emailScheduleType">
-                <option value="alert" selected>Alert check</option>
-                <option value="daily_report">Daily backup/SLA report</option>
-              </select>
-            </label>
-            <label>
-              Alert interval minutes
-              <input id="alertIntervalMinutes" value="60" inputmode="numeric" autocomplete="off">
-            </label>
-            <label>
-              Daily report time
-              <input id="dailyReportTime" value="08:00" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
-            </label>
-            <label>
-              Quiet hours start
-              <input id="quietStart" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
-            </label>
-            <label>
-              Quiet hours end
-              <input id="quietEnd" placeholder="HH:MM" autocomplete="off" inputmode="numeric">
-            </label>
-            <label class="email-checkbox">
-              <input id="emailDigest" type="checkbox" checked>
-              Digest (one email per interval)
-            </label>
-            <label>
-              SMTP username
-              <input id="smtpUsername" autocomplete="off" spellcheck="false">
-            </label>
-            <label>
-              SMTP password
-              <input id="smtpPassword" type="password" autocomplete="new-password">
-            </label>
-            <label>
-              From address
-              <input id="smtpFrom" placeholder="networker-dashboard@company.com" autocomplete="off" spellcheck="false">
-            </label>
-            <label>
-              To recipients
-              <input id="smtpTo" placeholder="ops@company.com; backup@company.com" autocomplete="off" spellcheck="false">
-            </label>
-            <label>
-              Trigger
-              <select id="alertTrigger">
-                <option value="critical" selected>Critical only</option>
-                <option value="warning">Warnings and critical</option>
-                <option value="all">Every scheduled check</option>
-              </select>
-            </label>
-          </div>
-          <div class="automation-actions">
-            <button id="alertScheduleBtn" class="primary" type="button">Schedule selected report</button>
-            <button id="emailSaveConfigBtn" class="ghost" type="button">Save configuration</button>
-            <button id="alertTestBtn" class="ghost" type="button">Send test</button>
-            <button id="alertStopBtn" class="ghost" type="button">Stop selected schedule</button>
-          </div>
-          <p class="automation-hint" style="margin:0 16px 12px;color:var(--muted);font-size:12px">
-            SMTP settings are shared. <strong>Alert check</strong> and
-            <strong>Daily backup/SLA report</strong> keep separate recipients and
-            settings — switch <em>Email type</em> to edit each. Save configuration
-            stores both independently and survives restarts; it never starts
-            sending — only <strong>Schedule selected report</strong> does.
-          </p>
         </div>
       </div>
 

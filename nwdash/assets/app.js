@@ -107,19 +107,6 @@
     const refreshMinutes = document.getElementById("refreshMinutes");
     const themeSelect = document.getElementById("themeSelect");
     const clearBtn = document.getElementById("clearBtn");
-    const alertConfigBtn = document.getElementById("alertConfigBtn");
-    const alertAutomationModal = document.getElementById("alertAutomationModal");
-    const alertModalCloseBtn = document.getElementById("alertModalCloseBtn");
-    const alertScheduleBtn = document.getElementById("alertScheduleBtn");
-    const alertTestBtn = document.getElementById("alertTestBtn");
-    const alertStopBtn = document.getElementById("alertStopBtn");
-    const emailSaveConfigBtn = document.getElementById("emailSaveConfigBtn");
-    const emailScheduleType = document.getElementById("emailScheduleType");
-    const alertAutomationStatus = document.getElementById("alertAutomationStatus");
-    const smtpSecurity = document.getElementById("smtpSecurity");
-    const smtpPort = document.getElementById("smtpPort");
-    const smtpUsername = document.getElementById("smtpUsername");
-    const smtpPassword = document.getElementById("smtpPassword");
     const notice = document.getElementById("notice");
     const healthGrid = document.getElementById("healthGrid");
     const generatedAt = document.getElementById("generatedAt");
@@ -1149,504 +1136,6 @@
       } catch (error) {}
     }
 
-    function syncSmtpSecurityFields() {
-      const isPlainSmtp = smtpSecurity.value === "none";
-      if (isPlainSmtp) {
-        smtpPort.value = "25";
-        smtpUsername.value = "";
-        smtpPassword.value = "";
-      } else if (!smtpPort.value || smtpPort.value === "25") {
-        smtpPort.value = smtpSecurity.value === "ssl" ? "465" : "587";
-      }
-      smtpUsername.disabled = isPlainSmtp;
-      smtpPassword.disabled = isPlainSmtp;
-      smtpUsername.placeholder = isPlainSmtp ? "Disabled for SMTP without authentication" : "";
-      smtpPassword.placeholder = isPlainSmtp ? "Disabled for SMTP without authentication" : "";
-    }
-
-    let emailConfigCache = null;
-
-    function syncEmailTypeFields() {
-      const isDaily = emailScheduleType.value === "daily_report";
-      const intervalEl = document.getElementById("alertIntervalMinutes");
-      const reportTimeEl = document.getElementById("dailyReportTime");
-      if (intervalEl) {
-        intervalEl.disabled = isDaily;
-        const lbl = intervalEl.closest("label");
-        if (lbl) lbl.classList.toggle("is-disabled", isDaily);
-      }
-      if (reportTimeEl) {
-        reportTimeEl.disabled = !isDaily;
-        const lbl = reportTimeEl.closest("label");
-        if (lbl) lbl.classList.toggle("is-disabled", !isDaily);
-      }
-      const quietStart = document.getElementById("quietStart");
-      const quietEnd = document.getElementById("quietEnd");
-      const digestEl = document.getElementById("emailDigest");
-      [quietStart, quietEnd, digestEl].forEach(el => {
-        if (!el) return;
-        el.disabled = isDaily;
-        const lbl = el.closest("label");
-        if (lbl) lbl.classList.toggle("is-disabled", isDaily);
-      });
-    }
-
-    function applyEmailTypeBlock() {
-      const c = emailConfigCache;
-      if (!c) return;
-      const smtpToEl = document.getElementById("smtpTo");
-      syncEmailTypeFields();
-      if (emailScheduleType.value === "daily_report") {
-        smtpToEl.value = c.dailyReport.recipients || "";
-        document.getElementById("dailyReportTime").value = c.dailyReport.reportTime || "08:00";
-        // NOTE: do NOT touch themeSelect here. The report theme is dynamic and
-        // follows the current dashboard theme (persisted server-side); the email
-        // modal must never override the shared dashboard theme control.
-      } else {
-        smtpToEl.value = c.alert.recipients || "";
-        document.getElementById("alertTrigger").value = c.alert.trigger || "critical";
-        document.getElementById("alertIntervalMinutes").value = c.alert.intervalMinutes || 60;
-      }
-    }
-
-    function applyEmailConfig() {
-      const c = emailConfigCache;
-      if (!c) return;
-      document.getElementById("smtpHost").value = c.smtp.host || "";
-      smtpPort.value = c.smtp.port || "587";
-      smtpSecurity.value = c.smtp.security || "starttls";
-      smtpUsername.value = c.smtp.username || "";
-      document.getElementById("smtpFrom").value = c.smtp.from || "";
-      smtpPassword.value = "";
-      smtpPassword.placeholder = c.smtp.passwordSaved ? "Saved — leave blank to keep" : "";
-      applyEmailTypeBlock();
-      syncSmtpSecurityFields();
-    }
-
-    async function loadEmailConfigIntoForm() {
-      try {
-        const r = await fetch("/api/email-config", {cache: "no-store"});
-        const d = await r.json();
-        if (r.ok && d.ok) {
-          emailConfigCache = d;
-          applyEmailConfig();
-        }
-      } catch (_) { /* keep current form values */ }
-    }
-
-    let currentEmailAutomationId = "";
-
-    function _emailEscape(s) {
-      return String(s == null ? "" : s)
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-    }
-
-    function editEmailRow(id, rows) {
-      const s = (rows || []).find(r => r.automationId === id);
-      if (!s) return;
-      currentEmailAutomationId = id;
-      document.getElementById("emailScheduleType").value = s.scheduleType || "alert";
-      document.getElementById("alertIntervalMinutes").value = s.intervalMinutes || 60;
-      document.getElementById("dailyReportTime").value = s.reportTime || "08:00";
-      document.getElementById("alertTrigger").value = s.trigger || "critical";
-      document.getElementById("smtpTo").value = s.recipients || "";
-      if (s.smtpHost) document.getElementById("smtpHost").value = s.smtpHost;
-      if (s.smtpPort) smtpPort.value = s.smtpPort;
-      if (s.smtpSecurity) smtpSecurity.value = s.smtpSecurity;
-      if (s.smtpUsername) smtpUsername.value = s.smtpUsername;
-      if (s.smtpFrom) document.getElementById("smtpFrom").value = s.smtpFrom;
-      document.getElementById("quietStart").value = s.quietStart || "";
-      document.getElementById("quietEnd").value = s.quietEnd || "";
-      document.getElementById("emailDigest").checked = s.digest !== false;
-      syncSmtpSecurityFields();
-      applyEmailTypeBlock();
-      alertAutomationStatus.textContent = "Editing schedule " + id + " - update fields and click Schedule or Save.";
-    }
-
-    async function deleteEmailRow(id) {
-      try {
-        await fetch("/api/alert-automation", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({action: "stop", sessionId, automationId: id}),
-          cache: "no-store",
-        });
-      } catch (_e) {}
-      if (currentEmailAutomationId === id) currentEmailAutomationId = "";
-      refreshEmailScheduleList();
-    }
-
-    async function toggleEmailRow(id, active) {
-      try {
-        await fetch("/api/alert-automation", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({action: "set_enabled", sessionId, automationId: id, enabled: active}),
-          cache: "no-store",
-        });
-      } catch (_e) {}
-      refreshEmailScheduleList();
-    }
-
-    async function refreshEmailScheduleList() {
-      // Schedules outlive dashboard sessions (they persist server-side and
-      // reconnect on their own), so the list is fetched even before connect —
-      // otherwise restored schedules would look "vanished" after a restart.
-      const list = document.getElementById("emailScheduleList");
-      if (!list) return;
-      try {
-        const r = await fetch("/api/alert-automation", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({action: "list", sessionId}),
-          cache: "no-store",
-        });
-        const data = await r.json();
-        if (!r.ok || !data.ok) { list.innerHTML = ""; const cnt1 = document.getElementById("emailScheduleCount"); if (cnt1) cnt1.textContent = "0"; return; }
-        const rows = data.schedules || [];
-        if (!rows.length) { list.innerHTML = ""; document.getElementById("emailScheduleCount").textContent = "0"; return; }
-        document.getElementById("emailScheduleCount").textContent = rows.length;
-        list.innerHTML = rows.map(s => {
-          const typeLabel = s.scheduleType === "daily_report" ? "Daily report" : "Alert check";
-          const cadence = s.scheduleType === "daily_report"
-            ? ("at " + (s.reportTime || "08:00"))
-            : ("every " + (s.intervalMinutes || 0) + " min");
-          const paused = s.enabled === false;
-          // Schedules survive restarts/session loss; show how each one will run.
-          const linkNote = s.sessionLive === false
-            ? (s.reconnectable ? " · reconnects automatically" : " · waiting for a connection")
-            : "";
-          return '<div class="email-row' + (paused ? " is-disabled" : "") + '" data-id="' + _emailEscape(s.automationId) + '">'
-            + '<label class="em-toggle"><input type="checkbox" class="em-active" data-id="' + _emailEscape(s.automationId) + '"' + (paused ? "" : " checked") + '> Active</label>'
-            + '<strong>' + _emailEscape(typeLabel) + '</strong>'
-            + '<span class="em-meta">' + _emailEscape(s.recipients || "") + ' &middot; '
-            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + (paused ? ' &middot; (paused)' : '') + _emailEscape(linkNote) + '</span>'
-            + '<div class="em-actions">'
-            + '<button type="button" class="ghost em-edit" data-id="' + _emailEscape(s.automationId) + '">Edit</button>'
-            + '<button type="button" class="ghost em-del" data-id="' + _emailEscape(s.automationId) + '">Delete</button>'
-            + '</div></div>';
-        }).join("");
-        list.querySelectorAll(".em-edit").forEach(b => b.addEventListener("click", () => editEmailRow(b.getAttribute("data-id"), rows)));
-        list.querySelectorAll(".em-del").forEach(b => b.addEventListener("click", () => deleteEmailRow(b.getAttribute("data-id"))));
-        list.querySelectorAll(".em-active").forEach(b => b.addEventListener("change", () => toggleEmailRow(b.getAttribute("data-id"), b.checked)));
-      } catch (_e) { list.innerHTML = ""; const cnt2 = document.getElementById("emailScheduleCount"); if (cnt2) cnt2.textContent = "0"; }
-    }
-
-    // ── Named email notification profiles (form presets saved server-side) ──
-    // Loading a profile fills the form; the password field carries the
-    // "(saved)" sentinel, which the server swaps for the stored password.
-    const EMAIL_PROFILE_PW_SAVED = "(saved)";
-    let loadedEmailProfileName = "";
-    let emailProfilesCache = {};
-    const emailProfileCards = document.getElementById("emailProfileCards");
-    const emailProfileNameInput = document.getElementById("emailProfileName");
-    const emailProfileSaveBtn = document.getElementById("emailProfileSaveBtn");
-
-    function emailProfileSummary(p) {
-      const typeLabel = p.scheduleType === "daily_report" ? "Daily report" : "Alert check";
-      const recips = String(p.smtpTo || "").split(/[;,]/).map(s => s.trim()).filter(Boolean);
-      const recipLabel = recips.length
-        ? (recips[0] + (recips.length > 1 ? " +" + (recips.length - 1) : ""))
-        : "no recipients";
-      const cadence = p.scheduleType === "daily_report"
-        ? "at " + (p.reportTime || "08:00")
-        : "every " + (p.intervalMinutes || 60) + " min";
-      return typeLabel + " · " + recipLabel + " · " + cadence;
-    }
-
-    // Profile CARD list: name + summary + status dot + animated ON/OFF switch
-    // (toggle = schedule/stop that profile) + Edit/Delete.
-    function renderEmailProfileCards(profiles) {
-      emailProfilesCache = profiles || {};
-      if (!emailProfileCards) return;
-      const names = Object.keys(emailProfilesCache).sort((a, b) => a.localeCompare(b));
-      if (!names.length) {
-        emailProfileCards.innerHTML = '<div class="ep-empty">No saved profiles yet — fill the form and save one below.</div>';
-        return;
-      }
-      emailProfileCards.innerHTML = names.map(n => {
-        const p = emailProfilesCache[n] || {};
-        const on = p.enabled === true;
-        return '<div class="ep-card' + (on ? " is-on" : "") + '" data-name="' + _emailEscape(n) + '">'
-          + '<span class="ep-dot' + (on ? " on" : "") + '" aria-hidden="true"></span>'
-          + '<div class="ep-card-main">'
-          + '<strong class="ep-card-name">' + _emailEscape(n) + '</strong>'
-          + '<span class="ep-card-sub">' + _emailEscape(emailProfileSummary(p)) + '</span>'
-          + '</div>'
-          + '<div class="ep-card-actions">'
-          + '<button type="button" class="ghost ep-btn ep-edit" data-name="' + _emailEscape(n) + '">&#9998; Edit</button>'
-          + '<button type="button" class="ghost ep-btn ep-del" data-name="' + _emailEscape(n) + '">&#128465; Delete</button>'
-          + '<label class="ep-switch" title="' + (on ? "Scheduled - click to stop" : "Off - click to schedule") + '">'
-          + '<input type="checkbox" class="ep-toggle" data-name="' + _emailEscape(n) + '"' + (on ? " checked" : "")
-          + ' aria-label="Toggle schedule for profile ' + _emailEscape(n) + '">'
-          + '<span class="ep-slider" aria-hidden="true"></span>'
-          + '</label>'
-          + '</div></div>';
-      }).join("");
-      emailProfileCards.querySelectorAll(".ep-edit").forEach(b =>
-        b.addEventListener("click", () => loadEmailProfile(b.getAttribute("data-name"))));
-      emailProfileCards.querySelectorAll(".ep-del").forEach(b =>
-        b.addEventListener("click", () => deleteEmailProfile(b.getAttribute("data-name"))));
-      emailProfileCards.querySelectorAll(".ep-toggle").forEach(t =>
-        t.addEventListener("change", () => toggleEmailProfile(t.getAttribute("data-name"), t.checked, t)));
-    }
-
-    async function toggleEmailProfile(name, enabled, inputEl) {
-      // Optimistic: the checkbox has already animated; reconcile from the
-      // server response (or revert on failure).
-      const card = inputEl && inputEl.closest ? inputEl.closest(".ep-card") : null;
-      if (card) card.classList.toggle("is-on", enabled);
-      if (inputEl) inputEl.disabled = true;
-      try {
-        const data = await emailProfileRequest({
-          action: "toggle-profile", profileName: name, enabled: !!enabled, sessionId,
-        });
-        renderEmailProfileCards(data.profiles || emailProfilesCache);
-        alertAutomationStatus.textContent = data.message
-          || ('Profile "' + name + '" ' + (enabled ? "scheduled." : "stopped."));
-        setStatus(enabled ? "Profile scheduled" : "Profile stopped", enabled ? "ok" : "neutral");
-      } catch (error) {
-        if (inputEl) { inputEl.checked = !enabled; inputEl.disabled = false; }
-        if (card) card.classList.toggle("is-on", !enabled);
-        alertAutomationStatus.textContent = error.message || "Toggling email profile failed";
-        setStatus("Profile toggle failed", "bad");
-      }
-      refreshEmailScheduleList();
-    }
-
-    async function emailProfileRequest(body) {
-      const r = await fetch("/api/alert-automation", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(body),
-        cache: "no-store",
-      });
-      const data = await r.json();
-      if (!r.ok || data.ok === false) {
-        throw new Error(data.error || ("Email profile request failed with HTTP " + r.status));
-      }
-      return data;
-    }
-
-    async function refreshEmailProfileList() {
-      try {
-        const data = await emailProfileRequest({action: "list-profiles"});
-        renderEmailProfileCards(data.profiles || {});
-      } catch (_e) { /* keep the current card list */ }
-    }
-
-    function applyEmailProfileToForm(name, p) {
-      if (!p) return;
-      document.getElementById("smtpHost").value = p.smtpHost || "";
-      smtpPort.value = p.smtpPort || "587";
-      smtpSecurity.value = p.smtpSecurity || "starttls";
-      smtpUsername.value = p.smtpUsername || "";
-      document.getElementById("smtpFrom").value = p.smtpFrom || "";
-      document.getElementById("smtpTo").value = p.smtpTo || "";
-      document.getElementById("emailScheduleType").value = p.scheduleType || "alert";
-      document.getElementById("alertIntervalMinutes").value = p.intervalMinutes || 60;
-      document.getElementById("dailyReportTime").value = p.reportTime || "08:00";
-      document.getElementById("alertTrigger").value = p.trigger || "critical";
-      document.getElementById("quietStart").value = p.quietStart || "";
-      document.getElementById("quietEnd").value = p.quietEnd || "";
-      document.getElementById("emailDigest").checked = p.digest !== false;
-      // "(saved)" sentinel = keep the profile's stored password on submit.
-      smtpPassword.value = p.smtpPassword === EMAIL_PROFILE_PW_SAVED ? EMAIL_PROFILE_PW_SAVED : "";
-      loadedEmailProfileName = name;
-      if (emailProfileNameInput) emailProfileNameInput.value = name;
-      syncSmtpSecurityFields();
-      syncEmailTypeFields();
-      alertAutomationStatus.textContent =
-        'Loaded email profile "' + name + '" - review, then Schedule, Save, or Send test.';
-    }
-
-    async function saveEmailProfile() {
-      const name = ((emailProfileNameInput && emailProfileNameInput.value) || "").trim()
-        || loadedEmailProfileName || "";
-      if (!name) {
-        alertAutomationStatus.textContent = "Enter a profile name before saving.";
-        setStatus("Profile name required", "warn");
-        return;
-      }
-      const payload = alertAutomationPayload("save-profile");
-      payload.profileName = name;
-      if (emailProfileSaveBtn) emailProfileSaveBtn.disabled = true;
-      try {
-        const data = await emailProfileRequest(payload);
-        renderEmailProfileCards(data.profiles || emailProfilesCache);
-        loadedEmailProfileName = name;
-        alertAutomationStatus.textContent = data.message || ('Email profile "' + name + '" saved.');
-        setStatus("Email profile saved", "ok");
-        // Re-saving an ON profile re-arms its schedule server-side.
-        refreshEmailScheduleList();
-      } catch (error) {
-        alertAutomationStatus.textContent = error.message || "Saving email profile failed";
-        setStatus("Email profile save failed", "bad");
-      } finally {
-        if (emailProfileSaveBtn) emailProfileSaveBtn.disabled = false;
-      }
-    }
-
-    async function loadEmailProfile(profileName) {
-      const name = (profileName || "").trim()
-        || ((emailProfileNameInput && emailProfileNameInput.value) || "").trim();
-      if (!name) {
-        alertAutomationStatus.textContent = "Pick a saved profile to load.";
-        return;
-      }
-      try {
-        const data = await emailProfileRequest({action: "get-profile", profileName: name});
-        applyEmailProfileToForm(name, data.profile || null);
-      } catch (error) {
-        alertAutomationStatus.textContent = error.message || "Loading email profile failed";
-        setStatus("Email profile load failed", "bad");
-      }
-    }
-
-    async function deleteEmailProfile(profileName) {
-      const name = (profileName || "").trim()
-        || ((emailProfileNameInput && emailProfileNameInput.value) || "").trim();
-      if (!name) {
-        alertAutomationStatus.textContent = "Pick a saved profile to delete.";
-        return;
-      }
-      if (!window.confirm('Delete email profile "' + name + '"?')) return;
-      try {
-        const data = await emailProfileRequest({action: "delete-profile", profileName: name});
-        renderEmailProfileCards(data.profiles || {});
-        if (loadedEmailProfileName === name) loadedEmailProfileName = "";
-        if (emailProfileNameInput && emailProfileNameInput.value === name) emailProfileNameInput.value = "";
-        alertAutomationStatus.textContent = data.message || ('Email profile "' + name + '" deleted.');
-        setStatus("Email profile deleted", "neutral");
-      } catch (error) {
-        alertAutomationStatus.textContent = error.message || "Deleting email profile failed";
-        setStatus("Email profile delete failed", "bad");
-      }
-    }
-
-    function openAlertAutomationModal() {
-      alertAutomationModal.classList.add("open");
-      alertAutomationModal.setAttribute("aria-hidden", "false");
-      syncSmtpSecurityFields();
-      loadEmailConfigIntoForm();
-      applyEmailTypeBlock();
-      refreshEmailScheduleList();
-      refreshEmailProfileList();
-      setTimeout(() => document.getElementById("smtpHost").focus(), 0);
-    }
-
-    function closeAlertAutomationModal() {
-      alertAutomationModal.classList.remove("open");
-      alertAutomationModal.setAttribute("aria-hidden", "true");
-      smtpPassword.value = "";
-      currentEmailAutomationId = "";
-      loadedEmailProfileName = "";
-      alertConfigBtn.focus();
-    }
-
-    function alertAutomationPayload(action) {
-      const payload = {
-        action,
-        sessionId,
-        automationId: currentEmailAutomationId || "",
-        // Lets the server resolve the "(saved)" password sentinel against the
-        // loaded profile's stored password.
-        emailProfileName: loadedEmailProfileName || "",
-        smtpHost: document.getElementById("smtpHost").value.trim(),
-        smtpPort: smtpPort.value.trim(),
-        smtpSecurity: smtpSecurity.value,
-        smtpUsername: smtpSecurity.value === "none" ? "" : smtpUsername.value.trim(),
-        smtpPassword: smtpSecurity.value === "none" ? "" : smtpPassword.value,
-        smtpFrom: document.getElementById("smtpFrom").value.trim(),
-        smtpTo: document.getElementById("smtpTo").value.trim(),
-        intervalMinutes: document.getElementById("alertIntervalMinutes").value.trim(),
-        trigger: document.getElementById("alertTrigger").value,
-        scheduleType: document.getElementById("emailScheduleType").value,
-        reportTime: document.getElementById("dailyReportTime").value.trim(),
-        quietStart: document.getElementById("quietStart").value.trim(),
-        quietEnd: document.getElementById("quietEnd").value.trim(),
-        digest: document.getElementById("emailDigest").checked,
-        theme: themeSelect.value || "default",
-      };
-      if (action === "test" && payload.scheduleType === "daily_report" && latestDashboard) {
-        payload.dashboard = {
-          generatedAt: latestDashboard.generatedAt,
-          target: latestDashboard.target || {},
-          summary: latestDashboard.summary || {},
-          serverHealth: latestDashboard.serverHealth || {},
-          serverProtectionJob: latestDashboard.serverProtectionJob || latestDashboard.maintenanceBackup || {},
-          theme: payload.theme,
-        };
-      }
-      return payload;
-    }
-
-    function smtpDebugSummary(debug) {
-      if (!debug || typeof debug !== "object") return "";
-      const lines = [
-        `SMTP stage: ${debug.stage || "unknown"}`,
-        `SMTP host: ${debug.host || "--"}:${debug.port || "--"}`,
-        `SMTP security: ${debug.security || "none"}`,
-        `SMTP auth: ${debug.usernameProvided ? "enabled" : "disabled"}`,
-        `Recipients: ${debug.recipientCount || 0}`,
-      ];
-      if (debug.detail) lines.unshift(debug.detail);
-      return lines.join("\\n");
-    }
-
-    async function submitAlertAutomation(action) {
-      // Saving config does not need a live session; scheduling/testing does.
-      if (!sessionId && action !== "stop" && action !== "save") {
-        alertAutomationStatus.textContent = "Connect before scheduling email automations";
-        setStatus("Connect first", "warn");
-        return;
-      }
-      const payload = alertAutomationPayload(action);
-      alertScheduleBtn.disabled = true;
-      alertTestBtn.disabled = true;
-      alertStopBtn.disabled = true;
-      emailSaveConfigBtn.disabled = true;
-      try {
-        const response = await fetch("/api/alert-automation", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(payload),
-          cache: "no-store",
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          const debugText = smtpDebugSummary(data.smtpDebug);
-          const message = data.error || `Alert automation failed with HTTP ${response.status}`;
-          throw new Error(debugText ? `${message}\\n${debugText}` : message);
-        }
-        // Persisting (save, or start which also saves) returns the refreshed
-        // config — update the cache so the per-type recipients stay in sync.
-        if (data.config) emailConfigCache = data.config;
-        const successDebug = action === "test" ? smtpDebugSummary(data.smtpDebug) : "";
-        alertAutomationStatus.textContent = successDebug
-          ? `${data.message || "Alert automation updated"}\\n${successDebug}`
-          : data.message || "Alert automation updated";
-        if (action === "test") setStatus("Test email sent", "ok");
-        if (action === "start") setStatus(payload.scheduleType === "daily_report" ? "Report scheduled" : "Alerts scheduled", "ok");
-        if (action === "stop") setStatus("Schedule stopped", "neutral");
-        if (action === "save") setStatus("Configuration saved", "ok");
-        if (action === "start" || action === "save" || action === "stop") {
-          currentEmailAutomationId = "";
-          refreshEmailScheduleList();
-        }
-      } catch (error) {
-        alertAutomationStatus.textContent = error.message || "Alert automation failed";
-        setStatus("Email automation failed", "bad");
-      } finally {
-        smtpPassword.value = "";
-        alertScheduleBtn.disabled = false;
-        alertTestBtn.disabled = false;
-        alertStopBtn.disabled = false;
-        emailSaveConfigBtn.disabled = false;
-      }
-    }
-
     // Quietly load saved snapshots and render the growth/status panel. Called on
     // connect and on page load so the panel reflects stored snapshots instead of
     // staying on the disconnected "Waiting" placeholder.
@@ -1903,14 +1392,6 @@
       exportReport();
     });
 
-    alertConfigBtn.addEventListener("click", () => {
-      openAlertAutomationModal();
-    });
-
-    alertModalCloseBtn.addEventListener("click", () => {
-      closeAlertAutomationModal();
-    });
-
     // Backdrop dismiss that survives resizing/drag. A bare "click" fires on the
     // common ancestor of pointerdown+pointerup, so grabbing the .modal-panel
     // resize grip (down on panel) and releasing over the backdrop would target
@@ -1927,8 +1408,6 @@
       });
     }
 
-    bindBackdropDismiss(alertAutomationModal, closeAlertAutomationModal);
-
     // Single document-level Escape handler: closes only the topmost open
     // popup per key press (ordered by stacking: drawer > dropdown > modals).
     function closeTopmostPopup() {
@@ -1936,7 +1415,6 @@
       const accountMenu = document.getElementById("accountMenu");
       if (accountMenu && accountMenu.classList.contains("open")) return closeCollapsiblePanel("accountMenu");
       if (snapshotPanel.classList.contains("open")) { closeSnapshotPanel(); return true; }
-      if (alertAutomationModal.classList.contains("open")) { closeAlertAutomationModal(); return true; }
       if (shareModal.classList.contains("open")) { closeShareModal(); return true; }
       if (addServerModal.classList.contains("open")) { closeAddServerModal(); return true; }
       return false;
@@ -1945,28 +1423,6 @@
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && closeTopmostPopup()) event.preventDefault();
     });
-
-    alertScheduleBtn.addEventListener("click", () => {
-      submitAlertAutomation("start");
-    });
-
-    alertTestBtn.addEventListener("click", () => {
-      submitAlertAutomation("test");
-    });
-
-    alertStopBtn.addEventListener("click", () => {
-      submitAlertAutomation("stop");
-    });
-
-    emailSaveConfigBtn.addEventListener("click", () => {
-      submitAlertAutomation("save");
-    });
-
-    if (emailProfileSaveBtn) emailProfileSaveBtn.addEventListener("click", () => { saveEmailProfile(); });
-
-    // Switching Email type swaps to that type's separately-saved recipients and
-    // settings without losing the other type's values.
-    emailScheduleType.addEventListener("change", applyEmailTypeBlock);
 
     snapshotSaveBtn.addEventListener("click", () => { saveLocalSnapshot(); });
     snapshotCompareBtn.addEventListener("click", () => { compareLocalSnapshots(); });
@@ -2136,7 +1592,6 @@
     autoRefreshMode.addEventListener("change", scheduleAutoRefresh);
     refreshMinutes.addEventListener("change", scheduleAutoRefresh);
     themeSelect.addEventListener("change", () => applyTheme(themeSelect.value));
-    smtpSecurity.addEventListener("change", syncSmtpSecurityFields);
 
     clearBtn.addEventListener("click", () => {
       form.reset();
@@ -2152,9 +1607,6 @@
       form.useWmiHealth.checked = true;
       form.useAuthcHeader.checked = true;
       form.verifyTls.checked = true;
-      smtpPassword.value = "";
-      syncSmtpSecurityFields();
-      alertAutomationStatus.textContent = "Not scheduled";
       clearPassword();
       resetDashboard();
     });
@@ -2949,7 +2401,6 @@
       try { return localStorage.getItem("nw_dashboard_theme") || "default"; }
       catch (error) { return "default"; }
     })());
-    syncSmtpSecurityFields();
     exportBtn.disabled = true;
     snapshotSaveBtn.disabled = true;
     requestNotifyPermission();
