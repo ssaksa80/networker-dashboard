@@ -2623,4 +2623,7 @@
 
     .tv-url-row { display: flex; gap: 8px; margin-bottom: 12px; }
     .tv-url-row input { flex: 1; font-family: monospace; }
+
+    .config-drawer { width: min(560px, 96vw); }
+    .config-drawer .panel { border: none; box-shadow: none; margin: 0; padding: 0; background: transparent; }
   
