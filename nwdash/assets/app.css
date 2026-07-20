@@ -2612,4 +2612,12 @@
       .theme-chip-name { font-size: 15px; }
       .theme-field { font-size: 19px; }
     }
+
+    .health-badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+    .health-ok   { background: #16794322; color: #16a34a; }
+    .health-bad  { background: #b4530922; color: #dc2626; }
+    .health-idle { background: #64748b22; color: #64748b; }
+    .report-job  { padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
+    .form-error  { color: #dc2626; min-height: 1.2em; }
+    .legacy-notice { padding: 10px; border: 1px solid var(--amber); border-radius: 8px; margin-bottom: 8px; }
   
