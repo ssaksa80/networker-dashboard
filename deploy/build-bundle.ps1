@@ -73,6 +73,7 @@ $shipFiles = @(
   'nwdash\models.py',
   'nwdash\nwui.py',
   'nwdash\profiles.py',
+  'nwdash\report_cred.py',
   'nwdash\reports.py',
   'nwdash\restapi.py',
   'nwdash\secrets.py',
