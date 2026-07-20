@@ -40,6 +40,7 @@ from .config import (
     safe_log_text,
 )
 from .secrets import encrypt_profile_secret
+from . import display, report_render
 from .display import validate_token as validate_display_token
 from .auth import (
     _clear_login_failures,
@@ -104,6 +105,39 @@ from .snapshots import (
 )
 from .reports import build_excel_report
 from .report_api import handle_report_jobs
+
+
+def _cred_for_render(cred: dict) -> dict:
+    """report_render.render expects a stored-shape cred (encrypted_password). For
+    validation we seal the just-entered plaintext so the same code path runs."""
+    from .report_cred import encrypt_credential_password
+    out = {k: v for k, v in cred.items() if k != "password"}
+    out["encrypted_password"] = encrypt_credential_password(str(cred.get("password") or ""))
+    return out
+
+
+def handle_display_config(payload: dict) -> tuple[int, dict]:
+    action = str(payload.get("action") or "").strip().lower()
+    if action in ("get", "rotate", "revoke"):
+        if action == "rotate":
+            token = display.rotate_token()
+        elif action == "revoke":
+            display.revoke_token(); token = ""
+        else:
+            token = display.get_or_create_token()
+        return HTTPStatus.OK, {"ok": True, "token": token, "hasConnection": display.load_connection() is not None}
+    if action == "set-connection":
+        cred = payload.get("credential") if isinstance(payload.get("credential"), dict) else {}
+        res = report_render.render(_cred_for_render(cred))
+        if not res.ok:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": res.error or "Could not connect to NetWorker with these credentials."}
+        display.save_connection(cred)
+        return HTTPStatus.OK, {"ok": True, "hasConnection": True}
+    if action == "clear-connection":
+        display.clear_connection()
+        return HTTPStatus.OK, {"ok": True, "hasConnection": False}
+    return HTTPStatus.BAD_REQUEST, {"ok": False, "message": f"Unknown action {action!r}."}
+
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = f"NetWorkerDashboard/{APP_VERSION}"
@@ -564,7 +598,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         allowed = {"/api/dashboard", "/api/export", "/api/server-health",
                    "/api/alert-automation", "/api/report-jobs", "/api/snapshots",
                    "/api/share", "/api/multi-server", "/api/profiles",
-                   "/api/ui-theme"}
+                   "/api/ui-theme", "/api/display-config"}
         if path not in allowed:
             self._drain_request_body()
             self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
@@ -706,6 +740,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             if path == "/api/report-jobs":
                 status, body = handle_report_jobs(payload)
+                self._send_json(status, body)
+                return
+
+            if path == "/api/display-config":
+                status, body = handle_display_config(payload)
                 self._send_json(status, body)
                 return
 
