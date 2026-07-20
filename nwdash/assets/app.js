@@ -1411,6 +1411,8 @@
     // Single document-level Escape handler: closes only the topmost open
     // popup per key press (ordered by stacking: drawer > dropdown > modals).
     function closeTopmostPopup() {
+      var configDrawerEl = document.getElementById("configDrawer");
+      if (configDrawerEl && configDrawerEl.classList.contains("open")) { closeConfigDrawer(); return true; }
       if (jobDetailDrawer.classList.contains("open")) { closeJobDrawer(); return true; }
       const accountMenu = document.getElementById("accountMenu");
       if (accountMenu && accountMenu.classList.contains("open")) return closeCollapsiblePanel("accountMenu");
@@ -2559,21 +2561,30 @@
       loadSmtpSettings();
     }
 
-    function revealConfigPanel(panelId) {
-      var p = document.getElementById(panelId);
-      if (!p) return;
+    function openConfigDrawer(panelId, title) {
       ["smtpSettingsPanel", "scheduledReportsPanel", "tvDisplayPanel"].forEach(function (id) {
-        var el = document.getElementById(id);
-        if (el) el.classList.add("hidden");
+        var el = document.getElementById(id); if (el) el.classList.add("hidden");
       });
-      p.classList.remove("hidden");
+      var p = document.getElementById(panelId); if (p) p.classList.remove("hidden");
+      var t = document.getElementById("configDrawerTitle"); if (t) t.textContent = title || "Settings";
+      document.getElementById("configDrawer").classList.add("open");
+      document.getElementById("configDrawerOverlay").classList.add("open");
       try { closeCollapsiblePanel("accountMenu"); } catch (e) {}
-      p.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    function closeConfigDrawer() {
+      document.getElementById("configDrawer").classList.remove("open");
+      document.getElementById("configDrawerOverlay").classList.remove("open");
     }
     function initConfigPanelButtons() {
-      var map = {emailSettingsBtn: "smtpSettingsPanel", reportsPanelBtn: "scheduledReportsPanel", tvDisplayBtn: "tvDisplayPanel"};
+      var map = {
+        emailSettingsBtn: ["smtpSettingsPanel", "Email (SMTP) settings"],
+        reportsPanelBtn:  ["scheduledReportsPanel", "Scheduled Reports"],
+        tvDisplayBtn:     ["tvDisplayPanel", "TV / Display"],
+      };
       Object.keys(map).forEach(function (btnId) {
         var b = document.getElementById(btnId);
-        if (b) b.addEventListener("click", function () { revealConfigPanel(map[btnId]); });
+        if (b) b.addEventListener("click", function () { openConfigDrawer(map[btnId][0], map[btnId][1]); });
       });
+      var c = document.getElementById("configDrawerClose"); if (c) c.addEventListener("click", closeConfigDrawer);
+      var o = document.getElementById("configDrawerOverlay"); if (o) o.addEventListener("click", closeConfigDrawer);
     }

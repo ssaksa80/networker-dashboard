@@ -15,4 +15,4 @@ def test_config_panels_hidden_by_default():
 
 def test_appjs_wires_reveal():
     js = (A / "app.js").read_text(encoding="utf-8")
-    assert "revealConfigPanel" in js
+    assert "openConfigDrawer" in js
