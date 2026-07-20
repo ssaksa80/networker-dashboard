@@ -2411,6 +2411,7 @@
     initScheduledReports();
     initDisplayConfig();
     initSmtpSettings();
+    initConfigPanelButtons();
 
     function reportHealthBadge(state) {
       const map = {healthy: "ok", unhealthy: "bad", never_run: "idle"};
@@ -2556,4 +2557,23 @@
       if (!f) return;
       f.addEventListener("submit", submitSmtpSettings);
       loadSmtpSettings();
+    }
+
+    function revealConfigPanel(panelId) {
+      var p = document.getElementById(panelId);
+      if (!p) return;
+      ["smtpSettingsPanel", "scheduledReportsPanel", "tvDisplayPanel"].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.add("hidden");
+      });
+      p.classList.remove("hidden");
+      try { closeCollapsiblePanel("accountMenu"); } catch (e) {}
+      p.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    function initConfigPanelButtons() {
+      var map = {emailSettingsBtn: "smtpSettingsPanel", reportsPanelBtn: "scheduledReportsPanel", tvDisplayBtn: "tvDisplayPanel"};
+      Object.keys(map).forEach(function (btnId) {
+        var b = document.getElementById(btnId);
+        if (b) b.addEventListener("click", function () { revealConfigPanel(map[btnId]); });
+      });
     }

@@ -28,6 +28,9 @@
         <button id="addServerBtn" class="topbar-button" type="button">+ Server</button>
         <button id="shareBtn" class="topbar-button hidden" type="button">Share</button>
         <button id="tvModeBtn" class="topbar-button" type="button" title="Open the TV wall-display mode in a new tab">&#128250; TV mode</button>
+        <button id="emailSettingsBtn" class="topbar-button" type="button">Email (SMTP)</button>
+        <button id="reportsPanelBtn" class="topbar-button" type="button">Scheduled Reports</button>
+        <button id="tvDisplayBtn" class="topbar-button" type="button">TV / Display</button>
         <button id="logoutBtn" class="topbar-button danger hidden" type="button">Logout</button>
       </div>
     </div>
@@ -544,7 +547,7 @@
         <div id="serverCards" class="server-cards"></div>
       </section>
 
-      <section id="smtpSettingsPanel" class="panel">
+      <section id="smtpSettingsPanel" class="panel hidden">
         <header class="panel-head"><h2>Email (SMTP) settings</h2></header>
         <p>Shared SMTP transport used by all scheduled reports and failure alerts.</p>
         <form id="smtpSettingsForm" class="report-form">
@@ -562,7 +565,7 @@
         </form>
       </section>
 
-      <section id="scheduledReportsPanel" class="panel">
+      <section id="scheduledReportsPanel" class="panel hidden">
         <header class="panel-head">
           <h2>Scheduled Reports</h2>
           <button id="reportAddBtn" type="button">New report</button>
@@ -584,7 +587,7 @@
         </form>
       </section>
 
-      <section id="tvDisplayPanel" class="panel">
+      <section id="tvDisplayPanel" class="panel hidden">
         <header class="panel-head"><h2>TV / Display</h2></header>
         <p>Point the DSO TV at this URL — it shows the live wall with no login:</p>
         <div class="tv-url-row">
