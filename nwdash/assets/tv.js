@@ -314,6 +314,7 @@
     }).join("");
   }
   function refreshSnapshots() {
+    if (DISPLAY_TOKEN) { return; } /* no-login wall: never poll session-gated APIs */
     fetch("/api/snapshots?range=7d", { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(renderSnapshots)
@@ -489,8 +490,11 @@
     if (!got) showWaiting();
     schedulePoll();
   });
-  refreshSnapshots();
-  setInterval(refreshSnapshots, SNAP_REFRESH_MS);
-  if (DISPLAY_TOKEN) { setInterval(function () { loadCurrentDashboard(); }, 60000); }
+  if (!DISPLAY_TOKEN) {
+    refreshSnapshots();
+    setInterval(refreshSnapshots, SNAP_REFRESH_MS);
+  } else {
+    setInterval(function () { loadCurrentDashboard(); }, 60000);
+  }
   startSSE();
 })();

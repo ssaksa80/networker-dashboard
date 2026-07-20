@@ -6,6 +6,7 @@ connection is a NetWorker credential (password sealed with machine-DPAPI via
 report_cred) used to keep the shared dashboard live when no one is logged in."""
 from __future__ import annotations
 
+import hmac
 import json
 import threading
 import uuid
@@ -65,7 +66,7 @@ def revoke_token() -> bool:
 def validate_token(token: str) -> bool:
     if not token or len(token) != 32:
         return False
-    return token == current_token()
+    return hmac.compare_digest(token, current_token())
 
 
 # display connection

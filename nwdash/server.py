@@ -362,7 +362,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_error_json(HTTPStatus.GONE, "This display link has expired or been revoked.")
             return
         payload = shared_dashboard_payload()
-        body = dict(payload) if isinstance(payload, dict) else {"ok": False}
+        # Whitelist the public shape: never leak internal fields such as
+        # sessionId, lastError, or snapshotSummary to the no-login TV wall.
+        body: dict[str, Any] = {}
+        if isinstance(payload, dict):
+            for key in ("ok", "dashboard", "updatedAt"):
+                if key in payload:
+                    body[key] = payload[key]
         try:
             body["theme"] = load_ui_theme() or "default"
         except Exception:  # noqa: BLE001
