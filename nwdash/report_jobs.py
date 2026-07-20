@@ -10,10 +10,14 @@ import smtplib
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 from . import config
+from . import report_notify
 from . import report_render
+from .config import debug_log
+from .models import SHARED_REFRESH_STOP
 
 
 @dataclass
@@ -170,3 +174,85 @@ def validate(job: "ReportJob", smtp: dict[str, Any], smtp_password: str) -> Vali
         detail = smtp_err
     ok = all(checks.values())
     return ValidationResult(ok, checks, detail)
+
+
+REPORT_TICK_SECONDS = 30
+
+
+def _seconds_until_report_time(report_time: str, now: datetime | None = None) -> float:
+    now = now or datetime.now().astimezone()
+    hour, minute = (int(p) for p in report_time.split(":", 1))
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return max(1.0, (target - now).total_seconds())
+
+
+def compute_next_run(job: "ReportJob") -> float:
+    if job.kind == "digest":
+        return time.time() + _seconds_until_report_time(job.schedule.report_time)
+    return time.time() + max(60, job.schedule.interval_minutes * 60)
+
+
+def fire_job(job: "ReportJob", cfg: dict[str, Any]) -> None:
+    """Render and deliver ONE job. Never raises; records health either way."""
+    if not job.enabled:
+        return
+    smtp = cfg.get("smtp") or {}
+    smtp_password = str(cfg.get("smtp_password") or "")
+    ops_address = str(cfg.get("ops_address") or "")
+    job.health.last_run = time.time()
+    try:
+        res = report_render.render(job.credential)
+        if res.ok:
+            report_notify.send_report(job, res.dashboard, smtp, smtp_password, stale=False)
+            report_render.cache_put(job.id, res.dashboard)
+            job.health.state = "healthy"
+            job.health.last_success = time.time()
+            job.health.consecutive_failures = 0
+            job.health.last_result = f"Sent at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        else:
+            cached = report_render.cache_get(job.id)
+            if cached:
+                report_notify.send_report(job, cached, smtp, smtp_password, stale=True)
+            report_notify.send_ops_alert(job, res.error, smtp, ops_address, smtp_password)
+            job.health.state = "unhealthy"
+            job.health.consecutive_failures += 1
+            job.health.last_result = f"Failed: {res.error}"
+    except Exception as exc:  # noqa: BLE001 — a fire must never kill the loop
+        job.health.state = "unhealthy"
+        job.health.consecutive_failures += 1
+        job.health.last_result = f"Error: {exc}"
+        debug_log(f"fire_job {job.id} crashed: {exc}")
+    finally:
+        job.health.next_run = compute_next_run(job)
+
+
+def scheduler_tick(cfg_provider) -> None:
+    now = time.time()
+    for job in jobs_snapshot():
+        if not job.enabled:
+            continue
+        nxt = job.health.next_run or 0.0
+        if not nxt:
+            job.health.next_run = compute_next_run(job)
+            continue
+        if now >= nxt:
+            job.health.next_run = now + max(60, job.schedule.interval_minutes * 60)
+            threading.Thread(target=_fire_and_persist, args=(job, cfg_provider),
+                             name=f"report-fire-{job.id[:12]}", daemon=True).start()
+
+
+def _fire_and_persist(job: "ReportJob", cfg_provider) -> None:
+    try:
+        fire_job(job, cfg_provider())
+    finally:
+        persist_jobs()
+
+
+def scheduler_loop(cfg_provider) -> None:
+    while not SHARED_REFRESH_STOP.wait(REPORT_TICK_SECONDS):
+        try:
+            scheduler_tick(cfg_provider)
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"report scheduler_loop iteration failed: {exc}")
