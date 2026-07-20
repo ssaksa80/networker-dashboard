@@ -6,12 +6,14 @@ store."""
 from __future__ import annotations
 
 import json
+import smtplib
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from . import config
+from . import report_render
 
 
 @dataclass
@@ -122,3 +124,49 @@ def restore_jobs_from_disk() -> int:
         except (KeyError, TypeError, ValueError):
             continue
     return restored
+
+
+@dataclass
+class ValidationResult:
+    ok: bool
+    checks: dict[str, bool]
+    detail: str = ""
+
+
+def _smtp_probe(smtp: dict[str, Any], smtp_password: str) -> tuple[bool, str]:
+    """Open a real SMTP connection (and STARTTLS/login when configured) without
+    sending, to prove delivery works before a job goes Active."""
+    host = str(smtp.get("host") or "")
+    port = int(smtp.get("port") or 25)
+    security = str(smtp.get("security") or "none").lower()
+    username = str(smtp.get("username") or "")
+    try:
+        if security == "ssl":
+            conn = smtplib.SMTP_SSL(host, port, timeout=20)
+        else:
+            conn = smtplib.SMTP(host, port, timeout=20)
+        with conn as s:
+            s.ehlo()
+            if security == "starttls":
+                s.starttls(); s.ehlo()
+            if username:
+                s.login(username, smtp_password)
+        return True, ""
+    except Exception as exc:  # noqa: BLE001 — surfaced to the operator
+        return False, str(exc)
+
+
+def validate(job: "ReportJob", smtp: dict[str, Any], smtp_password: str) -> ValidationResult:
+    checks = {"credential": False, "render": False, "smtp": False}
+    detail = ""
+    render_res = report_render.render(job.credential)
+    checks["credential"] = bool(job.credential.get("rest_api_host") and job.credential.get("username"))
+    checks["render"] = render_res.ok
+    if not render_res.ok:
+        detail = render_res.error
+    smtp_ok, smtp_err = _smtp_probe(smtp, smtp_password)
+    checks["smtp"] = smtp_ok
+    if not smtp_ok and not detail:
+        detail = smtp_err
+    ok = all(checks.values())
+    return ValidationResult(ok, checks, detail)
