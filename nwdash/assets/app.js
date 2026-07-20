@@ -2410,6 +2410,7 @@
     startSSE();
     initScheduledReports();
     initDisplayConfig();
+    initSmtpSettings();
 
     function reportHealthBadge(state) {
       const map = {healthy: "ok", unhealthy: "bad", never_run: "idle"};
@@ -2521,4 +2522,38 @@
       document.getElementById("tvRevokeBtn").addEventListener("click", () => _displayAction("revoke"));
       document.getElementById("tvConnForm").addEventListener("submit", submitDisplayConn);
       renderDisplayConfig();
+    }
+
+    async function loadSmtpSettings() {
+      const f = document.getElementById("smtpSettingsForm");
+      if (!f) return;
+      try {
+        const r = await fetch("/api/email-config", {cache: "no-store"});
+        const d = await r.json();
+        const s = d.smtp || {};
+        f.host.value = s.host || ""; f.port.value = s.port || 25;
+        f.security.value = s.security || "none"; f.username.value = s.username || "";
+        f.from.value = s.from || ""; f.opsAlertAddress.value = d.opsAlertAddress || "";
+        f.password.placeholder = s.passwordSaved ? "(unchanged — leave blank to keep)" : "";
+      } catch (e) {}
+    }
+
+    async function submitSmtpSettings(ev) {
+      ev.preventDefault();
+      const f = ev.target, msg = document.getElementById("smtpSettingsMsg");
+      msg.textContent = "Saving…";
+      const r = await fetch("/api/email-config", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({host: f.host.value, port: Number(f.port.value), security: f.security.value,
+          username: f.username.value, password: f.password.value, from: f.from.value,
+          opsAlertAddress: f.opsAlertAddress.value})});
+      const d = await r.json();
+      if (d.ok) { msg.textContent = "Saved."; f.password.value = ""; loadSmtpSettings(); }
+      else { msg.textContent = "Save failed."; }
+    }
+
+    function initSmtpSettings() {
+      const f = document.getElementById("smtpSettingsForm");
+      if (!f) return;
+      f.addEventListener("submit", submitSmtpSettings);
+      loadSmtpSettings();
     }

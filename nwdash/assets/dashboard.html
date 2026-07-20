@@ -544,6 +544,24 @@
         <div id="serverCards" class="server-cards"></div>
       </section>
 
+      <section id="smtpSettingsPanel" class="panel">
+        <header class="panel-head"><h2>Email (SMTP) settings</h2></header>
+        <p>Shared SMTP transport used by all scheduled reports and failure alerts.</p>
+        <form id="smtpSettingsForm" class="report-form">
+          <label>SMTP host <input name="host" required></label>
+          <label>Port <input name="port" type="number" value="25"></label>
+          <label>Security
+            <select name="security"><option value="none">None</option><option value="starttls">STARTTLS</option><option value="ssl">SSL</option></select>
+          </label>
+          <label>Username <input name="username" autocomplete="off"></label>
+          <label>Password <input name="password" type="password" placeholder="(unchanged)" autocomplete="new-password"></label>
+          <label>From address <input name="from" required></label>
+          <label>Ops-alert address <input name="opsAlertAddress" placeholder="who gets failure alerts"></label>
+          <div id="smtpSettingsMsg" class="form-error" role="alert"></div>
+          <button type="submit">Save SMTP settings</button>
+        </form>
+      </section>
+
       <section id="scheduledReportsPanel" class="panel">
         <header class="panel-head">
           <h2>Scheduled Reports</h2>
