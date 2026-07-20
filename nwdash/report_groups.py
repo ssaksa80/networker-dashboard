@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import json
 import threading
+import time as _time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import Any
 
 from . import config
-from .config import TIME_HHMM_PATTERN
-from .report_window import CADENCES, SECTION_KEYS
+from . import report_notify
+from . import report_render
+from .config import TIME_HHMM_PATTERN, debug_log
+from .models import SHARED_REFRESH_STOP
+from .report_window import CADENCES, SECTION_KEYS, compute_window
+from .report_window import next_run as _next_run
 
 
 @dataclass
@@ -144,3 +150,126 @@ def validate_group(g: "ReportGroup") -> GroupValidation:
     if not TIME_HHMM_PATTERN.match(str(g.send_time or "")):
         errors["send_time"] = "Send time must be HH:MM (24h)."
     return GroupValidation(not errors, errors)
+
+
+GROUP_TICK_SECONDS = 30
+
+
+def _now() -> datetime:
+    return datetime.now().astimezone()
+
+
+def compute_group_next_run(g: "ReportGroup") -> float:
+    return _next_run(g.cadence, g.send_time, _now())
+
+
+def _render_for(g: "ReportGroup", cfg: dict[str, Any]):
+    conn = cfg.get("connection") or {}
+    window = compute_window(g.cadence, _now())
+    return report_render.render_window(conn, window)
+
+
+def fire_group(g: "ReportGroup", cfg: dict[str, Any]) -> None:
+    """Render and deliver ONE group. Never raises; records health either way.
+
+    Each send_* call (group report, stale fallback, ops alert) is isolated in
+    its own try/except so a raise from one can never suppress another send or
+    the health update below."""
+    if not g.enabled:
+        return
+    smtp = cfg.get("smtp") or {}
+    smtp_password = str(cfg.get("smtp_password") or "")
+    ops_address = str(cfg.get("ops_address") or "")
+    g.health.last_run = _time.time()
+    try:
+        try:
+            res = _render_for(g, cfg)
+        except Exception as exc:  # noqa: BLE001 — render must never kill the loop
+            debug_log(f"fire_group {g.id} render crashed: {exc}")
+            res = report_render.RenderResult(False, {}, str(exc))
+
+        if res.ok:
+            send_error: Exception | None = None
+            try:
+                report_notify.send_group_report(g, res.dashboard, smtp, smtp_password, test=False)
+            except Exception as exc:  # noqa: BLE001 — isolate this send
+                send_error = exc
+                debug_log(f"fire_group {g.id} send_group_report crashed: {exc}")
+
+            if send_error is None:
+                report_render.cache_put("group:" + g.id, res.dashboard)
+                g.health.state = "healthy"
+                g.health.last_success = _time.time()
+                g.health.last_result = f"Sent at {_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            else:
+                g.health.state = "unhealthy"
+                g.health.last_result = f"Send failed: {send_error}"
+                try:
+                    report_notify.send_ops_alert(g, str(send_error), smtp, ops_address, smtp_password)
+                except Exception as exc:  # noqa: BLE001 — isolate ops alert
+                    debug_log(f"fire_group {g.id} send_ops_alert crashed: {exc}")
+        else:
+            cached = report_render.cache_get("group:" + g.id)
+            if cached:
+                try:
+                    report_notify.send_group_report(g, cached, smtp, smtp_password, test=False)
+                except Exception as exc:  # noqa: BLE001 — isolate stale-fallback send
+                    debug_log(f"fire_group {g.id} stale send_group_report crashed: {exc}")
+            try:
+                report_notify.send_ops_alert(g, res.error, smtp, ops_address, smtp_password)
+            except Exception as exc:  # noqa: BLE001 — isolate ops alert
+                debug_log(f"fire_group {g.id} send_ops_alert crashed: {exc}")
+            g.health.state = "unhealthy"
+            g.health.last_result = f"Failed: {res.error}"
+    except Exception as exc:  # noqa: BLE001 — a fire must never kill the loop
+        g.health.state = "unhealthy"
+        g.health.last_result = f"Error: {exc}"
+        debug_log(f"fire_group {g.id} crashed: {exc}")
+    finally:
+        g.health.next_run = compute_group_next_run(g)
+
+
+def send_on_demand(g: "ReportGroup", cfg: dict[str, Any], test: bool) -> tuple[bool, str]:
+    """Render fresh and send immediately (used by both the manual 'send now'
+    and the 'send test' actions). No health tracking, no cache/fallback —
+    this is an interactive, on-demand action."""
+    smtp = cfg.get("smtp") or {}
+    smtp_password = str(cfg.get("smtp_password") or "")
+    res = _render_for(g, cfg)
+    if not res.ok:
+        return False, res.error or "Render failed."
+    try:
+        report_notify.send_group_report(g, res.dashboard, smtp, smtp_password, test=test)
+        return True, "Test sent." if test else "Sent."
+    except Exception as exc:  # noqa: BLE001 — surfaced to the caller
+        return False, str(exc)
+
+
+def group_scheduler_tick(cfg_provider) -> None:
+    now = _time.time()
+    for g in groups_ordered():
+        if not g.enabled:
+            continue
+        nxt = g.health.next_run or 0.0
+        if not nxt:
+            g.health.next_run = compute_group_next_run(g)
+            continue
+        if now >= nxt:
+            g.health.next_run = now + 3600
+            threading.Thread(target=_fire_and_persist, args=(g, cfg_provider),
+                             name=f"group-fire-{g.id[:12]}", daemon=True).start()
+
+
+def _fire_and_persist(g: "ReportGroup", cfg_provider) -> None:
+    try:
+        fire_group(g, cfg_provider())
+    finally:
+        persist_groups()
+
+
+def group_scheduler_loop(cfg_provider) -> None:
+    while not SHARED_REFRESH_STOP.wait(GROUP_TICK_SECONDS):
+        try:
+            group_scheduler_tick(cfg_provider)
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"group_scheduler_loop iteration failed: {exc}")
