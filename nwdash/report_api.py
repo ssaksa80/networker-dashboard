@@ -8,7 +8,7 @@ import uuid
 from http import HTTPStatus
 from typing import Any
 
-from . import report_jobs
+from . import config, report_jobs
 from .report_cred import encrypt_credential_password
 from .emailer import saved_email_smtp_password
 from .config import EMAIL_CONFIG_FILE
@@ -57,7 +57,11 @@ def handle_report_jobs(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     action = str(payload.get("action") or "").strip().lower()
 
     if action == "list":
-        return HTTPStatus.OK, {"ok": True, "jobs": [_job_public(j) for j in report_jobs.jobs_snapshot()]}
+        return HTTPStatus.OK, {
+            "ok": True,
+            "jobs": [_job_public(j) for j in report_jobs.jobs_snapshot()],
+            "legacyMigrationNeeded": config.AUTOMATIONS_FILE.exists(),
+        }
 
     if action == "delete":
         report_jobs.delete_job(str(payload.get("id") or ""))

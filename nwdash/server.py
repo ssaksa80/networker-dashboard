@@ -102,7 +102,6 @@ from .snapshots import (
     snapshots_to_csv,
 )
 from .reports import build_excel_report
-from .emailer import handle_alert_automation
 from .report_api import handle_report_jobs
 
 class DashboardHandler(BaseHTTPRequestHandler):
