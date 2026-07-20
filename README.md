@@ -13,11 +13,15 @@ package installs required on the host.
 - Optional Windows server health (CPU/memory/disk) via WMI
 - Multi-server view, connection profiles, share-by-link read-only view
 - Daily snapshots with history, comparison, and CSV export
-- Scheduled Reports panel: each report owns its own NetWorker credential
-  (entered once, encrypted at rest), a save-time validation gate (connect +
-  render + SMTP) blocks broken schedules before they're saved, and a failed
-  run still emails a fallback report plus a separate ops alert — including a
-  rendered dashboard image when a headless Chrome/Edge is available
+- Scheduled Reports: named, ordered, on/off report **groups** — each group
+  picks its own dashboard sections, recipients, and cadence (daily, weekly on
+  Sunday, or monthly on the 1st, with matching retrospective windows) and
+  pulls live data through one shared reporting connection. On-demand
+  "Send now" (with a "test" checkbox) runs any group immediately. A save-time
+  validation gate (connect + render + SMTP) blocks broken groups before
+  they're saved, and a failed run still emails a fallback report plus a
+  separate ops alert — including a rendered dashboard image when a headless
+  Chrome/Edge is available
 - Password login (PBKDF2), HMAC-signed sessions, CSRF protection,
   HSTS/CSP security headers, login rate limiting
 
