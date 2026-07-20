@@ -438,7 +438,35 @@ def _shared_dashboard_refresh_once() -> None:
     from .sessions import build_dashboard_from_session, reauthenticate_dashboard_session, session_config_with_secrets  # late import: avoids circular module import
     with SHARED_DASHBOARD_LOCK:
         session_id = str(SHARED_DASHBOARD_STATE.get("sessionId") or "")
-    if not session_id:
+
+    # A REAL interactive session drives the refresh only when session_id is
+    # non-empty, is not the "display" sentinel set by the fallback below, and
+    # the session object still exists. Otherwise (no session id, the
+    # "display" sentinel, or a session that has since been evicted) fall
+    # through to the display-connection path every cycle -- previously this
+    # branch was gated on `not session_id` alone, so once the fallback wrote
+    # sessionId="display" the next cycle took the session path, hit a 401
+    # against a nonexistent "display" session, and the TV wall latched off
+    # forever (never re-entering the display branch again).
+    use_session = bool(session_id) and session_id != "display" and _get_session(session_id) is not None
+    if not use_session:
+        # No usable interactive session: keep the TV wall live from the
+        # persistent display connection via the session-free render path.
+        # This MUST run every cycle so the wall stays live. Late imports
+        # avoid a circular import at module load.
+        try:
+            from . import display, report_render
+        except Exception:  # noqa: BLE001
+            return
+        conn = display.load_connection()
+        if not conn:
+            return
+        res = report_render.render(conn)
+        if res.ok:
+            set_shared_dashboard("display", res.dashboard)
+        else:
+            with SHARED_DASHBOARD_LOCK:
+                SHARED_DASHBOARD_STATE["lastError"] = res.error or "Display connection refresh failed."
         return
 
     status, dashboard = build_dashboard_from_session(session_id)

@@ -2958,6 +2958,7 @@
     loadSharedDashboard();
     startSSE();
     initScheduledReports();
+    initDisplayConfig();
 
     function reportHealthBadge(state) {
       const map = {healthy: "ok", unhealthy: "bad", never_run: "idle"};
@@ -3028,4 +3029,45 @@
       document.getElementById("reportJobForm").addEventListener("submit", submitReportJob);
       renderReportJobs();
     }
-  
+
+    async function renderDisplayConfig() {
+      const panel = document.getElementById("tvDisplayPanel");
+      if (!panel) return;
+      const r = await fetch("/api/display-config", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action: "get"})});
+      const d = await r.json();
+      const urlBox = document.getElementById("tvDisplayUrl");
+      urlBox.value = d.token ? `${location.origin}/tv/${d.token}` : "(revoked — click Rotate to create one)";
+      const st = document.getElementById("tvConnState");
+      st.textContent = d.hasConnection ? "connection set" : "not set";
+      st.className = "health-badge " + (d.hasConnection ? "health-ok" : "health-idle");
+    }
+
+    async function _displayAction(action) {
+      await fetch("/api/display-config", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action})});
+      renderDisplayConfig();
+    }
+
+    async function submitDisplayConn(ev) {
+      ev.preventDefault();
+      const f = ev.target, err = document.getElementById("tvConnError");
+      err.textContent = "Validating connection…";
+      const r = await fetch("/api/display-config", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action: "set-connection", credential: {
+          rest_api_host: f.rest_api_host.value, rest_api_port: Number(f.rest_api_port.value),
+          backup_server_host: f.rest_api_host.value, backup_server_port: Number(f.rest_api_port.value),
+          username: f.username.value, password: f.password.value, api_mode: "nwui"}})});
+      const d = await r.json();
+      if (!d.ok) { err.textContent = "Not saved — " + (d.message || "validation failed"); return; }
+      err.textContent = ""; f.reset(); renderDisplayConfig();
+    }
+
+    function initDisplayConfig() {
+      const panel = document.getElementById("tvDisplayPanel");
+      if (!panel) return;
+      document.getElementById("tvRotateBtn").addEventListener("click", () => _displayAction("rotate"));
+      document.getElementById("tvRevokeBtn").addEventListener("click", () => _displayAction("revoke"));
+      document.getElementById("tvConnForm").addEventListener("submit", submitDisplayConn);
+      renderDisplayConfig();
+    }

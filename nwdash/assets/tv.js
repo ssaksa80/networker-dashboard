@@ -21,6 +21,14 @@
   var pollTimer = null;
   var viewIndex = 0;
 
+  /* DSO wall: when opened as /tv/<token> this page runs WITHOUT login and reads
+     the read-only display feed instead of the cookie-gated APIs. */
+  var _dtm = location.pathname.match(/\/tv\/([0-9a-f]{32})/);
+  var DISPLAY_TOKEN = _dtm ? _dtm[1] : "";
+  function dashboardUrl() {
+    return DISPLAY_TOKEN ? ("/api/display/" + DISPLAY_TOKEN) : "/api/current-dashboard";
+  }
+
   /* ── helpers (same semantics as app.js) ────────────────────────────── */
   function text(value) {
     if (value === null || value === undefined || value === "") return "--";
@@ -306,6 +314,7 @@
     }).join("");
   }
   function refreshSnapshots() {
+    if (DISPLAY_TOKEN) { return; } /* no-login wall: never poll session-gated APIs */
     fetch("/api/snapshots?range=7d", { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(renderSnapshots)
@@ -430,10 +439,11 @@
 
   /* ── data: initial fetch + poll fallback ───────────────────────────── */
   function loadCurrentDashboard() {
-    return fetch("/api/current-dashboard", { cache: "no-store" })
+    return fetch(dashboardUrl(), { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data && data.ok && data.dashboard) {
+          if (DISPLAY_TOKEN && data.theme) applyTheme(data.theme);
           renderAll(data.dashboard);
           if (data.updatedAt) updatedAtText = String(data.updatedAt);
           return true;
@@ -454,6 +464,7 @@
 
   /* ── SSE live push (re-render on dashboard events) ─────────────────── */
   function startSSE() {
+    if (DISPLAY_TOKEN) { return; }
     if (sseSource || !window.EventSource) return;
     sseSource = new EventSource("/api/stream");
     sseSource.onopen = function () { setLive(true); };
@@ -479,7 +490,11 @@
     if (!got) showWaiting();
     schedulePoll();
   });
-  refreshSnapshots();
-  setInterval(refreshSnapshots, SNAP_REFRESH_MS);
+  if (!DISPLAY_TOKEN) {
+    refreshSnapshots();
+    setInterval(refreshSnapshots, SNAP_REFRESH_MS);
+  } else {
+    setInterval(function () { loadCurrentDashboard(); }, 60000);
+  }
   startSSE();
 })();

@@ -21,6 +21,15 @@ package installs required on the host.
 - Password login (PBKDF2), HMAC-signed sessions, CSRF protection,
   HSTS/CSP security headers, login rate limiting
 
+## TV / DSO wall
+
+A DSO TV can open `https://<host>:<port>/tv/<token>` (token generated in
+admin -> TV / Display) to show the live wall with **no login**. Set a
+"display connection" in that panel so the wall keeps refreshing 24/7 with
+nobody signed in. Protect everything else with a dashboard password
+(`Setup-NWDash.cmd -Upgrade -AuthPassword '...'`). Rotate the token from
+the same panel to invalidate an old TV URL.
+
 ## Quick start
 
 ```powershell
