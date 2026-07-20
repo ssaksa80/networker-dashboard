@@ -58,6 +58,24 @@ def send_report(job, dashboard: dict[str, Any], smtp: dict[str, Any],
                            smtp_password, html, attachments=attachments)
 
 
+def send_group_report(group, dashboard: dict[str, Any], smtp: dict[str, Any],
+                      smtp_password: str, test: bool = False) -> dict[str, Any]:
+    dashboard = dict(dashboard)
+    dashboard["theme"] = getattr(group, "theme", "default")
+    dashboard["scheduledReport"] = True
+    plain, html = dashboard_report_email(dashboard, sections=list(group.sections))
+    attachments: dict[str, tuple[bytes, str, str]] = {}
+    png = render_dashboard_snapshot_png(dashboard)
+    if png:
+        attachments["networker-dashboard.png"] = (png, "image/png", "networker-dashboard.png")
+    subject = f"NetWorker report: {getattr(group, 'name', 'report')}"
+    if test:
+        subject = "[TEST] " + subject
+        plain = "This is a TEST send.\n\n" + plain
+    return send_smtp_email(_settings(smtp, list(group.recipients)), subject, plain,
+                           smtp_password, html, attachments=attachments)
+
+
 def send_ops_alert(job, error: str, smtp: dict[str, Any], ops_address: str,
                    smtp_password: str) -> dict[str, Any]:
     if not ops_address:

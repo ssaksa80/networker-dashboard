@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from . import config
+from .config import TIME_HHMM_PATTERN
+from .report_window import CADENCES, SECTION_KEYS
 
 
 @dataclass
@@ -121,3 +123,24 @@ def restore_groups_from_disk() -> int:
         except (KeyError, TypeError, ValueError):
             continue
     return n
+
+
+@dataclass
+class GroupValidation:
+    ok: bool
+    errors: dict
+
+
+def validate_group(g: "ReportGroup") -> GroupValidation:
+    errors = {}
+    if not str(g.name).strip():
+        errors["name"] = "Name is required."
+    if not g.sections or any(s not in SECTION_KEYS for s in g.sections):
+        errors["sections"] = "Select at least one valid section."
+    if not g.recipients:
+        errors["recipients"] = "At least one recipient is required."
+    if g.cadence not in CADENCES:
+        errors["cadence"] = "Cadence must be daily, weekly, or monthly."
+    if not TIME_HHMM_PATTERN.match(str(g.send_time or "")):
+        errors["send_time"] = "Send time must be HH:MM (24h)."
+    return GroupValidation(not errors, errors)
