@@ -439,6 +439,22 @@ def _shared_dashboard_refresh_once() -> None:
     with SHARED_DASHBOARD_LOCK:
         session_id = str(SHARED_DASHBOARD_STATE.get("sessionId") or "")
     if not session_id:
+        # No interactive session: keep the TV wall live from the persistent
+        # display connection via the session-free render path. Late imports
+        # avoid a circular import at module load.
+        try:
+            from . import display, report_render
+        except Exception:  # noqa: BLE001
+            return
+        conn = display.load_connection()
+        if not conn:
+            return
+        res = report_render.render(conn)
+        if res.ok:
+            set_shared_dashboard("display", res.dashboard)
+        else:
+            with SHARED_DASHBOARD_LOCK:
+                SHARED_DASHBOARD_STATE["lastError"] = res.error or "Display connection refresh failed."
         return
 
     status, dashboard = build_dashboard_from_session(session_id)
