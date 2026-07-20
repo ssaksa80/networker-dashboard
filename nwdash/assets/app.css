@@ -2620,4 +2620,7 @@
     .report-job  { padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
     .form-error  { color: #dc2626; min-height: 1.2em; }
     .legacy-notice { padding: 10px; border: 1px solid var(--amber); border-radius: 8px; margin-bottom: 8px; }
+
+    .tv-url-row { display: flex; gap: 8px; margin-bottom: 12px; }
+    .tv-url-row input { flex: 1; font-family: monospace; }
   

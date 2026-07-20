@@ -675,6 +675,26 @@
           <button id="reportTestSaveBtn" type="submit">Validate &amp; save</button>
         </form>
       </section>
+
+      <section id="tvDisplayPanel" class="panel">
+        <header class="panel-head"><h2>TV / Display</h2></header>
+        <p>Point the DSO TV at this URL — it shows the live wall with no login:</p>
+        <div class="tv-url-row">
+          <input id="tvDisplayUrl" readonly>
+          <button id="tvRotateBtn" type="button">Rotate</button>
+          <button id="tvRevokeBtn" type="button">Revoke</button>
+        </div>
+        <h3>Display connection (keeps the wall live 24/7)</h3>
+        <form id="tvConnForm" class="report-form">
+          <label>NetWorker host <input name="rest_api_host" required></label>
+          <label>Port <input name="rest_api_port" type="number" value="9090"></label>
+          <label>Username <input name="username" required></label>
+          <label>Password <input name="password" type="password" required></label>
+          <div id="tvConnError" class="form-error" role="alert"></div>
+          <span id="tvConnState" class="health-badge health-idle">not set</span>
+          <button type="submit">Validate &amp; save</button>
+        </form>
+      </section>
     </section>
   </main>
 
