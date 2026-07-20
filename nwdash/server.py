@@ -116,6 +116,11 @@ def _cred_for_render(cred: dict) -> dict:
     return out
 
 
+def handle_email_config_post(payload: dict) -> tuple[int, dict]:
+    from .snapshots import save_smtp_config
+    return HTTPStatus.OK, save_smtp_config(payload)
+
+
 def handle_display_config(payload: dict) -> tuple[int, dict]:
     action = str(payload.get("action") or "").strip().lower()
     if action in ("get", "rotate", "revoke"):
@@ -604,7 +609,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         allowed = {"/api/dashboard", "/api/export", "/api/server-health",
                    "/api/alert-automation", "/api/report-jobs", "/api/snapshots",
                    "/api/share", "/api/multi-server", "/api/profiles",
-                   "/api/ui-theme", "/api/display-config"}
+                   "/api/ui-theme", "/api/display-config", "/api/email-config"}
         if path not in allowed:
             self._drain_request_body()
             self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
@@ -746,6 +751,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             if path == "/api/report-jobs":
                 status, body = handle_report_jobs(payload)
+                self._send_json(status, body)
+                return
+
+            if path == "/api/email-config":
+                status, body = handle_email_config_post(payload)
                 self._send_json(status, body)
                 return
 
