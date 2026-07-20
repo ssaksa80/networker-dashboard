@@ -532,22 +532,31 @@
           <section id="scheduledReportsPanel" class="panel hidden">
             <header class="panel-head">
               <h2>Scheduled Reports</h2>
-              <button id="reportAddBtn" type="button">New report</button>
             </header>
-            <div id="reportLegacyNotice" class="legacy-notice" hidden>
-              Legacy email schedules were found. They cannot run under the new engine —
-              re-create them here (enter the NetWorker credential once).
-            </div>
-            <div id="reportJobsList" class="report-jobs"></div>
-            <form id="reportJobForm" class="report-form" hidden>
-              <label>NetWorker host <input name="rest_api_host" required></label>
-              <label>Port <input name="rest_api_port" type="number" value="9090"></label>
-              <label>Username <input name="username" required></label>
-              <label>Password <input name="password" type="password" required></label>
+            <div id="reportGroupsConn" class="form-error"></div>
+            <div id="reportGroupsList" class="report-jobs"></div>
+            <button id="reportGroupAddBtn" type="button">New group</button>
+            <form id="reportGroupForm" class="report-form" hidden>
+              <input type="hidden" name="id">
+              <label>Name <input name="name" required></label>
+              <fieldset id="reportSectionChecks"><legend>Sections</legend>
+                <label><input type="checkbox" value="backup_sla">Backup SLA</label>
+                <label><input type="checkbox" value="management">Management Overview</label>
+                <label><input type="checkbox" value="recovery">Recovery Health</label>
+                <label><input type="checkbox" value="clone">Clone Jobs</label>
+                <label><input type="checkbox" value="alerts">Alerts</label>
+                <label><input type="checkbox" value="server_protection">Server Protection</label>
+                <label><input type="checkbox" value="health">Health</label>
+              </fieldset>
               <label>Recipients <input name="recipients" required placeholder="a@x.com, b@x.com"></label>
-              <label>Report time <input name="reportTime" value="07:30" placeholder="HH:MM"></label>
-              <div id="reportFormError" class="form-error" role="alert"></div>
-              <button id="reportTestSaveBtn" type="submit">Validate &amp; save</button>
+              <label>Cadence
+                <select name="cadence"><option value="daily">Daily</option><option value="weekly">Weekly (Sun)</option><option value="monthly">Monthly (1st)</option></select>
+              </label>
+              <label>Send time <input name="sendTime" value="08:00" placeholder="HH:MM"></label>
+              <label><input type="checkbox" name="enabled" checked> Enabled</label>
+              <div id="reportGroupErr" class="form-error" role="alert"></div>
+              <button type="submit">Save group</button>
+              <button id="reportGroupCancel" type="button">Cancel</button>
             </form>
           </section>
 
