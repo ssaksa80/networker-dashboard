@@ -13,7 +13,10 @@ package installs required on the host.
 - Optional Windows server health (CPU/memory/disk) via WMI
 - Multi-server view, connection profiles, share-by-link read-only view
 - Daily snapshots with history, comparison, and CSV export
-- Scheduled email reports and alert automations (SMTP), including a
+- Scheduled Reports panel: each report owns its own NetWorker credential
+  (entered once, encrypted at rest), a save-time validation gate (connect +
+  render + SMTP) blocks broken schedules before they're saved, and a failed
+  run still emails a fallback report plus a separate ops alert — including a
   rendered dashboard image when a headless Chrome/Edge is available
 - Password login (PBKDF2), HMAC-signed sessions, CSRF protection,
   HSTS/CSP security headers, login rate limiting
