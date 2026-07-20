@@ -452,6 +452,7 @@ def email_config_public() -> dict[str, Any]:
             "reportTime": str(daily.get("report_time") or "08:00"),
             "theme": str(daily.get("theme") or "default"),
         },
+        "opsAlertAddress": str(smtp.get("opsAlertAddress") or ""),
     }
 
 
@@ -651,4 +652,29 @@ def save_email_config_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             }
         new_cfg = {"smtp": smtp, "types": types}
         write_email_config(new_cfg)
+    return email_config_public()
+
+
+def save_smtp_config(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist ONLY the shared SMTP transport + ops-alert address, preserving the
+    per-type recipients already saved for "alert"/"daily_report". A blank
+    password keeps the previously saved one (same convention as
+    save_email_config_from_payload)."""
+    with EMAIL_CONFIG_LOCK:
+        cfg = load_email_config()
+        prev = cfg.get("smtp") if isinstance(cfg.get("smtp"), dict) else {}
+        encrypted = str(prev.get("encrypted_password") or "")
+        pw = str(payload.get("password") or "")
+        if pw:
+            encrypted = encrypt_process_secret(pw)
+        cfg["smtp"] = {
+            "host": str(payload.get("host") or ""),
+            "port": int(payload.get("port") or 587),
+            "security": str(payload.get("security") or "starttls"),
+            "username": str(payload.get("username") or ""),
+            "from": str(payload.get("from") or ""),
+            "encrypted_password": encrypted,
+            "opsAlertAddress": str(payload.get("opsAlertAddress") or ""),
+        }
+        write_email_config(cfg)
     return email_config_public()
