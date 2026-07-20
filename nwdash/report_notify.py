@@ -59,11 +59,14 @@ def send_report(job, dashboard: dict[str, Any], smtp: dict[str, Any],
 
 
 def send_group_report(group, dashboard: dict[str, Any], smtp: dict[str, Any],
-                      smtp_password: str, test: bool = False) -> dict[str, Any]:
+                      smtp_password: str, test: bool = False, stale: bool = False) -> dict[str, Any]:
     dashboard = dict(dashboard)
     dashboard["theme"] = getattr(group, "theme", "default")
     dashboard["scheduledReport"] = True
     plain, html = dashboard_report_email(dashboard, sections=list(group.sections))
+    if stale:
+        plain = _STALE_BANNER_TEXT + plain
+        html = _STALE_BANNER_HTML + html
     attachments: dict[str, tuple[bytes, str, str]] = {}
     png = render_dashboard_snapshot_png(dashboard)
     if png:
@@ -72,6 +75,8 @@ def send_group_report(group, dashboard: dict[str, Any], smtp: dict[str, Any],
     if test:
         subject = "[TEST] " + subject
         plain = "This is a TEST send.\n\n" + plain
+    if stale:
+        subject += " (stale data)"
     return send_smtp_email(_settings(smtp, list(group.recipients)), subject, plain,
                            smtp_password, html, attachments=attachments)
 
@@ -80,7 +85,7 @@ def send_ops_alert(job, error: str, smtp: dict[str, Any], ops_address: str,
                    smtp_password: str) -> dict[str, Any]:
     if not ops_address:
         return {}
-    subject = f"NetWorker report FAILED: job {getattr(job, 'id', '?')}"
-    body = (f"Scheduled report '{getattr(job, 'id', '?')}' ({getattr(job, 'kind', '?')}) "
-            f"failed at fire time.\n\nError: {error}\n")
+    label = getattr(job, "name", "") or getattr(job, "id", "?")
+    subject = f"NetWorker report FAILED: job {label}"
+    body = f"Scheduled report '{label}' failed at fire time.\n\nError: {error}\n"
     return send_smtp_email(_settings(smtp, [ops_address]), subject, body, smtp_password)

@@ -49,3 +49,19 @@ def test_toggle_delete_reorder_send(monkeypatch):
     assert st == HTTPStatus.OK and body["ok"] is True and "Test" in body["message"]
     assert api.handle_report_groups({"action": "delete", "id": "b"})[0] == HTTPStatus.OK
     assert report_groups.get_group("b") is None
+
+def test_update_preserves_health(monkeypatch):
+    import importlib
+    from http import HTTPStatus
+    from nwdash import report_groups, report_groups_api as api
+    importlib.reload(report_groups); importlib.reload(api)
+    monkeypatch.setattr(api, "_reporting_connection", lambda: {"rest_api_host": "h"})
+    monkeypatch.setattr(api.report_groups, "persist_groups", lambda: None)
+    g = report_groups.ReportGroup(id="a", name="A", sections=["alerts"], recipients=["a@x.com"])
+    g.health.last_result = "Sent earlier"; g.health.state = "healthy"
+    report_groups.put_group(g)
+    st, body = api.handle_report_groups({"action":"update","id":"a","name":"A2","sections":["alerts"],
+        "recipients":"a@x.com","cadence":"daily","sendTime":"08:00","enabled":False})
+    assert st == HTTPStatus.OK
+    got = report_groups.get_group("a")
+    assert got.name == "A2" and got.health.last_result == "Sent earlier" and got.health.state == "healthy"

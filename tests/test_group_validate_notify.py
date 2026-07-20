@@ -28,3 +28,17 @@ def test_send_group_report_filters_sections_and_test_prefix(monkeypatch):
     smtp = {"host": "h", "port": 25, "security": "none", "from": "r@x.com"}
     report_notify.send_group_report(G(), {"summary": {}}, smtp, "", test=True)
     assert seen["to"] == ["a@x.com"] and seen["subject"].startswith("[TEST]")
+
+def test_send_group_report_stale_banner(monkeypatch):
+    import importlib
+    from nwdash import report_notify
+    importlib.reload(report_notify)
+    seen = {}
+    def fake_send(settings, subject, body, pw, html_body="", attachments=None, **kw):
+        seen["subject"] = subject; seen["stale"] = ("STALE" in html_body) or ("stale" in body.lower()); return {}
+    monkeypatch.setattr(report_notify, "send_smtp_email", fake_send)
+    monkeypatch.setattr(report_notify, "dashboard_report_email", lambda dash, sections=None: ("plain", "<html></html>"))
+    monkeypatch.setattr(report_notify, "render_dashboard_snapshot_png", lambda dash: b"")
+    class G: recipients=["a@x.com"]; sections=["alerts"]; name="Ops"; theme="default"
+    report_notify.send_group_report(G(), {"summary": {}}, {"host":"h","port":25,"security":"none","from":"r@x.com"}, "", stale=True)
+    assert seen["stale"] is True and "stale data" in seen["subject"].lower()

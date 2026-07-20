@@ -212,7 +212,7 @@ def fire_group(g: "ReportGroup", cfg: dict[str, Any]) -> None:
             cached = report_render.cache_get("group:" + g.id)
             if cached:
                 try:
-                    report_notify.send_group_report(g, cached, smtp, smtp_password, test=False)
+                    report_notify.send_group_report(g, cached, smtp, smtp_password, test=False, stale=True)
                 except Exception as exc:  # noqa: BLE001 — isolate stale-fallback send
                     debug_log(f"fire_group {g.id} stale send_group_report crashed: {exc}")
             try:

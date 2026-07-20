@@ -85,6 +85,8 @@ def handle_report_groups(payload: dict) -> tuple[int, dict]:
         v = report_groups.validate_group(g)
         if not v.ok:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "errors": v.errors}
+        if existing is not None:
+            g.health = existing.health
         warning = ""
         if g.enabled and _reporting_connection() is None:
             g.enabled = False
