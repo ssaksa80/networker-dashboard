@@ -40,6 +40,7 @@ from .config import (
     safe_log_text,
 )
 from .secrets import encrypt_profile_secret
+from .display import validate_token as validate_display_token
 from .auth import (
     _clear_login_failures,
     _login_rate_limited,
@@ -321,6 +322,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             {"ok": True, "dashboard": json_clone(dashboard), "updatedAt": dashboard.get("generatedAt", "")},
         )
 
+    def _handle_display_api(self, path: str) -> None:
+        token = path[len("/api/display/"):].strip("/")
+        if not validate_display_token(token):
+            self._send_error_json(HTTPStatus.GONE, "This display link has expired or been revoked.")
+            return
+        payload = shared_dashboard_payload()
+        body = dict(payload) if isinstance(payload, dict) else {"ok": False}
+        try:
+            body["theme"] = load_ui_theme() or "default"
+        except Exception:  # noqa: BLE001
+            body["theme"] = "default"
+        self._send_json(HTTPStatus.OK, body)
+
     def do_GET(self) -> None:
         if not self._require_https():
             return
@@ -374,6 +388,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/view/"):
                 self._handle_token_dashboard(path)
+                return
+            if path.startswith("/api/display/"):
+                self._handle_display_api(path)
+                return
+            if path.startswith("/tv/"):
+                token = path[len("/tv/"):].strip("/")
+                if validate_display_token(token):
+                    self._send_bytes(HTTPStatus.OK, tv_page_html().encode("utf-8"), "text/html; charset=utf-8")
+                else:
+                    self._send_bytes(
+                        HTTPStatus.OK,
+                        b"<html><body><p>This display link has expired or been revoked.</p></body></html>",
+                        "text/html; charset=utf-8",
+                    )
                 return
 
             # --- Root: login page when auth required and not authenticated ---
