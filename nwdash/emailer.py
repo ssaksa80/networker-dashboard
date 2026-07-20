@@ -3,8 +3,8 @@
 Split from networker_dashboard.py (v2.5.0). The legacy AlertAutomation
 email-automation engine (scheduling loop, profile toggles, connection
 snapshots, and the /api/alert-automation handler) was removed once the
-Scheduled Reports subsystem (report_jobs/report_notify/report_api) replaced
-it; only the SMTP delivery core and small shared helpers remain here.
+Scheduled Reports subsystem (report_groups/report_notify/report_groups_api)
+replaced it; only the SMTP delivery core and small shared helpers remain here.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import Any
 
 from .config import debug_log
 from .models import AlertAutomation, SmtpDeliveryError, _pop_automation
-from .snapshots import saved_email_smtp_password  # re-exported for report_api
+from .snapshots import saved_email_smtp_password  # re-exported for report_groups_api
 
 
 def within_quiet_hours(start: str, end: str, hhmm: str | None = None) -> bool:

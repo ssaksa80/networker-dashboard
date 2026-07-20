@@ -40,8 +40,8 @@ from .profiles import ALLOWED_HOST_NAMES, ALLOWED_NETWORKS, configure_allowed_ho
 from .sessions import restore_sessions_from_disk
 from .snapshots import auto_snapshot_worker
 from .emailer import cancel_alert_automation
-from .report_jobs import restore_jobs_from_disk, scheduler_loop as report_scheduler_loop
-from .report_api import handle_report_jobs, _smtp_config as _report_smtp_config
+from .report_groups import restore_groups_from_disk, group_scheduler_loop
+from .report_groups_api import _cfg as _group_cfg
 from .server import (
     DashboardHandler,
     auto_launch_dashboard,
@@ -121,11 +121,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def report_cfg_provider() -> dict:
-    """Fresh SMTP + ops-address config each fire (so admin edits take effect)."""
-    smtp, smtp_password = _report_smtp_config()
-    ops = smtp.get("opsAlertAddress", "") if isinstance(smtp, dict) else ""
-    return {"smtp": smtp, "smtp_password": smtp_password, "ops_address": ops}
+def group_cfg_provider() -> dict:
+    return _group_cfg()
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -229,8 +226,8 @@ def run(argv: list[str] | None = None) -> int:
 
     # Restore persisted state from the previous run in background — non-blocking
     def _restore_sessions_bg() -> None:
-        report_count = restore_jobs_from_disk()
-        LOG.info(f"restored {report_count} scheduled report job(s)", extra={"event": "startup"})
+        group_count = restore_groups_from_disk()
+        LOG.info(f"restored {group_count} report group(s)", extra={"event": "startup"})
         count = restore_sessions_from_disk()
         if count:
             print(f"Restored {count} dashboard session(s) from previous run.")
@@ -244,8 +241,8 @@ def run(argv: list[str] | None = None) -> int:
 
     threading.Thread(target=_restore_sessions_bg, name="session-restore", daemon=True).start()
     threading.Thread(target=auto_snapshot_worker, name="auto-snapshot", daemon=True).start()
-    threading.Thread(target=report_scheduler_loop, args=(report_cfg_provider,),
-                     name="report-scheduler", daemon=True).start()
+    threading.Thread(target=group_scheduler_loop, args=(group_cfg_provider,),
+                     name="group-scheduler", daemon=True).start()
 
     try:
         self_test_ok, self_test_message = self_test_dashboard_listener(launch_url, cert_path=cert_path)
