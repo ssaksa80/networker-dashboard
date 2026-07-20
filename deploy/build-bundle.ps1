@@ -77,6 +77,7 @@ $shipFiles = @(
   'nwdash\report_api.py',
   'nwdash\report_cred.py',
   'nwdash\report_groups.py',
+  'nwdash\report_groups_api.py',
   'nwdash\report_jobs.py',
   'nwdash\report_notify.py',
   'nwdash\report_render.py',
