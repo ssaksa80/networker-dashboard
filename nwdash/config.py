@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "NetWorker Backup & Recovery Dashboard"
-APP_VERSION = "2.8.3"
+APP_VERSION = "2.9.0"
 APP_DEBUG = False
 DEFAULT_PORT = 8443
 DEFAULT_API_PORT = 9090
@@ -109,6 +109,8 @@ AUTOMATIONS_FILE = DATA_DIR / "automations.json"
 LAST_GOOD_DASHBOARD_FILE = DATA_DIR / "last_good_dashboard.json"
 PROFILES_FILE = DATA_DIR / "profiles.json"
 EMAIL_CONFIG_FILE = DATA_DIR / "email_config.json"
+REPORT_JOBS_FILE = DATA_DIR / "report_jobs.json"
+REPORT_CACHE_DIR = DATA_DIR / "report_cache"
 EMAIL_PROFILES_FILE = DATA_DIR / "email_profiles.json"
 AUTH_KEY_FILE = DATA_DIR / ".auth_key"
 AUTH_CONFIG_FILE = DATA_DIR / "auth.json"

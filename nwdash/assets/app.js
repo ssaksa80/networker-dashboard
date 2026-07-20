@@ -2957,4 +2957,75 @@
     compareLocalSnapshots();
     loadSharedDashboard();
     startSSE();
+    initScheduledReports();
+
+    function reportHealthBadge(state) {
+      const map = {healthy: "ok", unhealthy: "bad", never_run: "idle"};
+      const cls = map[state] || "idle";
+      return `<span class="health-badge health-${cls}">${state.replace("_", " ")}</span>`;
+    }
+
+    async function renderReportJobs() {
+      const list = document.getElementById("reportJobsList");
+      if (!list) return;
+      const r = await fetch("/api/report-jobs", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action: "list"}),
+      });
+      const data = await r.json();
+      const notice = document.getElementById("reportLegacyNotice");
+      if (notice) notice.hidden = !data.legacyMigrationNeeded;
+      list.innerHTML = (data.jobs || []).map(j => `
+        <div class="report-job">
+          <div class="rj-main">
+            <strong>${j.kind}</strong> &rarr; ${j.recipients.join(", ")}
+            &middot; ${j.kind === "digest" ? "at " + j.reportTime : "every " + j.intervalMinutes + " min"}
+            ${reportHealthBadge(j.health.state)}
+          </div>
+          <div class="rj-sub">last: ${j.health.lastResult || "—"} &middot; next: ${
+            j.health.nextRun ? new Date(j.health.nextRun * 1000).toLocaleString() : "—"}</div>
+          <button data-del="${j.id}" type="button">Delete</button>
+        </div>`).join("") || "<p>No scheduled reports yet.</p>";
+      list.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
+        await fetch("/api/report-jobs", {method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action: "delete", id: b.getAttribute("data-del")})});
+        renderReportJobs();
+      }));
+    }
+
+    async function submitReportJob(ev) {
+      ev.preventDefault();
+      const f = ev.target;
+      const err = document.getElementById("reportFormError");
+      err.textContent = "Validating (connect + render + SMTP)…";
+      const payload = {
+        action: "create", kind: "digest",
+        recipients: f.recipients.value, reportTime: f.reportTime.value,
+        credential: {
+          rest_api_host: f.rest_api_host.value, rest_api_port: Number(f.rest_api_port.value),
+          backup_server_host: f.rest_api_host.value, backup_server_port: Number(f.rest_api_port.value),
+          username: f.username.value, password: f.password.value, api_mode: "nwui",
+        },
+      };
+      const r = await fetch("/api/report-jobs", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)});
+      const data = await r.json();
+      if (!data.ok) {
+        const failed = Object.entries(data.checks || {}).filter(([, v]) => !v).map(([k]) => k).join(", ");
+        err.textContent = `Not saved — failed: ${failed || "validation"}. ${data.message || ""}`;
+        return;
+      }
+      err.textContent = "";
+      f.reset(); f.hidden = true;
+      renderReportJobs();
+    }
+
+    function initScheduledReports() {
+      const panel = document.getElementById("scheduledReportsPanel");
+      if (!panel) return;
+      document.getElementById("reportAddBtn").addEventListener("click",
+        () => { document.getElementById("reportJobForm").hidden = false; });
+      document.getElementById("reportJobForm").addEventListener("submit", submitReportJob);
+      renderReportJobs();
+    }
   

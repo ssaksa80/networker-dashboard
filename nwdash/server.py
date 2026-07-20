@@ -102,7 +102,7 @@ from .snapshots import (
     snapshots_to_csv,
 )
 from .reports import build_excel_report
-from .emailer import handle_alert_automation
+from .report_api import handle_report_jobs
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = f"NetWorkerDashboard/{APP_VERSION}"
@@ -534,7 +534,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_error_json(HTTPStatus.FORBIDDEN, "CSRF token missing or invalid.")
             return
         allowed = {"/api/dashboard", "/api/export", "/api/server-health",
-                   "/api/alert-automation", "/api/snapshots",
+                   "/api/alert-automation", "/api/report-jobs", "/api/snapshots",
                    "/api/share", "/api/multi-server", "/api/profiles",
                    "/api/ui-theme"}
         if path not in allowed:
@@ -669,7 +669,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/alert-automation":
-                status, body = handle_alert_automation(payload)
+                self._send_json(HTTPStatus.GONE, {
+                    "ok": False,
+                    "message": ("Email automation moved to Scheduled Reports. Reload the "
+                                "dashboard and re-create your schedules under Scheduled Reports."),
+                })
+                return
+
+            if path == "/api/report-jobs":
+                status, body = handle_report_jobs(payload)
                 self._send_json(status, body)
                 return
 

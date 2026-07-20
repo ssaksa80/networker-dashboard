@@ -653,6 +653,28 @@
         </div>
         <div id="serverCards" class="server-cards"></div>
       </section>
+
+      <section id="scheduledReportsPanel" class="panel">
+        <header class="panel-head">
+          <h2>Scheduled Reports</h2>
+          <button id="reportAddBtn" type="button">New report</button>
+        </header>
+        <div id="reportLegacyNotice" class="legacy-notice" hidden>
+          Legacy email schedules were found. They cannot run under the new engine —
+          re-create them here (enter the NetWorker credential once).
+        </div>
+        <div id="reportJobsList" class="report-jobs"></div>
+        <form id="reportJobForm" class="report-form" hidden>
+          <label>NetWorker host <input name="rest_api_host" required></label>
+          <label>Port <input name="rest_api_port" type="number" value="9090"></label>
+          <label>Username <input name="username" required></label>
+          <label>Password <input name="password" type="password" required></label>
+          <label>Recipients <input name="recipients" required placeholder="a@x.com, b@x.com"></label>
+          <label>Report time <input name="reportTime" value="07:30" placeholder="HH:MM"></label>
+          <div id="reportFormError" class="form-error" role="alert"></div>
+          <button id="reportTestSaveBtn" type="submit">Validate &amp; save</button>
+        </form>
+      </section>
     </section>
   </main>
 
