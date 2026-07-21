@@ -42,3 +42,28 @@ def test_send_on_demand_test(monkeypatch):
     g = report_groups.ReportGroup(id="a", name="Ops", sections=["alerts"], recipients=["a@x.com"], cadence="daily")
     ok, msg = report_groups.send_on_demand(g, _cfg(), test=True)
     assert ok is True and sent.get("test") is True
+
+def test_send_on_demand_without_connection_gives_clear_message(monkeypatch):
+    import importlib
+    from nwdash import report_groups
+    importlib.reload(report_groups)
+    called = {}
+    monkeypatch.setattr(report_groups.report_render, "render_window", lambda c, w: called.setdefault("rendered", True))
+    g = report_groups.ReportGroup(id="a", name="Ops", sections=["alerts"], recipients=["a@x.com"], cadence="daily")
+    ok, msg = report_groups.send_on_demand(g, {"smtp": {}, "smtp_password": "", "connection": {}}, test=False)
+    assert ok is False
+    assert "reporting connection" in msg.lower()
+    assert "rendered" not in called          # never attempted the bad connect
+
+def test_fire_group_without_connection_marks_unhealthy_without_render(monkeypatch):
+    import importlib
+    from nwdash import report_groups
+    importlib.reload(report_groups)
+    called = {}
+    monkeypatch.setattr(report_groups.report_render, "render_window", lambda c, w: called.setdefault("rendered", True))
+    monkeypatch.setattr(report_groups.report_notify, "send_ops_alert", lambda *a, **k: called.setdefault("ops", True))
+    g = report_groups.ReportGroup(id="a", name="Ops", sections=["alerts"], recipients=["a@x.com"], enabled=True, cadence="daily")
+    report_groups.fire_group(g, {"smtp": {}, "smtp_password": "", "ops_address": "ops@x.com", "connection": {}})
+    assert "rendered" not in called
+    assert g.health.state == "unhealthy" and "reporting connection" in g.health.last_result.lower()
+    assert g.health.next_run > 0

@@ -169,6 +169,17 @@ def _render_for(g: "ReportGroup", cfg: dict[str, Any]):
     return report_render.render_window(conn, window)
 
 
+def _connection_missing(cfg: dict) -> str:
+    """Return an operator-facing message when the shared reporting connection
+    is not usable, else ''. Prevents a confusing socket error (WinError 10049)
+    from an empty host/port."""
+    conn = cfg.get("connection") or {}
+    if not conn.get("rest_api_host") or not conn.get("username"):
+        return ("Reporting connection is not configured — set it under Account → TV / Display, "
+                "then try again.")
+    return ""
+
+
 def fire_group(g: "ReportGroup", cfg: dict[str, Any]) -> None:
     """Render and deliver ONE group. Never raises; records health either way.
 
@@ -182,6 +193,15 @@ def fire_group(g: "ReportGroup", cfg: dict[str, Any]) -> None:
     ops_address = str(cfg.get("ops_address") or "")
     g.health.last_run = _time.time()
     try:
+        conn_msg = _connection_missing(cfg)
+        if conn_msg:
+            g.health.state = "unhealthy"
+            g.health.last_result = conn_msg
+            try:
+                report_notify.send_ops_alert(g, conn_msg, smtp, ops_address, smtp_password)
+            except Exception as exc:  # noqa: BLE001 — isolate ops alert
+                debug_log(f"fire_group {g.id} send_ops_alert crashed: {exc}")
+            return
         try:
             res = _render_for(g, cfg)
         except Exception as exc:  # noqa: BLE001 — render must never kill the loop
@@ -233,6 +253,9 @@ def send_on_demand(g: "ReportGroup", cfg: dict[str, Any], test: bool) -> tuple[b
     """Render fresh and send immediately (used by both the manual 'send now'
     and the 'send test' actions). No health tracking, no cache/fallback —
     this is an interactive, on-demand action."""
+    msg = _connection_missing(cfg)
+    if msg:
+        return False, msg
     smtp = cfg.get("smtp") or {}
     smtp_password = str(cfg.get("smtp_password") or "")
     res = _render_for(g, cfg)
