@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from http import HTTPStatus
 from typing import Any
 
-from . import report_groups, display
+from . import report_groups, display, report_render
 from .emailer import saved_email_smtp_password
 from .config import EMAIL_CONFIG_FILE
+from .sessions import snapshot_latest_live_session
+from .report_window import compute_window
 
 
 def _smtp_config() -> tuple[dict, str]:
@@ -43,9 +46,48 @@ def _public(g: "report_groups.ReportGroup") -> dict:
                        "lastRun": g.health.last_run, "nextRun": g.health.next_run}}
 
 
+def _validate_stored_connection() -> tuple[int, dict]:
+    """Render the daily window through the stored connection and report REAL row
+    counts, so a connection that authenticates but returns nothing is caught at
+    setup instead of arriving as an empty report."""
+    stored = _reporting_connection()
+    if not stored:
+        return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "No reporting connection is set."}
+    window = compute_window("daily", datetime.now().astimezone())
+    res = report_render.render_window(stored, window)
+    if not res.ok:
+        return HTTPStatus.OK, {"ok": False, "message": res.error or "Connection test failed."}
+    summary = res.dashboard.get("summary") if isinstance(res.dashboard, dict) else {}
+    jobs = int((summary or {}).get("totalJobs") or 0)
+    alerts = int((summary or {}).get("totalAlerts") or 0)
+    if jobs == 0:
+        return HTTPStatus.OK, {"ok": True, "zeroData": True, "jobs": 0, "alerts": alerts,
+                               "message": ("Connected, but returned 0 jobs in the last 24h - reports would be "
+                                           "empty. Check the account's permissions and the backup server.")}
+    return HTTPStatus.OK, {"ok": True, "zeroData": False, "jobs": jobs, "alerts": alerts,
+                           "message": f"Validated - {jobs:,} jobs in the last 24h."}
+
+
 def handle_report_groups(payload: dict) -> tuple[int, dict]:
     action = str(payload.get("action") or "").strip().lower()
 
+    if action == "connection-status":
+        stored = _reporting_connection()
+        cfg = (stored or {}).get("config") if isinstance(stored, dict) else None
+        cfg = cfg if isinstance(cfg, dict) else (stored or {})
+        return HTTPStatus.OK, {"ok": True, "hasConnection": bool(stored),
+                               "host": str(cfg.get("rest_api_host") or ""),
+                               "username": str(cfg.get("username") or ""),
+                               "apiMode": str(cfg.get("api_mode") or "")}
+    if action == "use-current-connection":
+        snap = snapshot_latest_live_session()
+        if not snap:
+            return HTTPStatus.BAD_REQUEST, {"ok": False,
+                "message": "No live dashboard connection. Connect on the dashboard first, then click this."}
+        display.save_connection(snap)
+        return _validate_stored_connection()
+    if action == "validate-connection":
+        return _validate_stored_connection()
     if action == "list":
         return HTTPStatus.OK, {"ok": True, "hasConnection": _reporting_connection() is not None,
                                "groups": [_public(g) for g in report_groups.groups_ordered()]}

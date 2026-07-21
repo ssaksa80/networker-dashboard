@@ -503,7 +503,7 @@
         <div id="drawerBody" class="detail-drawer-body"></div>
       </div>
 
-      <!-- Config drawer (Email/SMTP, Scheduled Reports, TV/Display) -->
+      <!-- Config drawer (TV/Display; Email/SMTP + Scheduled Reports live on /reports) -->
       <div id="configDrawerOverlay" class="drawer-overlay"></div>
       <aside id="configDrawer" class="detail-drawer config-drawer" role="dialog" aria-label="Settings">
         <div class="detail-drawer-head">
@@ -511,55 +511,6 @@
           <button id="configDrawerClose" class="detail-drawer-close" type="button" aria-label="Close">&#x2715;</button>
         </div>
         <div class="detail-drawer-body">
-          <section id="smtpSettingsPanel" class="panel hidden">
-            <header class="panel-head"><h2>Email (SMTP) settings</h2></header>
-            <p>Shared SMTP transport used by all scheduled reports and failure alerts.</p>
-            <form id="smtpSettingsForm" class="report-form">
-              <label>SMTP host <input name="host" required></label>
-              <label>Port <input name="port" type="number" value="25"></label>
-              <label>Security
-                <select name="security"><option value="none">None</option><option value="starttls">STARTTLS</option><option value="ssl">SSL</option></select>
-              </label>
-              <label>Username <input name="username" autocomplete="off"></label>
-              <label>Password <input name="password" type="password" placeholder="(unchanged)" autocomplete="new-password"></label>
-              <label>From address <input name="from" required></label>
-              <label>Ops-alert address <input name="opsAlertAddress" placeholder="who gets failure alerts"></label>
-              <div id="smtpSettingsMsg" class="form-error" role="alert"></div>
-              <button type="submit">Save SMTP settings</button>
-            </form>
-          </section>
-
-          <section id="scheduledReportsPanel" class="panel hidden">
-            <header class="panel-head">
-              <h2>Scheduled Reports</h2>
-            </header>
-            <div id="reportGroupsConn" class="form-error"></div>
-            <div id="reportGroupsList" class="report-jobs"></div>
-            <button id="reportGroupAddBtn" type="button">New group</button>
-            <form id="reportGroupForm" class="report-form" hidden>
-              <input type="hidden" name="id">
-              <label>Name <input name="name" required></label>
-              <fieldset id="reportSectionChecks"><legend>Sections</legend>
-                <label><input type="checkbox" value="backup_sla">Backup SLA</label>
-                <label><input type="checkbox" value="management">Management Overview</label>
-                <label><input type="checkbox" value="recovery">Recovery Health</label>
-                <label><input type="checkbox" value="clone">Clone Jobs</label>
-                <label><input type="checkbox" value="alerts">Alerts</label>
-                <label><input type="checkbox" value="server_protection">Server Protection</label>
-                <label><input type="checkbox" value="health">Health</label>
-              </fieldset>
-              <label>Recipients <input name="recipients" required placeholder="a@x.com, b@x.com"></label>
-              <label>Cadence
-                <select name="cadence"><option value="daily">Daily</option><option value="weekly">Weekly (Sun)</option><option value="monthly">Monthly (1st)</option></select>
-              </label>
-              <label>Send time <input name="sendTime" value="08:00" placeholder="HH:MM"></label>
-              <label class="check-row"><input type="checkbox" name="enabled" checked> Enabled</label>
-              <div id="reportGroupErr" class="form-error" role="alert"></div>
-              <button type="submit">Save group</button>
-              <button id="reportGroupCancel" type="button">Cancel</button>
-            </form>
-          </section>
-
           <section id="tvDisplayPanel" class="panel hidden">
             <header class="panel-head"><h2>TV / Display</h2></header>
             <p>Point the DSO TV at this URL — it shows the live wall with no login:</p>
@@ -568,16 +519,7 @@
               <button id="tvRotateBtn" type="button">Rotate</button>
               <button id="tvRevokeBtn" type="button">Revoke</button>
             </div>
-            <h3>Display connection (keeps the wall live 24/7)</h3>
-            <form id="tvConnForm" class="report-form">
-              <label>NetWorker host <input name="rest_api_host" required></label>
-              <label>Port <input name="rest_api_port" type="number" value="9090"></label>
-              <label>Username <input name="username" required></label>
-              <label>Password <input name="password" type="password" required></label>
-              <div id="tvConnError" class="form-error" role="alert"></div>
-              <span id="tvConnState" class="health-badge health-idle">not set</span>
-              <button type="submit">Validate &amp; save</button>
-            </form>
+            <p class="rj-sub">The reporting connection is shared with Scheduled Reports — set it on the <a href="/reports" target="_blank" rel="noopener">Scheduled Reports page</a>.</p>
           </section>
         </div>
       </aside>

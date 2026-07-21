@@ -95,7 +95,9 @@ $shipFiles = @(
   'nwdash\assets\view.html',
   'nwdash\assets\tv.html',
   'nwdash\assets\tv.css',
-  'nwdash\assets\tv.js'
+  'nwdash\assets\tv.js',
+  'nwdash\assets\reports.html',
+  'nwdash\assets\reports.js'
 )
 
 # Fail fast if the allow-list is stale in either direction.

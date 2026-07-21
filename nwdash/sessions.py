@@ -460,6 +460,17 @@ def build_dashboard(config: ApiConfig) -> tuple[int, dict[str, Any]]:
     return build_dashboard_rest_auto(config)
 
 
+def snapshot_latest_live_session() -> dict[str, Any] | None:
+    """Full connection record for the most recently used live session, in the
+    same shape persist_sessions writes. Used to establish the reporting
+    connection by COPY, so nothing about the connection is guessed."""
+    items = _session_items_snapshot()
+    if not items:
+        return None
+    session_id, session = max(items, key=lambda kv: float(getattr(kv[1], "last_used", 0) or 0))
+    return _session_to_dict(session_id, session)
+
+
 def build_multi_server_dashboard(session_ids: list[str]) -> tuple[int, dict[str, Any]]:
     """Fetch dashboard data for each session in parallel and return aggregated summary."""
     if not session_ids:

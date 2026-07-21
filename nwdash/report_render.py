@@ -9,7 +9,7 @@ from http import HTTPStatus
 from typing import Any
 
 from . import config
-from .report_cred import credential_to_apiconfig
+from .report_cred import apiconfig_from_stored
 from .sessions import build_dashboard
 
 
@@ -21,7 +21,7 @@ class RenderResult:
 
 
 def render(cred: dict[str, Any]) -> RenderResult:
-    cfg = credential_to_apiconfig(cred)
+    cfg = apiconfig_from_stored(cred)
     status, body = build_dashboard(cfg)
     if status == HTTPStatus.OK:
         return RenderResult(True, body, "")
@@ -33,7 +33,7 @@ def render(cred: dict[str, Any]) -> RenderResult:
 def render_window(cred: dict, window: tuple[str, str, str]) -> RenderResult:
     """Render fresh for a cadence window. window = (report_range, custom_start, custom_end)."""
     report_range, start, end = window
-    cfg = credential_to_apiconfig(cred)
+    cfg = apiconfig_from_stored(cred)
     cfg = replace(cfg, report_range=report_range, custom_start_date=start, custom_end_date=end)
     status, body = build_dashboard(cfg)
     if status == HTTPStatus.OK:

@@ -120,6 +120,9 @@ _TV_PAGE = (
     .replace("__TV_JS__", _TV_JS)
 )
 
+_REPORTS_JS = _load_asset("reports.js")
+_REPORTS_PAGE = _load_asset("reports.html").replace("__APP_CSS__", _APP_CSS).replace("__REPORTS_JS__", _REPORTS_JS)
+
 
 def networker_logo_src() -> str:
     if NETWORKER_LOGO_PATH.exists():
@@ -142,6 +145,11 @@ def dashboard_html() -> str:
 def tv_page_html() -> str:
     """TV wall-display page served at /tv (auth-gated exactly like /)."""
     return _TV_PAGE.replace("__NETWORKER_LOGO_SRC__", networker_logo_src())
+
+
+def reports_page_html() -> str:
+    """Scheduled Reports settings page served at /reports (auth-gated like /)."""
+    return _REPORTS_PAGE
 
 
 

@@ -2410,78 +2410,13 @@
     compareLocalSnapshots();
     loadSharedDashboard();
     startSSE();
-    initReportGroups();
     initDisplayConfig();
-    initSmtpSettings();
     initConfigPanelButtons();
 
     function reportHealthBadge(state) {
       const map = {healthy: "ok", unhealthy: "bad", never_run: "idle"};
       const cls = map[state] || "idle";
       return `<span class="health-badge health-${cls}">${state.replace("_", " ")}</span>`;
-    }
-
-    async function renderReportGroups() {
-      var list = document.getElementById("reportGroupsList");
-      if (!list) return;
-      var r = await fetch("/api/report-groups", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({action:"list"})});
-      var d = await r.json();
-      document.getElementById("reportGroupsConn").textContent = d.hasConnection ? "" : "Set the reporting connection (TV / Display) before enabling groups.";
-      var order = (d.groups||[]).map(function(g){return g.id;});
-      list.innerHTML = (d.groups||[]).map(function(g){
-        var badge = '<span class="health-badge health-'+({healthy:"ok",unhealthy:"bad",never_run:"idle"}[g.health.state]||"idle")+'">'+g.health.state.replace("_"," ")+'</span>';
-        return '<div class="report-job" data-id="'+g.id+'">'
-          + '<div class="rj-main"><strong>'+g.name+'</strong> · '+g.cadence+' '+g.sendTime+' · '+g.recipients.length+' recipient(s) '+badge+'</div>'
-          + '<div class="rj-sub">'+g.sections.join(", ")+' · last: '+(g.health.lastResult||"—")+'</div>'
-          + '<label class="check-row"><input type="checkbox" class="rg-toggle" '+(g.enabled?"checked":"")+'> on</label> '
-          + '<label class="check-row"><input type="checkbox" class="rg-test"> test</label> '
-          + '<button class="rg-send" type="button">Send now</button> '
-          + '<button class="rg-edit" type="button">Edit</button> '
-          + '<button class="rg-del" type="button">Delete</button> '
-          + '<button class="rg-up" type="button">↑</button><button class="rg-down" type="button">↓</button>'
-          + '</div>';
-      }).join("") || "<p>No report groups yet.</p>";
-      list.querySelectorAll(".report-job").forEach(function(card){
-        var id = card.getAttribute("data-id");
-        var g = (d.groups||[]).find(function(x){return x.id===id;});
-        card.querySelector(".rg-toggle").addEventListener("change", function(e){ _groupAction({action:"toggle", id:id, enabled:e.target.checked}); });
-        card.querySelector(".rg-del").addEventListener("click", function(){ _groupAction({action:"delete", id:id}); });
-        card.querySelector(".rg-send").addEventListener("click", async function(){
-          var test = card.querySelector(".rg-test").checked;
-          var rr = await fetch("/api/report-groups", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({action:"send", id:id, test:test})});
-          var dd = await rr.json(); alert(dd.message || (dd.ok?"Sent":"Failed"));
-        });
-        card.querySelector(".rg-edit").addEventListener("click", function(){ _editGroup(id, g); });
-        card.querySelector(".rg-up").addEventListener("click", function(){ _move(order, id, -1); });
-        card.querySelector(".rg-down").addEventListener("click", function(){ _move(order, id, 1); });
-      });
-    }
-    async function _groupAction(body){ await fetch("/api/report-groups",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); renderReportGroups(); }
-    function _move(order, id, delta){ var i=order.indexOf(id), j=i+delta; if(i<0||j<0||j>=order.length) return; order.splice(j,0,order.splice(i,1)[0]); _groupAction({action:"reorder", order:order}); }
-    function _editGroup(id, g){
-      var f = document.getElementById("reportGroupForm"); f.hidden=false;
-      f.id.value = id||""; f.name.value = g?g.name:""; f.recipients.value = g?g.recipients.join(", "):"";
-      f.cadence.value = g?g.cadence:"daily"; f.sendTime.value = g?g.sendTime:"08:00"; f.enabled.checked = g?g.enabled:true;
-      var sel = g?g.sections:[]; document.querySelectorAll("#reportSectionChecks input").forEach(function(c){ c.checked = sel.indexOf(c.value)>=0; });
-      document.getElementById("reportGroupErr").textContent = "";
-    }
-    async function submitReportGroup(ev) {
-      ev.preventDefault(); var f = ev.target; var err = document.getElementById("reportGroupErr");
-      var sections = Array.prototype.slice.call(document.querySelectorAll("#reportSectionChecks input:checked")).map(function(c){return c.value;});
-      var body = {action: f.id.value?"update":"create", id:f.id.value||undefined, name:f.name.value, sections:sections,
-                  recipients:f.recipients.value, cadence:f.cadence.value, sendTime:f.sendTime.value, enabled:f.enabled.checked};
-      var r = await fetch("/api/report-groups",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-      var d = await r.json();
-      if(!d.ok){ err.textContent = "Fix: " + Object.values(d.errors||{message:d.message}).join(" "); return; }
-      if(d.warning) err.textContent = d.warning;
-      f.hidden = true; renderReportGroups();
-    }
-    function initReportGroups(){
-      var panel = document.getElementById("scheduledReportsPanel"); if(!panel) return;
-      var add = document.getElementById("reportGroupAddBtn"); if(add) add.addEventListener("click", function(){ _editGroup("", null); });
-      var form = document.getElementById("reportGroupForm"); if(form) form.addEventListener("submit", submitReportGroup);
-      var cancel = document.getElementById("reportGroupCancel"); if(cancel) cancel.addEventListener("click", function(){ form.hidden=true; });
-      renderReportGroups();
     }
 
     async function renderDisplayConfig() {
@@ -2492,9 +2427,6 @@
       const d = await r.json();
       const urlBox = document.getElementById("tvDisplayUrl");
       urlBox.value = d.token ? `${location.origin}/tv/${d.token}` : "(revoked — click Rotate to create one)";
-      const st = document.getElementById("tvConnState");
-      st.textContent = d.hasConnection ? "connection set" : "not set";
-      st.className = "health-badge " + (d.hasConnection ? "health-ok" : "health-idle");
     }
 
     async function _displayAction(action) {
@@ -2503,87 +2435,31 @@
       renderDisplayConfig();
     }
 
-    async function submitDisplayConn(ev) {
-      ev.preventDefault();
-      const f = ev.target, err = document.getElementById("tvConnError");
-      err.textContent = "Validating connection…";
-      const r = await fetch("/api/display-config", {method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({action: "set-connection", credential: {
-          rest_api_host: f.rest_api_host.value, rest_api_port: Number(f.rest_api_port.value),
-          backup_server_host: f.rest_api_host.value, backup_server_port: Number(f.rest_api_port.value),
-          username: f.username.value, password: f.password.value, api_mode: "nwui"}})});
-      const d = await r.json();
-      if (!d.ok) { err.textContent = "Not saved — " + (d.message || "validation failed"); return; }
-      err.textContent = ""; f.reset(); renderDisplayConfig();
-    }
-
     function initDisplayConfig() {
       const panel = document.getElementById("tvDisplayPanel");
       if (!panel) return;
       document.getElementById("tvRotateBtn").addEventListener("click", () => _displayAction("rotate"));
       document.getElementById("tvRevokeBtn").addEventListener("click", () => _displayAction("revoke"));
-      document.getElementById("tvConnForm").addEventListener("submit", submitDisplayConn);
       renderDisplayConfig();
     }
 
-    async function loadSmtpSettings() {
-      const f = document.getElementById("smtpSettingsForm");
-      if (!f) return;
-      try {
-        const r = await fetch("/api/email-config", {cache: "no-store"});
-        const d = await r.json();
-        const s = d.smtp || {};
-        f.host.value = s.host || ""; f.port.value = s.port || 25;
-        f.security.value = s.security || "none"; f.username.value = s.username || "";
-        f.from.value = s.from || ""; f.opsAlertAddress.value = d.opsAlertAddress || "";
-        f.password.placeholder = s.passwordSaved ? "(unchanged — leave blank to keep)" : "";
-      } catch (e) {}
-    }
-
-    async function submitSmtpSettings(ev) {
-      ev.preventDefault();
-      const f = ev.target, msg = document.getElementById("smtpSettingsMsg");
-      msg.textContent = "Saving…";
-      const r = await fetch("/api/email-config", {method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({host: f.host.value, port: Number(f.port.value), security: f.security.value,
-          username: f.username.value, password: f.password.value, from: f.from.value,
-          opsAlertAddress: f.opsAlertAddress.value})});
-      const d = await r.json();
-      if (d.ok) { msg.textContent = "Saved."; f.password.value = ""; loadSmtpSettings(); }
-      else { msg.textContent = "Save failed."; }
-    }
-
-    function initSmtpSettings() {
-      const f = document.getElementById("smtpSettingsForm");
-      if (!f) return;
-      f.addEventListener("submit", submitSmtpSettings);
-      loadSmtpSettings();
-    }
-
-    function openConfigDrawer(panelId, title) {
-      ["smtpSettingsPanel", "scheduledReportsPanel", "tvDisplayPanel"].forEach(function (id) {
-        var el = document.getElementById(id); if (el) el.classList.add("hidden");
-      });
-      var p = document.getElementById(panelId); if (p) p.classList.remove("hidden");
+    function openConfigDrawer(title) {
+      var p = document.getElementById("tvDisplayPanel"); if (p) p.classList.remove("hidden");
       var t = document.getElementById("configDrawerTitle"); if (t) t.textContent = title || "Settings";
       document.getElementById("configDrawer").classList.add("open");
       document.getElementById("configDrawerOverlay").classList.add("open");
       try { closeCollapsiblePanel("accountMenu"); } catch (e) {}
     }
+    function revealTvPanel() { openConfigDrawer("TV / Display"); }
     function closeConfigDrawer() {
       document.getElementById("configDrawer").classList.remove("open");
       document.getElementById("configDrawerOverlay").classList.remove("open");
     }
     function initConfigPanelButtons() {
-      var map = {
-        emailSettingsBtn: ["smtpSettingsPanel", "Email (SMTP) settings"],
-        reportsPanelBtn:  ["scheduledReportsPanel", "Scheduled Reports"],
-        tvDisplayBtn:     ["tvDisplayPanel", "TV / Display"],
-      };
-      Object.keys(map).forEach(function (btnId) {
-        var b = document.getElementById(btnId);
-        if (b) b.addEventListener("click", function () { openConfigDrawer(map[btnId][0], map[btnId][1]); });
-      });
+      var openReports = function () { window.open("/reports", "_blank", "noopener"); };
+      var b1 = document.getElementById("emailSettingsBtn"); if (b1) b1.addEventListener("click", openReports);
+      var b2 = document.getElementById("reportsPanelBtn"); if (b2) b2.addEventListener("click", openReports);
+      var b3 = document.getElementById("tvDisplayBtn"); if (b3) b3.addEventListener("click", function () { revealTvPanel(); });
       var c = document.getElementById("configDrawerClose"); if (c) c.addEventListener("click", closeConfigDrawer);
       var o = document.getElementById("configDrawerOverlay"); if (o) o.addEventListener("click", closeConfigDrawer);
     }
