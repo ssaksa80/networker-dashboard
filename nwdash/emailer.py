@@ -42,6 +42,7 @@ from .models import (
 from .sessions import (
     build_dashboard_from_session,
     connection_snapshot_for_session,
+    latest_session_record,
     recreate_session_from_snapshot,
 )
 from .snapshots import (
@@ -348,6 +349,20 @@ def _email_profile_state() -> dict[str, Any]:
     return masked
 
 
+def _resolve_connection(primary: dict | None, *fallbacks: dict | None) -> dict:
+    """First non-empty connection snapshot, else adopt the newest live or
+    persisted session record (self-healing: a schedule must never be armed
+    or left connectionless while ANY proven session exists)."""
+    for candidate in (primary, *fallbacks):
+        if isinstance(candidate, dict) and candidate:
+            return dict(candidate)
+    adopted = latest_session_record()
+    if adopted:
+        debug_log("self-heal: adopting the newest session record as the schedule connection")
+        return dict(adopted)
+    return {}
+
+
 def _arm_profile_automation(name: str, profile: dict[str, Any], session_id: str) -> AlertAutomation:
     """Arm (or replace) the schedule a stored profile describes, stamped with
     the profile's name. Identity-replace semantics: every same-identity or
@@ -363,10 +378,10 @@ def _arm_profile_automation(name: str, profile: dict[str, Any], session_id: str)
     )
     resolved_session = session_id or (existing.session_id if existing else "") or uuid.uuid4().hex
     stored_connection = profile.get("_connection") if isinstance(profile.get("_connection"), dict) else {}
-    connection = (
-        connection_snapshot_for_session(resolved_session)
-        or dict(stored_connection)
-        or (dict(existing.connection) if existing and existing.connection else {})
+    connection = _resolve_connection(
+        connection_snapshot_for_session(resolved_session),
+        stored_connection,
+        dict(existing.connection) if existing and existing.connection else None,
     )
     automation = AlertAutomation(
         automation_id=f"{resolved_session}:{uuid.uuid4().hex[:8]}",
@@ -796,28 +811,45 @@ def _ensure_automation_session(automation: AlertAutomation) -> bool:
     if _session_exists(automation.session_id):
         return True
     snapshot = automation.connection if isinstance(automation.connection, dict) else {}
-    if not snapshot:
-        # Legacy automations.json record from before connection snapshots
-        # existed: it cannot reconnect on its own, so it waits (still scheduled)
-        # until a matching session appears again.
-        automation.last_result = (
-            f"Waiting for a dashboard session at {generated_at()} — this schedule was saved by an "
-            "older version; reconnect and re-save it to make it restart-proof."
-        )
-        debug_log(f"automation {automation.automation_id}: session gone and no connection snapshot; run skipped")
-        return False
-    if not decrypt_process_secret(str(snapshot.get("encrypted_networker_password") or "")):
-        if automation.automation_id not in _SNAPSHOT_DECRYPT_WARNED:
-            _SNAPSHOT_DECRYPT_WARNED.add(automation.automation_id)
-            LOG.warning(
-                f"Email automation {automation.automation_id} ({automation.schedule_type}) cannot decrypt its "
-                "saved NetWorker credentials (encryption key regenerated?). It remains scheduled but inert "
-                "until it is re-saved from the Email Alert Automation dialog."
+    usable = bool(snapshot) and bool(
+        decrypt_process_secret(str(snapshot.get("encrypted_networker_password") or ""))
+    )
+    if not usable:
+        # Self-heal: the automation's own snapshot is missing or unreadable
+        # (legacy record, or the DPAPI key was regenerated). Adopt the newest
+        # live/persisted session whose credentials DO decrypt, store it on the
+        # automation, and proceed. Only when nothing is adoptable do we fall
+        # back to waiting (still scheduled — a schedule is never cancelled).
+        adopted = latest_session_record()
+        if adopted and decrypt_process_secret(str(adopted.get("encrypted_networker_password") or "")):
+            automation.connection = dict(adopted)
+            snapshot = automation.connection
+            persist_automations()
+            LOG.info(
+                f"Email automation {automation.automation_id}: adopted the newest session "
+                "connection (self-heal) after its own was missing or unreadable."
             )
-        automation.last_result = (
-            f"Saved connection credentials are unreadable ({generated_at()}); re-save this schedule."
-        )
-        return False
+        elif not snapshot:
+            # No snapshot of its own and nothing anywhere to adopt: wait (still
+            # scheduled) until any dashboard session appears — it heals itself.
+            automation.last_result = (
+                f"Waiting for a dashboard session at {generated_at()} — no saved connection is "
+                "available yet; the schedule will heal itself as soon as anyone connects."
+            )
+            debug_log(f"automation {automation.automation_id}: no snapshot and nothing to adopt; run skipped")
+            return False
+        else:
+            if automation.automation_id not in _SNAPSHOT_DECRYPT_WARNED:
+                _SNAPSHOT_DECRYPT_WARNED.add(automation.automation_id)
+                LOG.warning(
+                    f"Email automation {automation.automation_id} ({automation.schedule_type}) cannot decrypt its "
+                    "saved NetWorker credentials and no other session is available to adopt. It remains scheduled "
+                    "and will heal itself as soon as anyone connects."
+                )
+            automation.last_result = (
+                f"Saved connection credentials are unreadable ({generated_at()}); will adopt the next live connection."
+            )
+            return False
     if recreate_session_from_snapshot(automation.session_id, snapshot):
         debug_log(f"automation {automation.automation_id}: recreated dashboard session from stored connection")
         return True
@@ -1209,8 +1241,9 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
             save_email_config_from_payload(payload)
         except BadRequest:
             pass
-    connection = connection_snapshot_for_session(session_id) or (
-        dict(existing.connection) if existing and existing.connection else {}
+    connection = _resolve_connection(
+        connection_snapshot_for_session(session_id),
+        dict(existing.connection) if existing and existing.connection else None,
     )
     automation = AlertAutomation(
         automation_id=automation_id,
