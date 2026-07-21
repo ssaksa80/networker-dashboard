@@ -11,6 +11,7 @@ def test_checkbox_exempt_from_global_input_sizing():
 
 def test_group_checkbox_labels_are_check_rows():
     html = (A / "dashboard.html").read_text(encoding="utf-8")
-    js = (A / "app.js").read_text(encoding="utf-8")
     assert 'class="check-row"' in html
-    assert "check-row" in js
+    # the report-group checkbox rows moved to the /reports page
+    assert 'class="check-row"' in (A / "reports.html").read_text(encoding="utf-8")
+    assert "check-row" in (A / "reports.js").read_text(encoding="utf-8")

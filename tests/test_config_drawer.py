@@ -7,13 +7,19 @@ def test_config_drawer_markup():
     assert 'id="configDrawerClose"' in html
     assert 'id="configDrawerOverlay"' in html
 
-def test_panels_moved_into_drawer_not_bottom_panels():
+def test_tv_panel_lives_inside_the_drawer():
     html = (A / "dashboard.html").read_text(encoding="utf-8")
-    # panels must live inside the drawer: configDrawer appears before each panel id
+    # the TV panel must live inside the drawer: configDrawer appears before it
     i = html.find('id="configDrawer"')
     assert i != -1
-    for pid in ("smtpSettingsPanel", "scheduledReportsPanel", "tvDisplayPanel"):
-        assert html.find(f'id="{pid}"') > i, f"{pid} must be inside the config drawer"
+    assert html.find('id="tvDisplayPanel"') > i, "tvDisplayPanel must be inside the config drawer"
+
+
+def test_smtp_and_report_panels_no_longer_in_the_drawer():
+    # both moved to the /reports page (see tests/test_reports_page.py)
+    html = (A / "dashboard.html").read_text(encoding="utf-8")
+    assert 'id="smtpSettingsPanel"' not in html
+    assert 'id="scheduledReportsPanel"' not in html
 
 def test_js_drawer_open_close():
     js = (A / "app.js").read_text(encoding="utf-8")
