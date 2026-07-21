@@ -2613,39 +2613,9 @@
       .theme-field { font-size: 19px; }
     }
 
-    .health-badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
-    .health-ok   { background: #16794322; color: #16a34a; }
-    .health-bad  { background: #b4530922; color: #dc2626; }
-    .health-idle { background: #64748b22; color: #64748b; }
-    .report-job  { padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
-    .form-error  { color: #dc2626; min-height: 1.2em; }
-    .legacy-notice { padding: 10px; border: 1px solid var(--amber); border-radius: 8px; margin-bottom: 8px; }
-
-    .tv-url-row { display: flex; gap: 8px; margin-bottom: 12px; }
-    .tv-url-row input { flex: 1; font-family: monospace; }
-
-    .config-drawer { width: min(560px, 96vw); }
-    .config-drawer .panel { border: none; box-shadow: none; margin: 0; padding: 0; background: transparent; }
-
-    #reportSectionChecks { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 6px 0; }
-    #reportSectionChecks legend { padding: 0 6px; }
-
-    /* Checkboxes/radios must not inherit the full-width text-input sizing above. */
-    input[type="checkbox"], input[type="radio"] {
-      width: auto;
-      min-height: 0;
-      height: auto;
-      padding: 0;
-      margin: 0 6px 0 0;
-      border: none;
-      vertical-align: middle;
-      accent-color: var(--brand);
-    }
-    .check-row, .report-form label.check-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      white-space: nowrap;
-    }
-    #reportSectionChecks label { display: flex; align-items: center; gap: 6px; }
+    .em-status { padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; margin-left: 6px; text-transform: uppercase; letter-spacing: .3px; }
+    .em-status-live { background: #16794322; color: #18764a; }
+    .em-status-reconnectable { background: #2457a622; color: #2457a6; }
+    .em-status-waiting { background: #a9680022; color: #a96800; }
+    .em-last { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
   

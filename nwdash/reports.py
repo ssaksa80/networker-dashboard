@@ -627,9 +627,7 @@ def render_dashboard_snapshot_png(dashboard: dict[str, Any]) -> bytes | None:
             return None
 
 
-def dashboard_report_email(
-    dashboard: dict[str, Any], snapshot_cid: str = "", sections: list[str] | None = None
-) -> tuple[str, str]:
+def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") -> tuple[str, str]:
     summary = dashboard.get("summary") or {}
     target = dashboard.get("target") or {}
     health = dashboard.get("serverHealth") or {}
@@ -641,28 +639,7 @@ def dashboard_report_email(
     # additionally carries the gradient via background-image for modern clients.
     brand_background = BRAND_CARD_SOLID
     brand_ink = BRAND_CARD_INK
-
-    # Section filter: sections=None keeps current behavior (every card shown).
-    # An explicit list (including []) restricts the report to those section keys.
-    # The brand/header card and the Report Details table are never gated.
-    want = set(sections) if sections is not None else None
-
-    def _want(key: str) -> bool:
-        return want is None or key in want
-
-    rows_all = dashboard_report_rows(dashboard)
-    _row_section_keys = {
-        "Recovery jobs": "recovery",
-        "Clone jobs": "clone",
-        "Alerts": "alerts",
-        "Backup SLA": "backup_sla",
-        "Server Protection Job": "server_protection",
-    }
-    rows = [
-        (label, value)
-        for label, value in rows_all
-        if _row_section_keys.get(label) is None or _want(_row_section_keys[label])
-    ]
+    rows = dashboard_report_rows(dashboard)
     plain = "\n".join(f"{label}: {value}" for label, value in rows)
     total_jobs = report_int(summary.get("slaTotalJobs", summary.get("totalJobs")))
     successful = report_int(summary.get("successfulJobs"))
@@ -720,7 +697,7 @@ def dashboard_report_email(
         + report_metric_card("Failed Jobs", failed, palette["red"], palette)
         + report_metric_card("Active Jobs", active, palette["blue"], palette)
         + report_metric_card("Recovery Jobs", recovery, palette["amber"], palette)
-        + (report_metric_card("Alerts", alerts, palette["amber"], palette) if _want("alerts") else "")
+        + report_metric_card("Alerts", alerts, palette["amber"], palette)
         + "</tr>"
     )
     overview_rows = "".join(report_bar(label, value, max_overview, color, palette) for label, value, color in overview)
@@ -734,104 +711,6 @@ def dashboard_report_email(
         f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Running clone jobs <strong style="float:right;color:{palette["ink"]};">{report_int(summary.get("cloneRunning")):,}</strong></div>'
         f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Clone sessions <strong style="float:right;color:{palette["ink"]};">{report_int(summary.get("cloneSessionTotal")):,}</strong></div>'
     )
-
-    # Per-card gating for the top row. Each card's markup is reused verbatim from
-    # the original single f-string; only inclusion is now conditional. When
-    # sections=None every _want(...) call returns True, so the assembled HTML is
-    # unchanged from before this refactor.
-    backup_sla_td = (
-        report_donut_card(
-            "Backup SLA",
-            f"{sla_percent}%",
-            "SLA",
-            [
-                ("SLA met", sla_met, palette["green"]),
-                ("Not met", sla_missed, palette["red"]),
-            ],
-            f"{total_jobs:,} jobs",
-            palette=palette,
-        )
-        if _want("backup_sla")
-        else ""
-    )
-    management_td = (
-        f"""          <td style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;">
-            <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:252px;">
-              <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:12px;">
-                <tr><td style="font-size:14px;font-weight:800;color:{palette["ink"]};">Management Overview</td><td style="font-size:12px;text-align:right;color:{palette["muted"]};">Live API</td></tr>
-              </table>
-              <table role="presentation" style="width:100%;border-collapse:collapse;">{overview_rows}</table>
-            </div>
-          </td>"""
-        if _want("management")
-        else ""
-    )
-    recovery_td = (
-        f"""          <td style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;">
-            <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:252px;">
-              <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:18px;">
-                <tr><td style="font-size:14px;font-weight:800;color:{palette["ink"]};">Recovery Health</td><td style="font-size:12px;text-align:right;color:{palette["muted"]};">Restores</td></tr>
-              </table>
-              <div style="background:{palette["surface2"]};border:1px solid {palette["line"]};border-radius:7px;padding:12px;margin-bottom:13px;">
-                <div style="font-size:24px;font-weight:850;color:{palette["ink"]};">{recovery:,}</div>
-                <div style="font-size:12px;font-weight:700;color:{palette["muted"]};">Restore jobs in {html_lib.escape(range_label)}</div>
-              </div>
-              {recovery_rows}
-            </div>
-          </td>"""
-        if _want("recovery")
-        else ""
-    )
-    clone_td = (
-        f"""          <td style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;">
-            <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:252px;">
-              <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:18px;">
-                <tr><td style="font-size:14px;font-weight:800;color:{palette["ink"]};">Clone Jobs</td><td style="font-size:12px;text-align:right;color:{palette["muted"]};">Actions</td></tr>
-              </table>
-              <div style="background:{palette["surface2"]};border:1px solid {palette["line"]};border-radius:7px;padding:12px;margin-bottom:13px;">
-                <div style="font-size:24px;font-weight:850;color:{palette["ink"]};">{clones:,}</div>
-                <div style="font-size:12px;font-weight:700;color:{palette["muted"]};">Clone jobs in {html_lib.escape(range_label)}</div>
-              </div>
-              {clone_rows}
-            </div>
-          </td>"""
-        if _want("clone")
-        else ""
-    )
-
-    health_cards = (
-        report_health_card("Server status", server_status, str(health.get("detail") or "CPU/RAM endpoint did not return data."), server_status_color, palette=palette)
-        + "\n            "
-        + report_health_card("CPU usage", cpu_value, cpu_detail, palette["blue"], health.get("cpuUsagePercent"), palette)
-        + "\n            "
-        + report_health_card("Memory usage", ram_value, ram_detail, palette["amber"], ram_percent, palette)
-        if _want("health")
-        else ""
-    )
-    server_protection_card = (
-        report_health_card("Server Protection Job", protection_label, protection_detail, protection_color, palette=palette)
-        if _want("server_protection")
-        else ""
-    )
-    health_section = (
-        f"""      <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;margin-bottom:12px;">
-        <table role="presentation" style="width:100%;border-collapse:collapse;border-bottom:1px solid {palette["line"]};">
-          <tr>
-            <td style="padding:14px 16px;font-size:14px;font-weight:850;color:{palette["ink"]};">NetWorker Server Health</td>
-            <td style="padding:14px 16px;font-size:12px;text-align:right;color:{palette["muted"]};">Updated {html_lib.escape(generated)} - {html_lib.escape(range_label)}</td>
-          </tr>
-        </table>
-        <table role="presentation" style="width:100%;border-collapse:collapse;padding:12px;">
-          <tr>
-            {health_cards}
-            {server_protection_card}
-          </tr>
-        </table>
-      </div>"""
-        if (_want("health") or _want("server_protection"))
-        else ""
-    )
-
     snapshot_block = ""
     if snapshot_cid:
         escaped_cid = html_lib.escape(snapshot_cid, quote=True)
@@ -889,16 +768,70 @@ def dashboard_report_email(
               range_label,
               palette=palette,
           )}
-          {backup_sla_td}
-{management_td}
-{recovery_td}
-{clone_td}
+          {report_donut_card(
+              "Backup SLA",
+              f"{sla_percent}%",
+              "SLA",
+              [
+                  ("SLA met", sla_met, palette["green"]),
+                  ("Not met", sla_missed, palette["red"]),
+              ],
+              f"{total_jobs:,} jobs",
+              palette=palette,
+          )}
+          <td style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;">
+            <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:252px;">
+              <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:12px;">
+                <tr><td style="font-size:14px;font-weight:800;color:{palette["ink"]};">Management Overview</td><td style="font-size:12px;text-align:right;color:{palette["muted"]};">Live API</td></tr>
+              </table>
+              <table role="presentation" style="width:100%;border-collapse:collapse;">{overview_rows}</table>
+            </div>
+          </td>
+          <td style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;">
+            <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:252px;">
+              <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:18px;">
+                <tr><td style="font-size:14px;font-weight:800;color:{palette["ink"]};">Recovery Health</td><td style="font-size:12px;text-align:right;color:{palette["muted"]};">Restores</td></tr>
+              </table>
+              <div style="background:{palette["surface2"]};border:1px solid {palette["line"]};border-radius:7px;padding:12px;margin-bottom:13px;">
+                <div style="font-size:24px;font-weight:850;color:{palette["ink"]};">{recovery:,}</div>
+                <div style="font-size:12px;font-weight:700;color:{palette["muted"]};">Restore jobs in {html_lib.escape(range_label)}</div>
+              </div>
+              {recovery_rows}
+            </div>
+          </td>
+          <td style="padding:0 8px 12px 0;width:16.66%;min-width:280px;vertical-align:top;">
+            <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;min-height:252px;">
+              <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:18px;">
+                <tr><td style="font-size:14px;font-weight:800;color:{palette["ink"]};">Clone Jobs</td><td style="font-size:12px;text-align:right;color:{palette["muted"]};">Actions</td></tr>
+              </table>
+              <div style="background:{palette["surface2"]};border:1px solid {palette["line"]};border-radius:7px;padding:12px;margin-bottom:13px;">
+                <div style="font-size:24px;font-weight:850;color:{palette["ink"]};">{clones:,}</div>
+                <div style="font-size:12px;font-weight:700;color:{palette["muted"]};">Clone jobs in {html_lib.escape(range_label)}</div>
+              </div>
+              {clone_rows}
+            </div>
+          </td>
         </tr>
       </table>
 
       <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:12px;">{metric_rows}</table>
 
-{health_section}
+      <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;margin-bottom:12px;">
+        <table role="presentation" style="width:100%;border-collapse:collapse;border-bottom:1px solid {palette["line"]};">
+          <tr>
+            <td style="padding:14px 16px;font-size:14px;font-weight:850;color:{palette["ink"]};">NetWorker Server Health</td>
+            <td style="padding:14px 16px;font-size:12px;text-align:right;color:{palette["muted"]};">Updated {html_lib.escape(generated)} - {html_lib.escape(range_label)}</td>
+          </tr>
+        </table>
+        <table role="presentation" style="width:100%;border-collapse:collapse;padding:12px;">
+          <tr>
+            {report_health_card("Server status", server_status, str(health.get("detail") or "CPU/RAM endpoint did not return data."), server_status_color, palette=palette)}
+            {report_health_card("CPU usage", cpu_value, cpu_detail, palette["blue"], health.get("cpuUsagePercent"), palette)}
+            {report_health_card("Memory usage", ram_value, ram_detail, palette["amber"], ram_percent, palette)}
+            {report_health_card("Server Protection Job", protection_label, protection_detail, protection_color, palette=palette)}
+          </tr>
+        </table>
+      </div>
 
       <div style="background:{palette["surface"]};border:1px solid {palette["line"]};border-radius:8px;padding:14px;">
         <h3 style="margin:0 0 12px;font-size:14px;color:{palette["ink"]};">Report Details</h3>

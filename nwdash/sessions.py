@@ -168,8 +168,9 @@ def persist_sessions() -> None:
 
 def _restore_session_record(session_id: str, rec: dict[str, Any], now: float) -> bool:
     """Re-establish ONE NetWorker session (under its original id) from a
-    persisted record — the JSON shape written by _session_to_dict. Used by
-    restore_sessions_from_disk (records from sessions.json).
+    persisted record — the JSON shape written by _session_to_dict. Shared by
+    restore_sessions_from_disk (records from sessions.json) and by
+    recreate_session_from_snapshot (an automation's connection snapshot).
     Raises on login/network failure; returns False for unusable records.
     """
     import urllib.request as _urllib_request
@@ -254,6 +255,33 @@ def restore_sessions_from_disk() -> int:
     return restored
 
 
+def connection_snapshot_for_session(session_id: str) -> dict[str, Any]:
+    """JSON-safe connection snapshot of a live session (sanitized config +
+    encrypted credentials — the same shape sessions.json stores). Captured onto
+    email automations at schedule time so they can outlive the session. Returns
+    {} when the session does not exist."""
+    session = _get_session(session_id)
+    if not session:
+        return {}
+    return _session_to_dict(session_id, session)
+
+
+def recreate_session_from_snapshot(session_id: str, snapshot: dict[str, Any]) -> bool:
+    """Recreate a dashboard session under its ORIGINAL id from the connection
+    snapshot an automation captured at schedule time. Used at fire time when
+    the session no longer exists (restart, TTL expiry). Returns True when the
+    NetWorker login succeeded and the session is registered again."""
+    if not isinstance(snapshot, dict) or not snapshot:
+        return False
+    try:
+        if _restore_session_record(session_id, snapshot, time.time()):
+            persist_sessions()
+            return True
+    except Exception as exc:  # login/network failure — caller keeps the schedule armed
+        debug_log(f"recreate_session_from_snapshot: {session_id[:8]}… failed: {exc}")
+    return False
+
+
 def create_dashboard_session(
     config: ApiConfig,
     cookie_jar: CookieJar,
@@ -277,9 +305,9 @@ def create_dashboard_session(
 
 
 def cleanup_dashboard_sessions() -> None:
-    # NOTE: expiring a session deliberately does NOT cancel any scheduled
-    # reports — the Scheduled Reports subsystem stores its own credentials and
-    # reconnects at fire time independently of dashboard sessions.
+    # NOTE: expiring a session deliberately does NOT cancel its email
+    # automations any more — automations carry their own connection snapshot
+    # and recreate a session at fire time (see emailer.run_alert_automation).
     now = time.time()
     stale = [
         session_id
@@ -460,15 +488,24 @@ def build_dashboard(config: ApiConfig) -> tuple[int, dict[str, Any]]:
     return build_dashboard_rest_auto(config)
 
 
-def snapshot_latest_live_session() -> dict[str, Any] | None:
-    """Full connection record for the most recently used live session, in the
-    same shape persist_sessions writes. Used to establish the reporting
-    connection by COPY, so nothing about the connection is guessed."""
+def latest_session_record() -> dict[str, Any] | None:
+    """Newest usable connection record for self-healing schedules: prefer the
+    most-recently-used LIVE session; else the newest record persisted in
+    sessions.json; else None. Both sources share the _session_to_dict shape,
+    which is exactly what automation connection snapshots store."""
+    from . import config as _config
     items = _session_items_snapshot()
-    if not items:
+    if items:
+        session_id, session = max(items, key=lambda kv: float(getattr(kv[1], "last_used", 0) or 0))
+        return _session_to_dict(session_id, session)
+    try:
+        records = json.loads(_config.SESSION_PERSISTENCE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return None
-    session_id, session = max(items, key=lambda kv: float(getattr(kv[1], "last_used", 0) or 0))
-    return _session_to_dict(session_id, session)
+    if not isinstance(records, dict) or not records:
+        return None
+    best = max(records.values(), key=lambda r: float((r or {}).get("last_used") or 0) if isinstance(r, dict) else 0)
+    return best if isinstance(best, dict) and best.get("config") else None
 
 
 def build_multi_server_dashboard(session_ids: list[str]) -> tuple[int, dict[str, Any]]:
