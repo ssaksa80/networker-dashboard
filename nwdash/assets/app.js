@@ -2410,7 +2410,7 @@
     compareLocalSnapshots();
     loadSharedDashboard();
     startSSE();
-    initScheduledReports();
+    initReportGroups();
     initDisplayConfig();
     initSmtpSettings();
     initConfigPanelButtons();
@@ -2421,68 +2421,67 @@
       return `<span class="health-badge health-${cls}">${state.replace("_", " ")}</span>`;
     }
 
-    async function renderReportJobs() {
-      const list = document.getElementById("reportJobsList");
+    async function renderReportGroups() {
+      var list = document.getElementById("reportGroupsList");
       if (!list) return;
-      const r = await fetch("/api/report-jobs", {
-        method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({action: "list"}),
+      var r = await fetch("/api/report-groups", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({action:"list"})});
+      var d = await r.json();
+      document.getElementById("reportGroupsConn").textContent = d.hasConnection ? "" : "Set the reporting connection (TV / Display) before enabling groups.";
+      var order = (d.groups||[]).map(function(g){return g.id;});
+      list.innerHTML = (d.groups||[]).map(function(g){
+        var badge = '<span class="health-badge health-'+({healthy:"ok",unhealthy:"bad",never_run:"idle"}[g.health.state]||"idle")+'">'+g.health.state.replace("_"," ")+'</span>';
+        return '<div class="report-job" data-id="'+g.id+'">'
+          + '<div class="rj-main"><strong>'+g.name+'</strong> · '+g.cadence+' '+g.sendTime+' · '+g.recipients.length+' recipient(s) '+badge+'</div>'
+          + '<div class="rj-sub">'+g.sections.join(", ")+' · last: '+(g.health.lastResult||"—")+'</div>'
+          + '<label><input type="checkbox" class="rg-toggle" '+(g.enabled?"checked":"")+'> on</label> '
+          + '<label><input type="checkbox" class="rg-test"> test</label> '
+          + '<button class="rg-send" type="button">Send now</button> '
+          + '<button class="rg-edit" type="button">Edit</button> '
+          + '<button class="rg-del" type="button">Delete</button> '
+          + '<button class="rg-up" type="button">↑</button><button class="rg-down" type="button">↓</button>'
+          + '</div>';
+      }).join("") || "<p>No report groups yet.</p>";
+      list.querySelectorAll(".report-job").forEach(function(card){
+        var id = card.getAttribute("data-id");
+        var g = (d.groups||[]).find(function(x){return x.id===id;});
+        card.querySelector(".rg-toggle").addEventListener("change", function(e){ _groupAction({action:"toggle", id:id, enabled:e.target.checked}); });
+        card.querySelector(".rg-del").addEventListener("click", function(){ _groupAction({action:"delete", id:id}); });
+        card.querySelector(".rg-send").addEventListener("click", async function(){
+          var test = card.querySelector(".rg-test").checked;
+          var rr = await fetch("/api/report-groups", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({action:"send", id:id, test:test})});
+          var dd = await rr.json(); alert(dd.message || (dd.ok?"Sent":"Failed"));
+        });
+        card.querySelector(".rg-edit").addEventListener("click", function(){ _editGroup(id, g); });
+        card.querySelector(".rg-up").addEventListener("click", function(){ _move(order, id, -1); });
+        card.querySelector(".rg-down").addEventListener("click", function(){ _move(order, id, 1); });
       });
-      const data = await r.json();
-      const notice = document.getElementById("reportLegacyNotice");
-      if (notice) notice.hidden = !data.legacyMigrationNeeded;
-      list.innerHTML = (data.jobs || []).map(j => `
-        <div class="report-job">
-          <div class="rj-main">
-            <strong>${j.kind}</strong> &rarr; ${j.recipients.join(", ")}
-            &middot; ${j.kind === "digest" ? "at " + j.reportTime : "every " + j.intervalMinutes + " min"}
-            ${reportHealthBadge(j.health.state)}
-          </div>
-          <div class="rj-sub">last: ${j.health.lastResult || "—"} &middot; next: ${
-            j.health.nextRun ? new Date(j.health.nextRun * 1000).toLocaleString() : "—"}</div>
-          <button data-del="${j.id}" type="button">Delete</button>
-        </div>`).join("") || "<p>No scheduled reports yet.</p>";
-      list.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
-        await fetch("/api/report-jobs", {method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({action: "delete", id: b.getAttribute("data-del")})});
-        renderReportJobs();
-      }));
     }
-
-    async function submitReportJob(ev) {
-      ev.preventDefault();
-      const f = ev.target;
-      const err = document.getElementById("reportFormError");
-      err.textContent = "Validating (connect + render + SMTP)…";
-      const payload = {
-        action: "create", kind: "digest",
-        recipients: f.recipients.value, reportTime: f.reportTime.value,
-        credential: {
-          rest_api_host: f.rest_api_host.value, rest_api_port: Number(f.rest_api_port.value),
-          backup_server_host: f.rest_api_host.value, backup_server_port: Number(f.rest_api_port.value),
-          username: f.username.value, password: f.password.value, api_mode: "nwui",
-        },
-      };
-      const r = await fetch("/api/report-jobs", {method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload)});
-      const data = await r.json();
-      if (!data.ok) {
-        const failed = Object.entries(data.checks || {}).filter(([, v]) => !v).map(([k]) => k).join(", ");
-        err.textContent = `Not saved — failed: ${failed || "validation"}. ${data.message || ""}`;
-        return;
-      }
-      err.textContent = "";
-      f.reset(); f.hidden = true;
-      renderReportJobs();
+    async function _groupAction(body){ await fetch("/api/report-groups",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); renderReportGroups(); }
+    function _move(order, id, delta){ var i=order.indexOf(id), j=i+delta; if(i<0||j<0||j>=order.length) return; order.splice(j,0,order.splice(i,1)[0]); _groupAction({action:"reorder", order:order}); }
+    function _editGroup(id, g){
+      var f = document.getElementById("reportGroupForm"); f.hidden=false;
+      f.id.value = id||""; f.name.value = g?g.name:""; f.recipients.value = g?g.recipients.join(", "):"";
+      f.cadence.value = g?g.cadence:"daily"; f.sendTime.value = g?g.sendTime:"08:00"; f.enabled.checked = g?g.enabled:true;
+      var sel = g?g.sections:[]; document.querySelectorAll("#reportSectionChecks input").forEach(function(c){ c.checked = sel.indexOf(c.value)>=0; });
+      document.getElementById("reportGroupErr").textContent = "";
     }
-
-    function initScheduledReports() {
-      const panel = document.getElementById("scheduledReportsPanel");
-      if (!panel) return;
-      document.getElementById("reportAddBtn").addEventListener("click",
-        () => { document.getElementById("reportJobForm").hidden = false; });
-      document.getElementById("reportJobForm").addEventListener("submit", submitReportJob);
-      renderReportJobs();
+    async function submitReportGroup(ev) {
+      ev.preventDefault(); var f = ev.target; var err = document.getElementById("reportGroupErr");
+      var sections = Array.prototype.slice.call(document.querySelectorAll("#reportSectionChecks input:checked")).map(function(c){return c.value;});
+      var body = {action: f.id.value?"update":"create", id:f.id.value||undefined, name:f.name.value, sections:sections,
+                  recipients:f.recipients.value, cadence:f.cadence.value, sendTime:f.sendTime.value, enabled:f.enabled.checked};
+      var r = await fetch("/api/report-groups",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      var d = await r.json();
+      if(!d.ok){ err.textContent = "Fix: " + Object.values(d.errors||{message:d.message}).join(" "); return; }
+      if(d.warning) err.textContent = d.warning;
+      f.hidden = true; renderReportGroups();
+    }
+    function initReportGroups(){
+      var panel = document.getElementById("scheduledReportsPanel"); if(!panel) return;
+      var add = document.getElementById("reportGroupAddBtn"); if(add) add.addEventListener("click", function(){ _editGroup("", null); });
+      var form = document.getElementById("reportGroupForm"); if(form) form.addEventListener("submit", submitReportGroup);
+      var cancel = document.getElementById("reportGroupCancel"); if(cancel) cancel.addEventListener("click", function(){ form.hidden=true; });
+      renderReportGroups();
     }
 
     async function renderDisplayConfig() {

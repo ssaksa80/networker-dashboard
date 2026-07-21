@@ -104,7 +104,6 @@ from .snapshots import (
     snapshots_to_csv,
 )
 from .reports import build_excel_report
-from .report_api import handle_report_jobs
 
 
 def _cred_for_render(cred: dict) -> dict:
@@ -607,7 +606,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_error_json(HTTPStatus.FORBIDDEN, "CSRF token missing or invalid.")
             return
         allowed = {"/api/dashboard", "/api/export", "/api/server-health",
-                   "/api/alert-automation", "/api/report-jobs", "/api/snapshots",
+                   "/api/alert-automation", "/api/report-jobs", "/api/report-groups",
+                   "/api/snapshots",
                    "/api/share", "/api/multi-server", "/api/profiles",
                    "/api/ui-theme", "/api/display-config", "/api/email-config"}
         if path not in allowed:
@@ -749,9 +749,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 })
                 return
 
-            if path == "/api/report-jobs":
-                status, body = handle_report_jobs(payload)
+            if path == "/api/report-groups":
+                from .report_groups_api import handle_report_groups
+                status, body = handle_report_groups(payload)
                 self._send_json(status, body)
+                return
+
+            if path == "/api/report-jobs":
+                self._send_json(HTTPStatus.GONE, {"ok": False,
+                    "message": "Report jobs were replaced by Report Groups. Reload and use Scheduled Reports."})
                 return
 
             if path == "/api/email-config":
