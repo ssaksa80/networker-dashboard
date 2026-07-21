@@ -2612,4 +2612,10 @@
       .theme-chip-name { font-size: 15px; }
       .theme-field { font-size: 19px; }
     }
+
+    .em-status { padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; margin-left: 6px; text-transform: uppercase; letter-spacing: .3px; }
+    .em-status-live { background: #16794322; color: #18764a; }
+    .em-status-reconnectable { background: #2457a622; color: #2457a6; }
+    .em-status-waiting { background: #a9680022; color: #a96800; }
+    .em-last { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
   

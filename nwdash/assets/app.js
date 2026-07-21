@@ -1314,14 +1314,15 @@
             : ("every " + (s.intervalMinutes || 0) + " min");
           const paused = s.enabled === false;
           // Schedules survive restarts/session loss; show how each one will run.
-          const linkNote = s.sessionLive === false
-            ? (s.reconnectable ? " · reconnects automatically" : " · waiting for a connection")
-            : "";
+          const status = s.sessionLive !== false ? "live" : (s.reconnectable ? "reconnectable" : "waiting");
+          const statusChip = '<span class="em-status em-status-' + status + '">' + status + '</span>';
+          const lastLine = s.lastResult ? '<span class="em-last">' + _emailEscape(s.lastResult) + '</span>' : "";
           return '<div class="email-row' + (paused ? " is-disabled" : "") + '" data-id="' + _emailEscape(s.automationId) + '">'
             + '<label class="em-toggle"><input type="checkbox" class="em-active" data-id="' + _emailEscape(s.automationId) + '"' + (paused ? "" : " checked") + '> Active</label>'
-            + '<strong>' + _emailEscape(typeLabel) + '</strong>'
+            + '<strong>' + _emailEscape(typeLabel) + '</strong>' + statusChip
             + '<span class="em-meta">' + _emailEscape(s.recipients || "") + ' &middot; '
-            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + (paused ? ' &middot; (paused)' : '') + _emailEscape(linkNote) + '</span>'
+            + _emailEscape(cadence) + ' &middot; ' + _emailEscape(s.trigger || "") + (paused ? ' &middot; (paused)' : '') + '</span>'
+            + lastLine
             + '<div class="em-actions">'
             + '<button type="button" class="ghost em-edit" data-id="' + _emailEscape(s.automationId) + '">Edit</button>'
             + '<button type="button" class="ghost em-del" data-id="' + _emailEscape(s.automationId) + '">Delete</button>'
