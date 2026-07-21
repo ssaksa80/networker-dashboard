@@ -68,18 +68,11 @@ $shipFiles = @(
   'nwdash\auth.py',
   'nwdash\certs.py',
   'nwdash\config.py',
-  'nwdash\display.py',
   'nwdash\emailer.py',
   'nwdash\main.py',
   'nwdash\models.py',
   'nwdash\nwui.py',
   'nwdash\profiles.py',
-  'nwdash\report_cred.py',
-  'nwdash\report_groups.py',
-  'nwdash\report_groups_api.py',
-  'nwdash\report_notify.py',
-  'nwdash\report_render.py',
-  'nwdash\report_window.py',
   'nwdash\reports.py',
   'nwdash\restapi.py',
   'nwdash\secrets.py',
@@ -95,9 +88,7 @@ $shipFiles = @(
   'nwdash\assets\view.html',
   'nwdash\assets\tv.html',
   'nwdash\assets\tv.css',
-  'nwdash\assets\tv.js',
-  'nwdash\assets\reports.html',
-  'nwdash\assets\reports.js'
+  'nwdash\assets\tv.js'
 )
 
 # Fail fast if the allow-list is stale in either direction.

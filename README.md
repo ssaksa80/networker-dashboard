@@ -13,36 +13,10 @@ package installs required on the host.
 - Optional Windows server health (CPU/memory/disk) via WMI
 - Multi-server view, connection profiles, share-by-link read-only view
 - Daily snapshots with history, comparison, and CSV export
-- Scheduled Reports: all reporting settings live on a dedicated
-  **Scheduled Reports page** (`/reports`), opened from the dashboard's
-  Account menu (Email (SMTP) or Scheduled Reports) — it requires the
-  dashboard login. The page holds the **reporting connection**, **Email
-  (SMTP)** settings, and the **report groups** manager. Setup is one
-  click: connect on the dashboard as normal, then on the page press
-  "Use my current dashboard connection" — it copies the connection
-  you're already using (so reports pull exactly what the dashboard
-  shows) and immediately validates it, reporting how many jobs it
-  found. If it reports 0 jobs, the account or backup server is wrong
-  and reports would be empty. Report **groups** are named, ordered,
-  on/off — each picks its own dashboard sections, recipients, and
-  cadence (daily, weekly on Sunday, or monthly on the 1st, with
-  matching retrospective windows). On-demand "Send now" (with a "test"
-  checkbox) runs any group immediately. A save-time validation gate
-  (connect + render + SMTP) blocks broken groups before they're saved,
-  and a failed run still emails a fallback report plus a separate ops
-  alert — including a rendered dashboard image when a headless
-  Chrome/Edge is available
+- Scheduled email reports and alert automations (SMTP), including a
+  rendered dashboard image when a headless Chrome/Edge is available
 - Password login (PBKDF2), HMAC-signed sessions, CSRF protection,
   HSTS/CSP security headers, login rate limiting
-
-## TV / DSO wall
-
-A DSO TV can open `https://<host>:<port>/tv/<token>` (token generated in
-admin -> TV / Display) to show the live wall with **no login**. Set a
-"display connection" in that panel so the wall keeps refreshing 24/7 with
-nobody signed in. Protect everything else with a dashboard password
-(`Setup-NWDash.cmd -Upgrade -AuthPassword '...'`). Rotate the token from
-the same panel to invalidate an old TV URL.
 
 ## Quick start
 

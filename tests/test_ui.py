@@ -14,6 +14,27 @@ class TestDashboardHtml(unittest.TestCase):
     def test_logo_placeholder_replaced(self):
         self.assertNotIn("__NETWORKER_LOGO_SRC__", dashboard_html())
 
+    def test_contains_email_profile_wiring(self):
+        """Email Alert Automation modal ships the saved-profiles CARD list
+        (v2.7.0: cards + ON/OFF toggles replaced the select/Load/Delete bar)
+        and the client-side calls for the profile CRUD + toggle actions."""
+        html = dashboard_html()
+        for marker in (
+            "emailProfileCards",
+            "emailProfileName",
+            "emailProfileSaveBtn",
+            "ep-edit",
+            "ep-del",
+            "ep-toggle",
+            "save-profile",
+            "list-profiles",
+            "get-profile",
+            "delete-profile",
+            "toggle-profile",
+            "emailProfileName: loadedEmailProfileName",
+        ):
+            self.assertIn(marker, html, f"dashboard html missing {marker!r}")
+
     def test_contains_popup_close_and_resize_wiring(self):
         """Popup UX pass: one shared Escape handler closes the topmost open
         popup, the account menu closes on outside click, modal panels are
