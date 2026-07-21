@@ -9,7 +9,7 @@ from http import HTTPStatus
 from typing import Any
 
 from . import config
-from .report_cred import apiconfig_from_stored, credential_to_apiconfig
+from .report_cred import apiconfig_from_stored
 from .sessions import build_dashboard
 
 
@@ -21,7 +21,7 @@ class RenderResult:
 
 
 def render(cred: dict[str, Any]) -> RenderResult:
-    cfg = credential_to_apiconfig(cred)
+    cfg = apiconfig_from_stored(cred)
     status, body = build_dashboard(cfg)
     if status == HTTPStatus.OK:
         return RenderResult(True, body, "")
