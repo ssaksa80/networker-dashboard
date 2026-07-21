@@ -488,6 +488,26 @@ def build_dashboard(config: ApiConfig) -> tuple[int, dict[str, Any]]:
     return build_dashboard_rest_auto(config)
 
 
+def latest_session_record() -> dict[str, Any] | None:
+    """Newest usable connection record for self-healing schedules: prefer the
+    most-recently-used LIVE session; else the newest record persisted in
+    sessions.json; else None. Both sources share the _session_to_dict shape,
+    which is exactly what automation connection snapshots store."""
+    from . import config as _config
+    items = _session_items_snapshot()
+    if items:
+        session_id, session = max(items, key=lambda kv: float(getattr(kv[1], "last_used", 0) or 0))
+        return _session_to_dict(session_id, session)
+    try:
+        records = json.loads(_config.SESSION_PERSISTENCE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(records, dict) or not records:
+        return None
+    best = max(records.values(), key=lambda r: float((r or {}).get("last_used") or 0) if isinstance(r, dict) else 0)
+    return best if isinstance(best, dict) and best.get("config") else None
+
+
 def build_multi_server_dashboard(session_ids: list[str]) -> tuple[int, dict[str, Any]]:
     """Fetch dashboard data for each session in parallel and return aggregated summary."""
     if not session_ids:
