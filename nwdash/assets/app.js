@@ -2663,6 +2663,28 @@
       const profiles = loadProfiles();
       applyProfile(profiles[profileSelect.value]);
     });
+    // A profile's saved password is bound server-side to the connection it was
+    // saved for, so re-aiming the form at another host/account means the stored
+    // secret is no longer usable. Clear the "(saved)" marker as soon as one of
+    // those fields is edited, so the operator is asked to re-enter the password
+    // here instead of being refused after pressing Connect.
+    (function bindProfileTargetFields(){
+      const bound = ["restApiHost", "restApiPort", "backupServerHost",
+                     "backupServerPort", "username", "verifyTls"];
+      bound.forEach(function(field){
+        const el = form[field];
+        if (!el) return;
+        el.addEventListener("change", function(){
+          if (!profileSelect.value) return;
+          let cleared = false;
+          if (form.password.value === "(saved)")    { form.password.value = "";    cleared = true; }
+          if (form.wmiPassword.value === "(saved)") { form.wmiPassword.value = ""; cleared = true; }
+          if (cleared) {
+            showToast("Connection changed — re-enter the password to use this target.");
+          }
+        });
+      });
+    })();
     profileSaveBtn.addEventListener("click", async () => {
       const name = prompt("Profile name:", profileSelect.value || form.restApiHost.value || "My Server");
       if (!name) return;

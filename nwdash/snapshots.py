@@ -526,7 +526,7 @@ def save_email_profile(name: str, payload: dict[str, Any]) -> dict[str, Any]:
         existing = profiles.get(name) if isinstance(profiles.get(name), dict) else {}
         raw_password = settings["smtp_password"]
         if raw_password and raw_password not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
-            encrypted = encrypt_profile_secret(raw_password)
+            encrypted = encrypt_profile_secret(raw_password, name=name, field="smtpPassword")
         else:
             # Blank or sentinel password on save keeps the stored one.
             encrypted = str(existing.get("_enc_smtpPassword") or "")
@@ -608,7 +608,9 @@ def resolve_email_profile_password(payload: dict[str, Any]) -> dict[str, Any]:
             profiles = load_email_profiles()
         profile = profiles.get(name)
         if isinstance(profile, dict):
-            stored = decrypt_profile_secret(str(profile.get("_enc_smtpPassword") or ""))
+            stored = decrypt_profile_secret(
+                str(profile.get("_enc_smtpPassword") or ""), name=name, field="smtpPassword"
+            )
     result = dict(payload)
     result["smtpPassword"] = stored
     return result

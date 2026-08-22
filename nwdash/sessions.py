@@ -45,7 +45,7 @@ from .models import (
     generated_at,
     stale_dashboard_from_cache,
 )
-from .profiles import _host_allowed
+from .profiles import _host_allowed, _normalize_host
 from .wmi_health import load_server_health_wmi, unavailable_server_health
 from .restapi import (
     build_dashboard_rest,
@@ -302,6 +302,58 @@ def create_dashboard_session(
     ))
     persist_sessions()
     return session_id
+
+
+def purge_sessions_for_credential(host: str, username: str) -> dict[str, int]:
+    """Drop every session holding the credential for (host, username).
+
+    Deleting a saved profile used to remove only the profile entry: if that
+    profile had ever connected, its password stayed on disk in data/sessions.json,
+    Fernet-encrypted under a key on the same machine, forever. Removing the live
+    sessions and re-persisting rewrites sessions.json from what is left, so the
+    stored copy goes too.
+
+    Email automations keep their own connection snapshot (data/automations.json)
+    which is NOT touched here — cancelling a schedule as a side effect of a
+    profile delete would silently stop production reporting. Any automation still
+    holding this credential is counted and logged so it is not invisible.
+    """
+    from .models import _automation_items_snapshot
+
+    target_host = _normalize_host(host)
+    target_user = (username or "").strip()
+    if not target_host or not target_user:
+        return {"sessions": 0, "automations": 0}
+
+    doomed = [
+        sid for sid, session in _session_items_snapshot()
+        if _normalize_host(getattr(session.config, "rest_api_host", "")) == target_host
+        and (getattr(session.config, "username", "") or "").strip() == target_user
+    ]
+    for sid in doomed:
+        _pop_session(sid)
+    # persist_sessions() rebuilds sessions.json from the live sessions, so this
+    # also clears records left behind by sessions that never came back.
+    persist_sessions()
+
+    stranded = 0
+    for _key, automation in _automation_items_snapshot():
+        cfg = (automation.connection or {}).get("config") if isinstance(automation.connection, dict) else None
+        if not isinstance(cfg, dict):
+            continue
+        if (
+            _normalize_host(str(cfg.get("rest_api_host") or "")) == target_host
+            and str(cfg.get("username") or "").strip() == target_user
+            and (automation.connection or {}).get("encrypted_networker_password")
+        ):
+            stranded += 1
+    if doomed or stranded:
+        _cfg.LOG.warning(
+            f"profile delete purged {len(doomed)} stored session credential(s) for "
+            f"{target_user}@{target_host}; {stranded} email automation snapshot(s) still hold it",
+            extra={"event": "profile_credential_purge"},
+        )
+    return {"sessions": len(doomed), "automations": stranded}
 
 
 def cleanup_dashboard_sessions() -> None:

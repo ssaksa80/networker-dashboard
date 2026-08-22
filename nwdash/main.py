@@ -36,7 +36,12 @@ from .models import (
     _session_ids_snapshot,
     shared_dashboard_refresh_loop,
 )
-from .profiles import ALLOWED_HOST_NAMES, ALLOWED_NETWORKS, configure_allowed_hosts
+from .profiles import (
+    ALLOWED_HOST_NAMES,
+    ALLOWED_NETWORKS,
+    configure_allowed_hosts,
+    migrate_profile_secrets,
+)
 from .sessions import restore_sessions_from_disk
 from .snapshots import auto_snapshot_worker
 from .emailer import automation_scheduler_loop, cancel_alert_automation, restore_automations_from_disk
@@ -224,6 +229,15 @@ def run(argv: list[str] | None = None) -> int:
         # restore (which performs slow network logins). Automations no longer
         # require a session to be rescheduled — they recreate one at fire time
         # from their stored connection snapshot.
+        # One-shot upgrade of stored profile secrets to the per-profile AAD
+        # (enc:v2). Blobs that fail to decrypt are left untouched, so an
+        # unavailable key never destroys a saved password.
+        try:
+            rebound = migrate_profile_secrets()
+            if rebound:
+                print(f"Re-bound {rebound} saved profile password(s) to their profile.")
+        except Exception as exc:  # noqa: BLE001 — never block startup on a migration
+            LOG.error(f"profile secret migration failed: {exc}", exc_info=True)
         automations = restore_automations_from_disk()
         if automations:
             print(f"Restored {automations} scheduled email automation(s) from previous run.")
