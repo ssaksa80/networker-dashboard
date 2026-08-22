@@ -39,7 +39,7 @@ from .config import (
     debug_log,
     safe_log_text,
 )
-from .secrets import encrypt_profile_secret
+from .secrets import SecretEncryptionError, encrypt_profile_secret
 from .auth import (
     _clear_login_failures,
     _login_rate_limited,
@@ -84,6 +84,7 @@ from .sessions import (
     build_dashboard_from_session,
     build_multi_server_dashboard,
     build_server_health_from_session,
+    purge_sessions_for_credential,
 )
 from .snapshots import (
     _auto_snapshot_once,
@@ -620,7 +621,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             if k in ("password", "wmiPassword"):
                                 raw = str(v or "").strip()
                                 if raw and raw not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
-                                    safe[f"_enc_{k}"] = encrypt_profile_secret(raw)
+                                    try:
+                                        # AAD-bound to this profile+field: the blob
+                                        # cannot be moved to another profile/slot.
+                                        safe[f"_enc_{k}"] = encrypt_profile_secret(raw, name=name, field=k)
+                                    except SecretEncryptionError as exc:
+                                        # Never store "" as though the password saved.
+                                        raise BadRequest(str(exc)) from exc
                                 elif k in profiles.get(name, {}):
                                     # Keep existing encrypted value if no new one provided
                                     safe[f"_enc_{k}"] = profiles[name].get(f"_enc_{k}", "")
@@ -636,9 +643,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(profiles)})
                     elif action == "delete":
                         name = str(payload.get("name") or "").strip()
-                        profiles.pop(name, None)
+                        removed = profiles.pop(name, None) or {}
                         save_profiles(profiles)
-                        self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(profiles)})
+                        # Deleting the profile must also destroy the copy of its
+                        # password that any session it established left behind.
+                        purged = purge_sessions_for_credential(
+                            str(removed.get("restApiHost") or ""),
+                            str(removed.get("username") or ""),
+                        )
+                        self._send_json(HTTPStatus.OK, {
+                            "ok": True,
+                            "profiles": _mask_profiles(profiles),
+                            "sessionsPurged": purged["sessions"],
+                            "automationsHoldingCredential": purged["automations"],
+                        })
                     else:
                         self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(profiles)})
                 return

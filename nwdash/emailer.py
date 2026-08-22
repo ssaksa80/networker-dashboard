@@ -372,7 +372,7 @@ def _arm_profile_automation(name: str, profile: dict[str, Any], session_id: str)
     matches = _profile_automations(name, profile)
     existing = matches[0] if matches else None
     smtp_password = (
-        decrypt_profile_secret(str(profile.get("_enc_smtpPassword") or ""))
+        decrypt_profile_secret(str(profile.get("_enc_smtpPassword") or ""), name=name, field="smtpPassword")
         or (decrypt_process_secret(existing.encrypted_smtp_password) if existing else "")
         or saved_email_smtp_password()
     )
