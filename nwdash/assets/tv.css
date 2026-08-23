@@ -15,7 +15,7 @@ html{font-size:calc(100vw / 240)}
 }
 /*__TV_THEME_CSS__*/
 *{box-sizing:border-box;margin:0;padding:0}
-body{font:400 1rem/1.35 Inter,system-ui,sans-serif;background:var(--bg);color:var(--ink);width:calc(100vw / var(--scale));height:calc(100vh / var(--scale));overflow:hidden;display:flex;flex-direction:column;zoom:var(--scale)}
+body{font:400 1rem/1.35 Aptos,Arial,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--ink);width:calc(100vw / var(--scale));height:calc(100vh / var(--scale));overflow:hidden;display:flex;flex-direction:column;zoom:var(--scale)}
 .card{background:var(--surface);border:.06rem solid var(--line);border-radius:var(--r);box-shadow:0 .1rem .4rem rgba(23,32,38,.05)}
 /* header — real green gradient bar with real logo */
 .head{height:var(--headH);flex:none;background:var(--headbg);color:#fff;display:flex;align-items:center;gap:var(--gap);padding:0 calc(var(--gap)*1.6)}

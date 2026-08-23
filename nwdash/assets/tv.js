@@ -128,8 +128,8 @@
     }
     return '<circle cx="60" cy="60" r="46" fill="none" stroke="var(--surface2)" stroke-width="15"/>' +
       segments +
-      '<text x="60" y="57" text-anchor="middle" font-size="15" font-weight="780" fill="var(--ink)" font-family="Inter,system-ui">' + escapeHtml(centerTop) + "</text>" +
-      '<text x="60" y="73" text-anchor="middle" font-size="8.5" fill="var(--muted)" font-family="Inter,system-ui">' + escapeHtml(centerBottom) + "</text>";
+      '<text x="60" y="57" text-anchor="middle" font-size="15" font-weight="780" fill="var(--ink)" font-family="Aptos,Arial,system-ui">' + escapeHtml(centerTop) + "</text>" +
+      '<text x="60" y="73" text-anchor="middle" font-size="8.5" fill="var(--muted)" font-family="Aptos,Arial,system-ui">' + escapeHtml(centerBottom) + "</text>";
   }
   function legendHtml(items, total) {
     return items.map(function (item) {

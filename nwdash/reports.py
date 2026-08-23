@@ -467,7 +467,7 @@ def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
       --green:{palette["green"]}; --red:{palette["red"]}; --amber:{palette["amber"]}; --blue:{palette["blue"]};
     }}
     * {{ box-sizing:border-box; }}
-    body {{ margin:0; background:var(--bg); color:var(--ink); font-family:"Segoe UI",Arial,sans-serif; }}
+    body {{ margin:0; background:var(--bg); color:var(--ink); font-family:Aptos,"Aptos Display",Arial,"Segoe UI",sans-serif; }}
     .snapshot {{ width:1880px; padding:6px; }}
     .top-grid {{ display:grid; grid-template-columns:repeat(6, 1fr); gap:12px; }}
     .card, .metric, .health-section {{ background:var(--surface); border:1px solid var(--line); border-radius:8px; box-shadow:0 1px 2px rgba(15,23,42,.08); }}
@@ -723,7 +723,7 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
     html_body = f"""\
 <!doctype html>
 <html>
-  <body style="margin:0;padding:0;background:{palette["bg"]};font-family:Segoe UI,Arial,sans-serif;color:{palette["ink"]};">
+  <body style="margin:0;padding:0;background:{palette["bg"]};font-family:Aptos,Arial,Segoe UI,sans-serif;color:{palette["ink"]};">
     <div style="padding:18px;background:{palette["bg"]};">
       {snapshot_block}
       <table role="presentation" style="width:100%;min-width:1680px;border-collapse:collapse;">
@@ -949,9 +949,9 @@ def styles_xml() -> str:
     return '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
  <fonts count="3">
-  <font><sz val="11"/><color rgb="FF172026"/><name val="Calibri"/></font>
-  <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
-  <font><b/><sz val="18"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+  <font><sz val="11"/><color rgb="FF172026"/><name val="Aptos"/></font>
+  <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Aptos"/></font>
+  <font><b/><sz val="18"/><color rgb="FFFFFFFF"/><name val="Aptos"/></font>
  </fonts>
  <fills count="4">
   <fill><patternFill patternType="none"/></fill>
