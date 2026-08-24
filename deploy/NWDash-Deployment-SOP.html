@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetWorker Dashboard — Production Deployment SOP</title>
+<!-- Self-contained: no external fonts, scripts, images, or stylesheets. -->
+<style>
+  :root{
+    --navy:#123a5e; --blue:#1c5d99; --sky:#2f7fc1; --ink:#16222e; --mut:#5d6f80;
+    --line:#dfe7ee; --bg:#f2f6fa; --card:#ffffff; --ok:#1f7a4d; --ok-bg:#e8f5ee;
+    --warn:#8a6200; --warn-bg:#fdf3dd; --code-bg:#0f1c28; --code-ink:#d8e6f3;
+    --radius:12px; --shadow:0 8px 24px rgba(18,58,94,.08);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:Aptos,"Aptos Display",Arial,"Segoe UI",sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.55;font-size:15.5px}
+  .wrap{max-width:980px;margin:0 auto;padding:0 22px 60px}
+  header.hero{background:linear-gradient(135deg,var(--navy),var(--blue));color:#fff;
+    padding:38px 22px 30px;border-radius:0 0 18px 18px;margin-bottom:26px}
+  header.hero .wrap{padding-bottom:0}
+  header.hero h1{margin:0 0 6px;font-size:28px;letter-spacing:.01em}
+  header.hero p{margin:0;color:#cfe2f3;font-size:14.5px}
+  .meta{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+  .meta span{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.25);
+    border-radius:999px;padding:4px 12px;font-size:12.5px}
+  nav.toc{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:16px 20px;margin-bottom:26px}
+  nav.toc strong{display:block;margin-bottom:8px;color:var(--navy);
+    font-size:12px;letter-spacing:.12em;text-transform:uppercase}
+  nav.toc ol{margin:0;padding-left:22px;columns:2;column-gap:34px}
+  nav.toc li{margin:3px 0;font-size:14px}
+  nav.toc a{color:var(--blue);text-decoration:none}
+  nav.toc a:hover{text-decoration:underline}
+  section{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:24px 26px;margin-bottom:22px}
+  h2{margin:0 0 14px;color:var(--navy);font-size:20px;border-bottom:2px solid var(--line);
+    padding-bottom:8px}
+  h3{margin:20px 0 8px;color:var(--blue);font-size:16px}
+  p{margin:8px 0}
+  a{color:var(--blue)}
+  code{font-family:Consolas,"Cascadia Mono","Courier New",monospace;font-size:.92em;
+    background:#eaf1f7;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  pre{background:var(--code-bg);color:var(--code-ink);border-radius:10px;
+    padding:14px 16px;overflow-x:auto;font-size:13px;line-height:1.5}
+  pre code{background:none;border:none;color:inherit;padding:0;font-size:inherit}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th{background:var(--navy);color:#fff;text-align:left;padding:8px 12px;font-weight:600}
+  td{border:1px solid var(--line);padding:8px 12px;vertical-align:top}
+  tr:nth-child(even) td{background:#f7fafc}
+  .tablewrap{overflow-x:auto}
+  .callout{border-left:4px solid var(--sky);background:#eef5fb;border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:14px 0;font-size:14.5px}
+  .callout.ok{border-left-color:var(--ok);background:var(--ok-bg)}
+  .callout.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+  .callout strong:first-child{color:var(--navy)}
+  ul,ol{margin:8px 0;padding-left:26px}
+  li{margin:4px 0}
+  footer{color:var(--mut);font-size:12.5px;text-align:center;padding:12px 0 30px}
+  @media print{
+    body{background:#fff;font-size:11.5pt}
+    header.hero{background:var(--navy);-webkit-print-color-adjust:exact;print-color-adjust:exact;
+      border-radius:0}
+    section,nav.toc{box-shadow:none;border:1px solid #bbb;break-inside:avoid-page}
+    pre{white-space:pre-wrap;word-break:break-word}
+    nav.toc ol{columns:1}
+    a{color:var(--ink);text-decoration:none}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <h1>NetWorker Dashboard &mdash; Production Deployment SOP</h1>
+    <p>Deploy and operate the dashboard as a Windows service, monitoring Dell NetWorker backup infrastructure.</p>
+    <div class="meta">
+      <span>Audience: Windows server / IT operations</span>
+      <span>Service: NetWorkerDashboard (nssm)</span>
+      <span>Version 2.13.1</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<nav class="toc">
+  <strong>Contents</strong>
+  <ol start="0">
+    <li><a href="#arch">Architecture</a></li>
+    <li><a href="#prereq">Prerequisites</a></li>
+    <li><a href="#install">Install SOP</a></li>
+    <li><a href="#cotenant">Co-tenant hosts</a></li>
+    <li><a href="#service">Service management</a></li>
+    <li><a href="#upgrade">Upgrade / rollback SOP</a></li>
+    <li><a href="#backup">Backups</a></li>
+    <li><a href="#security">Security notes</a></li>
+    <li><a href="#monitoring">Monitoring</a></li>
+    <li><a href="#tv">TV mode</a></li>
+    <li><a href="#limits">Known limitations</a></li>
+  </ol>
+</nav>
+
+<section id="arch">
+<h2>0. Architecture (what you are operating)</h2>
+<pre><code>Browser / TV --HTTPS:8443--&gt; NetWorkerDashboard service (nssm)
+                              +- embedded Python 3.12 (bundled, zero host prereqs)
+                                  +- /            dashboard SPA (login required)
+                                  +- /tv          TV wall-display mode
+                                  +- /view/&lt;tok&gt;  read-only share links
+                                  +- /api/*       session + CSRF protected
+                                  +- outbound --&gt; Dell NetWorker REST API
+                                                  (or NWUI :9090 fallback)
+                                                  + optional WMI host health
+                                                  + optional SMTP relay (email)
+
+C:\apps\networker-dashboard\
+  networker_dashboard.py, nwdash\   app         (replaced on upgrade)
+  runtime\python\                   runtime     (replaced on upgrade)
+  nssm.exe                          service mgr (pinned)
+  data\  .certs\  logs\  backups\   PERSISTENT  (never touched by upgrades)</code></pre>
+<p>One Python process, standard library only (plus the bundled optional
+<code>cryptography</code> for encrypted credential storage). Single instance per
+install &mdash; the login rate limiter and the schedulers are in-process.</p>
+<div class="callout"><strong>Companion documents:</strong> <code>deploy\INSTALL.md</code>
+is the full offline install/upgrade reference; <code>RELEASING.md</code> is how a
+release is cut; the <em>NWDash User Guide</em> covers the browser side. This SOP is
+the operations view.</div>
+</section>
+
+<section id="prereq">
+<h2>1. Prerequisites (gather before starting)</h2>
+<div class="tablewrap">
+<table>
+<tr><th>Item</th><th>Notes</th></tr>
+<tr><td>Windows Server (2019/2022)</td><td>Target host. Nothing needs preinstalling &mdash; Python and nssm ship in the bundle</td></tr>
+<tr><td>The two release assets</td><td><code>Setup-NWDash.cmd</code> + <code>nwdash-bundle-&lt;ver&gt;-win-x64.zip</code>, side by side; SHA-256 in the release notes</td></tr>
+<tr><td>NetWorker reachability</td><td>The host must reach the NetWorker server's REST API (and/or NWUI on 9090 for older servers)</td></tr>
+<tr><td>Dashboard password</td><td>Chosen up front; passed once as <code>-AuthPassword</code> (stored as a salted PBKDF2 hash, plaintext then removed from the service env)</td></tr>
+<tr><td>Service account</td><td>Optional (<code>-ServiceAccount CORP\svc-nwdash</code>); default LocalSystem. Needed only if WMI health or SMTP require a domain identity</td></tr>
+<tr><td>TLS certificate</td><td>Optional PEM cert+key for the dashboard's own HTTPS; default is a self-signed cert generated on first boot</td></tr>
+<tr><td>Free HTTPS port</td><td>Default <strong>8443</strong>; co-tenant hosts additionally need a dedicated IP for <code>-BindHost</code> (&sect;3)</td></tr>
+<tr><td>SMTP relay</td><td>Optional, for email notifications; configured later in the app</td></tr>
+</table>
+</div>
+</section>
+
+<section id="install">
+<h2>2. Install SOP</h2>
+<ol>
+<li>Copy both assets into one folder on the host.</li>
+<li><strong>Dry-run first</strong> &mdash; prints the full plan (mode, dirs, service
+command line, probe URL, firewall), changes nothing, needs no admin:
+<pre><code>Setup-NWDash.cmd -Check</code></pre></li>
+<li>Install (elevated; UAC is requested automatically):
+<pre><code>Setup-NWDash.cmd -AuthPassword &lt;pw&gt; [-Port 8443] [-BindHost &lt;ip&gt;] [-AllowedHosts &lt;cidrs&gt;]</code></pre>
+On an air-gapped host add <code>-NoUpdate</code> (skips the GitHub latest-release
+check; the check is fail-soft either way).</li>
+<li>The installer migrates any <strong>legacy scheduled-task install</strong>
+automatically (task removed, service registered, <code>data\</code> untouched),
+opens the firewall (rule group <code>NetWorkerDashboard</code>), starts the
+service, and <strong>health-gates</strong> it &mdash; it only reports OK once
+<code>https://&lt;host&gt;:&lt;port&gt;/api/health</code> answers.</li>
+<li>Verify: browse <code>https://&lt;host&gt;:8443/</code>, log in with the dashboard
+password, connect to a NetWorker server.</li>
+</ol>
+</section>
+
+<section id="cotenant">
+<h2>3. Co-tenant hosts (a second HTTPS app on the same server)</h2>
+<p>If another app already serves HTTPS on this host, pin the dashboard to its own
+IP: <code>-BindHost 192.0.2.10</code>. A wildcard bind is exclusive on Windows and
+will collide. The installer's health probe and every later upgrade follow the
+pinned IP automatically (upgrades read port/bind from the live service's own
+command line, so they can never silently un-pin it).</p>
+<div class="callout warn"><strong>Never</strong> run unscoped port checks or kills on a
+co-tenant host &mdash; scope to the dashboard's IP or to processes under the install
+directory, or you will take down the other application.</div>
+</section>
+
+<section id="service">
+<h2>4. Service management</h2>
+<div class="tablewrap">
+<table>
+<tr><th>Task</th><th>Command</th></tr>
+<tr><td>Status</td><td><code>Get-Service NetWorkerDashboard</code> (or services.msc)</td></tr>
+<tr><td>Restart</td><td><code>C:\apps\networker-dashboard\nssm.exe restart NetWorkerDashboard</code></td></tr>
+<tr><td>Stop / start</td><td><code>nssm.exe stop NetWorkerDashboard</code> / <code>nssm.exe start NetWorkerDashboard</code></td></tr>
+<tr><td>Logs</td><td><code>logs\service.out.log</code> / <code>service.err.log</code> in the install dir &mdash; nssm-rotated at <strong>10&nbsp;MB</strong></td></tr>
+<tr><td>Change port/cert/bind</td><td><code>nssm.exe set NetWorkerDashboard AppParameters "networker_dashboard.py --port &lt;p&gt; [--bind &lt;ip&gt;] [--cert &lt;pem&gt; --key &lt;pem&gt;] --no-launch"</code> then restart. The service command line is the source of truth &mdash; upgrades preserve it</td></tr>
+<tr><td>Service env</td><td><code>nssm.exe get NetWorkerDashboard AppEnvironmentExtra</code> &mdash; holds only the non-secret <code>DASHBOARD_ALLOWED_HOSTS</code>; the auth password is removed after first healthy boot</td></tr>
+</table>
+</div>
+<p>The service auto-starts at boot and auto-restarts on crash (nssm
+<code>AppExit Restart</code>). During deploys the installer temporarily suppresses
+auto-restart so a mid-swap kill cannot resurrect the old process, and guarantees
+it is re-enabled on every exit path.</p>
+</section>
+
+<section id="upgrade">
+<h2>5. Upgrade / rollback SOP</h2>
+<h3>Upgrade (config + data preserved)</h3>
+<ol>
+<li>Place the new bundle next to <code>Setup-NWDash.cmd</code> (connected hosts: the
+bootstrap self-fetches the newest release when <code>gh</code>/<code>GITHUB_TOKEN</code>
+is available).</li>
+<li>Verify the zip's SHA-256 against the release notes.</li>
+<li>Run <code>Setup-NWDash.cmd -Upgrade</code> from an elevated prompt.</li>
+<li>It backs up app+runtime to <code>backups\&lt;ver&gt;-&lt;timestamp&gt;\</code>, swaps,
+restarts, and health-gates (<code>/api/health</code>, consecutive-probe rule, ~150&nbsp;s
+budget). <strong>Healthy</strong> &rarr; backups pruned to newest 3.
+<strong>Unhealthy</strong> &rarr; prints the log lines written by this deploy and
+<strong>auto-rolls-back</strong>; the service is never left down.</li>
+<li>Tell users to hard-refresh once (Ctrl+F5).</li>
+</ol>
+<h3>Rollback (manual, e.g. a healthy-but-wrong release)</h3>
+<pre><code>Setup-NWDash.cmd -Rollback</code></pre>
+<p>Restores the newest backup; the rolled-away state is kept as an
+<code>undone-*</code> backup that can never be re-selected by a second
+<code>-Rollback</code>.</p>
+<div class="callout ok"><strong>Never touched by either path:</strong>
+<code>data\</code>, <code>.certs\</code>, <code>logs\</code>, <code>backups\</code>.</div>
+</section>
+
+<section id="backup">
+<h2>6. Backups (what to protect)</h2>
+<div class="tablewrap">
+<table>
+<tr><th>Location</th><th>Contents</th><th>Notes</th></tr>
+<tr><td><code>data\</code></td><td>Everything that matters: auth hash, encrypted sessions/profiles/schedules (<code>automations.json</code>, <code>profiles.json</code>, <code>email_*.json</code>), snapshots, DPAPI-wrapped keys (<code>.session_key</code>, <code>.auth_key</code>)</td><td>Back up to a <strong>restricted</strong> location. The keys are <strong>DPAPI machine/account-bound</strong> &mdash; a copy restored to a different host/account is unreadable; the app then warns loudly, regenerates keys, and stored passwords must be re-entered once</td></tr>
+<tr><td><code>.certs\</code></td><td>TLS material (self-signed by default)</td><td>Regenerable if lost (self-signed case)</td></tr>
+<tr><td><code>backups\</code></td><td>Installer's own app+runtime backups (newest 3)</td><td>Managed automatically</td></tr>
+<tr><td><code>logs\</code></td><td>Service logs (10&nbsp;MB rotation)</td><td>No secrets by design; still restrict</td></tr>
+</table>
+</div>
+<p>There is no database &mdash; file copies of <code>data\</code> while the service is
+stopped are a complete backup.</p>
+</section>
+
+<section id="security">
+<h2>7. Security notes</h2>
+<ul>
+<li><strong>HTTPS-only</strong>, self-signed default; real PEM cert+key via the
+service command line (&sect;4). HSTS/CSP headers are set by the app.</li>
+<li><strong>Auth:</strong> single dashboard password, salted <strong>PBKDF2</strong>
+hash; HMAC-signed HttpOnly session cookie (<code>SameSite=Strict; Secure</code>);
+login rate limiting.</li>
+<li><strong>CSRF:</strong> stateless synchronizer token (HMAC of the session
+payload) enforced on every state-changing route.</li>
+<li><strong>Outbound TLS verify default-on</strong> (fail-closed) per connection
+profile &mdash; disabling it is a per-profile, deliberate act in the UI.</li>
+<li><strong>Allow-list:</strong> <code>DASHBOARD_ALLOWED_HOSTS</code> /
+<code>-AllowedHosts</code> restricts which NetWorker hosts/CIDRs the app will
+connect out to.</li>
+<li><strong>Secrets:</strong> NetWorker/SMTP passwords encrypted at rest
+(DPAPI-bound keys); the API masks them, they never return to a browser; the
+install-time password never persists in plaintext.</li>
+</ul>
+</section>
+
+<section id="monitoring">
+<h2>8. Monitoring</h2>
+<ul>
+<li><strong>Health endpoint:</strong>
+<code>https://&lt;host&gt;:&lt;port&gt;/api/health</code> &mdash; the same endpoint the
+installer's gate uses. Poll it from your monitoring platform; any non-200 or
+timeout is actionable.</li>
+<li><strong>Service state:</strong> <code>NetWorkerDashboard</code> should be
+<code>Running</code>; nssm restarts it on crash, so a repeated flap (check
+<code>service.err.log</code>) means a real fault, not a blip.</li>
+<li><strong>Logs:</strong> <code>logs\service.err.log</code> is the first read for
+any incident &mdash; the installer's failure dump prints exactly the lines a failed
+deploy wrote.</li>
+<li><strong>Email schedule health:</strong> each saved schedule shows a status chip
+(live / reconnectable / waiting) and its last send result in the Email dialog
+&mdash; "waiting" with no usable connection ever recorded is a config gap, not a
+fault.</li>
+</ul>
+</section>
+
+<section id="tv">
+<h2>9. TV mode (wall display)</h2>
+<p>Point the wall display's browser at <code>https://&lt;host&gt;:&lt;port&gt;/tv</code>
+and log in once on that device. The page auto-sizes (1080p&ndash;8K), never
+scrolls, follows the saved dashboard theme, reconnects automatically
+(LIVE/OFFLINE indicator), and auto-cycles the jobs table every 15&nbsp;s. One
+click on the jobs table minimizes it (remembered across reloads).</p>
+<div class="callout warn"><strong>Since v2.13.0</strong> there is no tokenized
+no-login TV URL &mdash; displays still pointed at <code>/tv/&lt;token&gt;</code> must be
+re-pointed to <code>/tv</code>.</div>
+</section>
+
+<section id="limits">
+<h2>10. Known limitations (accept or mitigate)</h2>
+<ul>
+<li><strong>Single instance:</strong> rate limiter and schedulers are in-process
+&mdash; no replicas.</li>
+<li><strong>Shared password, no user accounts:</strong> one dashboard password
+gates everything; share links and the TV page are the only reduced-privilege
+surfaces.</li>
+<li><strong>Headless screenshot rendering</strong> (the emailed dashboard image)
+needs a local Chrome or Edge on the host; on some managed hosts Edge silently
+refuses <code>--screenshot</code> while Chrome works. Email falls back to
+HTML-only.</li>
+<li><strong>DPAPI key portability:</strong> <code>data\</code> cannot be moved
+between machines or service accounts with its secrets intact (&sect;6).</li>
+</ul>
+</section>
+
+</div>
+<footer>NetWorker Dashboard &mdash; Production Deployment SOP &middot; Version 2.13.1</footer>
+</body>
+</html>
