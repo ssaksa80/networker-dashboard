@@ -60,7 +60,12 @@ from .snapshots import (
     save_email_config_from_payload,
     save_email_profile,
     saved_email_smtp_password,
+    saved_email_smtp_secret,
     set_email_profile_connection,
+    settings_smtp_target,
+    smtp_secret_refused,
+    smtp_target,
+    smtp_target_changes,
 )
 
 
@@ -357,6 +362,33 @@ def _resolve_connection(primary: dict | None, *fallbacks: dict | None) -> dict:
     return {}
 
 
+def _stored_smtp_password(settings: dict[str, Any], existing: AlertAutomation | None) -> str:
+    """A stored SMTP password saved for exactly the server `settings` names: the
+    schedule being replaced, else the shared email settings. A password stored
+    for any other server is never substituted (see snapshots.smtp_target). When
+    one exists and the request logs in, it is refused so the operator types the
+    password; with no username nothing is sent, so "" is safe."""
+    requested = settings_smtp_target(settings)
+    candidates: list[tuple[str, tuple[str, int, str, str], str]] = []
+    if existing and existing.encrypted_smtp_password:
+        candidates.append((
+            "existing schedule",
+            smtp_target(existing.smtp_host, existing.smtp_port, existing.smtp_username, existing.smtp_security),
+            decrypt_process_secret(existing.encrypted_smtp_password),
+        ))
+    candidates.append(("email settings", *saved_email_smtp_secret()))
+    refused: tuple[str, tuple[str, int, str, str]] | None = None
+    for source, saved, password in candidates:
+        if not password:
+            continue
+        if not smtp_target_changes(saved, requested):
+            return password
+        refused = refused or (source, saved)
+    if refused and settings["smtp_username"]:
+        raise smtp_secret_refused(refused[0], refused[1], requested)
+    return ""
+
+
 def _arm_profile_automation(name: str, profile: dict[str, Any], session_id: str) -> AlertAutomation:
     """Arm (or replace) the schedule a stored profile describes, stamped with
     the profile's name. Identity-replace semantics: every same-identity or
@@ -365,10 +397,10 @@ def _arm_profile_automation(name: str, profile: dict[str, Any], session_id: str)
     settings = parse_smtp_settings(_profile_form_payload(profile))
     matches = _profile_automations(name, profile)
     existing = matches[0] if matches else None
+    # The profile's own password is bound to its server by save_email_profile.
     smtp_password = (
         decrypt_profile_secret(str(profile.get("_enc_smtpPassword") or ""), name=name, field="smtpPassword")
-        or (decrypt_process_secret(existing.encrypted_smtp_password) if existing else "")
-        or saved_email_smtp_password()
+        or _stored_smtp_password(settings, existing)
     )
     resolved_session = session_id or (existing.session_id if existing else "") or uuid.uuid4().hex
     stored_connection = profile.get("_connection") if isinstance(profile.get("_connection"), dict) else {}
@@ -596,6 +628,9 @@ def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[st
             f"from email config: {exc}"
         )
         return False
+    old_target = smtp_target(
+        automation.smtp_host, automation.smtp_port, automation.smtp_username, automation.smtp_security
+    )
     changed = False
     for attr in (
         "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from",
@@ -605,6 +640,10 @@ def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[st
         if getattr(automation, attr) != settings[attr]:
             setattr(automation, attr, settings[attr])
             changed = True
+    if smtp_target_changes(old_target, settings_smtp_target(settings)):
+        # Re-aimed at the config's server: the schedule's own password was saved
+        # for its old server and must not follow it (snapshots.smtp_target).
+        automation.encrypted_smtp_password = ""
     if not decrypt_process_secret(automation.encrypted_smtp_password):
         saved_password = saved_email_smtp_password()
         if saved_password:
@@ -1225,9 +1264,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         or (same_identity[0] if same_identity else None)
         or existing_smtp_automation(session_id, settings["schedule_type"])
     )
-    smtp_password = settings["smtp_password"] or (
-        decrypt_process_secret(existing.encrypted_smtp_password) if existing else ""
-    ) or saved_email_smtp_password()
+    smtp_password = settings["smtp_password"] or _stored_smtp_password(settings, existing)
     # Scheduling a notification also persists its configuration so it survives a
     # restart and pre-fills the form next time.
     if action == "start":
