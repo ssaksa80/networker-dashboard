@@ -29,6 +29,7 @@ from .config import (
 )
 from .models import ApiConfig, BadRequest
 from .secrets import (
+    SecretEncryptionError,
     decrypt_profile_secret,
     encrypt_profile_secret,
     profile_secret_needs_rebinding,
@@ -235,6 +236,57 @@ def _missing_secret_message(profile_name: str, label: str, stored: bool) -> str:
         "data/.session_key is missing, or belongs to another machine or Windows account. "
         f"Re-enter the {label} to connect and save it again."
     )
+
+
+def _profile_target_changed(stored: dict[str, Any], data: dict[str, Any]) -> bool:
+    """Whether a save moves a profile to another destination: any field the
+    binding guard compares (_BOUND_FIELD_LABELS, via _connection_target)
+    differs. Unparseable on either side counts as moved — fail closed."""
+    try:
+        return _connection_target(stored) != _connection_target(data)
+    except BadRequest:
+        return True
+
+
+def profile_record_for_save(name: str, data: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    """The record to store for a profile save: `data` with typed passwords
+    encrypted, and the stored ones kept where no new one was typed — unless the
+    save re-aims the profile.
+
+    A stored secret stays bound to the connection it was saved for. Keeping it
+    while the host, port, user or TLS verification changed would let
+    _resolve_profile_password approve the new destination: it compares the
+    request against the stored profile, which the save just re-aimed.
+    """
+    record: dict[str, Any] = {}
+    for key, value in data.items():
+        if key not in ("password", "wmiPassword"):
+            record[key] = value
+            continue
+        raw = str(value or "").strip()
+        if raw and raw not in _SENTINELS:
+            try:
+                # AAD-bound to this profile+field: the blob cannot be moved to
+                # another profile/slot.
+                record[f"_enc_{key}"] = encrypt_profile_secret(raw, name=name, field=key)
+            except SecretEncryptionError as exc:
+                # Never store "" as though the password saved.
+                raise BadRequest(str(exc)) from exc
+    if _profile_target_changed(existing, data):
+        dropped = [key for key in ("_enc_password", "_enc_wmiPassword") if existing.get(key) and key not in record]
+        if dropped:
+            LOG.info(
+                "profile '%s' now targets a different connection; dropped its stored %s",
+                safe_log_text(name, 80),
+                " and ".join("WMI password" if key == "_enc_wmiPassword" else "password" for key in dropped),
+                extra={"event": "profile_secret_dropped"},
+            )
+        return record
+    # Keep the stored passwords this save did not replace.
+    for enc_key in ("_enc_password", "_enc_wmiPassword"):
+        if enc_key not in record and enc_key in existing:
+            record[enc_key] = existing[enc_key]
+    return record
 
 
 def migrate_profile_secrets() -> int:

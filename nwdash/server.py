@@ -35,8 +35,6 @@ from .auth import (
     verify_auth_password,
 )
 from .config import (
-    _PROFILE_PW_SAVED,
-    _PROFILE_PW_SENTINEL,
     APP_NAME,
     APP_VERSION,
     AUTH_TTL_SECONDS,
@@ -76,11 +74,11 @@ from .profiles import (
     _mask_profiles,
     _resolve_profile_password,
     load_profiles,
+    profile_record_for_save,
     save_profiles,
     validate_payload,
 )
 from .reports import build_excel_report
-from .secrets import SecretEncryptionError, encrypt_profile_secret
 from .sessions import (
     build_dashboard,
     build_dashboard_from_session,
@@ -617,30 +615,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             raise BadRequest("Profile name required.")
                         if not isinstance(data, dict):
                             raise BadRequest("Profile data must be an object.")
-                        # Encrypt password fields; keep all other fields as-is
-                        safe: dict[str, Any] = {}
-                        for k, v in data.items():
-                            if k in ("password", "wmiPassword"):
-                                raw = str(v or "").strip()
-                                if raw and raw not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
-                                    try:
-                                        # AAD-bound to this profile+field: the blob
-                                        # cannot be moved to another profile/slot.
-                                        safe[f"_enc_{k}"] = encrypt_profile_secret(raw, name=name, field=k)
-                                    except SecretEncryptionError as exc:
-                                        # Never store "" as though the password saved.
-                                        raise BadRequest(str(exc)) from exc
-                                elif k in profiles.get(name, {}):
-                                    # Keep existing encrypted value if no new one provided
-                                    safe[f"_enc_{k}"] = profiles[name].get(f"_enc_{k}", "")
-                            else:
-                                safe[k] = v
-                        # Preserve existing encrypted passwords not touched this save
-                        existing = profiles.get(name, {})
-                        for enc_key in ("_enc_password", "_enc_wmiPassword"):
-                            if enc_key not in safe and enc_key in existing:
-                                safe[enc_key] = existing[enc_key]
-                        profiles[name] = safe
+                        # Encrypts typed passwords; keeps stored ones only while
+                        # the profile still targets the same connection.
+                        profiles[name] = profile_record_for_save(name, data, profiles.get(name, {}))
                         save_profiles(profiles)
                         self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(profiles)})
                     elif action == "delete":
