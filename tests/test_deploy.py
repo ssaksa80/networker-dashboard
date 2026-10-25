@@ -8,9 +8,13 @@ installer. These tests keep that structure (and the release-asset naming)
 from silently regressing.
 """
 
+import os
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT = Path(__file__).resolve().parents[1]
 DEPLOY = PROJECT / "deploy"
@@ -72,6 +76,50 @@ class TestSetupBootstrap(unittest.TestCase):
             "nssm stop",
         ):
             self.assertNotIn(forbidden, text, f"bootstrap should not contain {forbidden}")
+
+
+class TestDashboardPasswordGate(unittest.TestCase):
+    """install.ps1 refuses a password-less network install up front.
+
+    Since review S4 the app refuses to start on a non-loopback bind with no
+    password, so without this gate such an install would only fail its health
+    gate, in an NSSM restart loop, after the old install was already removed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.install = (DEPLOY / "install.ps1").read_text(encoding="utf-8")
+        cls.common = (DEPLOY / "lib" / "common.ps1").read_text(encoding="utf-8")
+
+    def test_env_var_the_installer_sets_is_the_one_the_app_reads(self):
+        from nwdash.main import allow_unauthenticated_requested, parse_args
+
+        match = re.search(r"\$script:NwdashAllowUnauthEnv = '([A-Z_]+)=([^']*)'", self.common)
+        self.assertIsNotNone(match, "NwdashAllowUnauthEnv missing from common.ps1")
+        name, value = match.groups()
+        with mock.patch.dict(os.environ, {name: value}):
+            self.assertTrue(allow_unauthenticated_requested(parse_args([])))
+        with mock.patch.dict(os.environ, {name: "0"}):
+            self.assertFalse(allow_unauthenticated_requested(parse_args([])))
+
+    def test_fresh_install_is_refused_before_elevation(self):
+        refusal = self.install.index("if ($authPlan -eq 'refused'")
+        self.assertLess(refusal, self.install.index("# ---- elevation"))
+        self.assertIn("[switch]$AllowUnauthenticated", self.install)
+        self.assertIn("$envExtra += $script:NwdashAllowUnauthEnv", self.install)
+
+    def test_upgrade_is_refused_before_the_service_is_stopped(self):
+        upgrade = self.install[self.install.index("# ---- upgrade / rollback"):]
+        self.assertLess(upgrade.index("if ($upgradePlan -eq 'refused')"), upgrade.index("& $nssm stop"))
+
+    @unittest.skipUnless(shutil.which("powershell"), "Windows PowerShell not available")
+    def test_auth_plan_powershell_tests_pass(self):
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(DEPLOY / "test" / "auth-plan.test.ps1")],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class TestBundleAllowList(unittest.TestCase):

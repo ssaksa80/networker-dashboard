@@ -566,6 +566,29 @@ function Start-NwdashServiceVerified {
   return $false
 }
 
+# ---- dashboard password gate ----
+
+# The app refuses to start on a non-loopback bind with no dashboard password
+# unless this is in its environment (nwdash/main.py). It is an env var, not the
+# --allow-unauthenticated flag, because -Rollback keeps the service command
+# line: an older build ignores an unknown variable but rejects an unknown flag.
+$script:NwdashAllowUnauthEnv = 'DASHBOARD_ALLOW_UNAUTHENTICATED=1'
+
+# What an install/upgrade does about the dashboard password, decided BEFORE
+# anything is stopped or copied: a password-less network install is refused up
+# front instead of failing its health gate in an NSSM restart loop. Returns
+# 'password' (set now), 'stored' (data\auth.json already holds one), 'loopback'
+# (bound to loopback, which the app permits), 'unauthenticated' (explicitly
+# allowed) or 'refused'. Pure + testable. Empty $BindHost = all interfaces.
+function Get-NwdashAuthPlan {
+  param([bool]$PasswordGiven, [bool]$PasswordStored, [string]$BindHost = '', [bool]$AllowUnauthenticated)
+  if ($PasswordGiven) { return 'password' }
+  if ($PasswordStored) { return 'stored' }
+  if ($BindHost -in @('127.0.0.1', 'localhost', '::1')) { return 'loopback' }
+  if ($AllowUnauthenticated) { return 'unauthenticated' }
+  return 'refused'
+}
+
 # ---- firewall ----
 
 function Set-NwdashFirewall {

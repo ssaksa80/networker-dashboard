@@ -26,6 +26,7 @@
   [string]$ServicePassword,
   [string]$AuthPassword = '',        # dashboard password; app stores a salted hash, then the plaintext is removed from the service env
   [string]$AllowedHosts = '',        # comma-separated NetWorker host allow-list
+  [switch]$AllowUnauthenticated,     # run with NO dashboard password on a network bind (isolated networks only)
   [switch]$Check,                    # dry-run: print the resolved plan, change nothing
   [switch]$Upgrade,
   [switch]$Rollback,
@@ -57,6 +58,12 @@ function Get-NwdashLauncherArgs {
   return "$a --no-launch"
 }
 
+# Dashboard password plan for a fresh install (an upgrade decides from the live
+# service, below). data\ survives reinstalls, so a stored hash counts.
+$authPlan = Get-NwdashAuthPlan -PasswordGiven ([bool]$AuthPassword) `
+  -PasswordStored (Test-Path (Join-Path $InstallDir 'data\auth.json')) `
+  -BindHost $BindHost -AllowUnauthenticated $AllowUnauthenticated.IsPresent
+
 # ---- -Check: dry-run plan (no admin, no changes) ----
 if ($Check) {
   $svc = Get-Service -Name $SvcName -ErrorAction SilentlyContinue
@@ -81,7 +88,14 @@ if ($Check) {
   Write-NwdashLog "  port / bind    : $Port / $(if ($BindHost) { $BindHost } else { 'all interfaces (0.0.0.0)' })"
   Write-NwdashLog "  health probe   : https://${probeHost}:$Port/api/health (trust-all compiled delegate)"
   Write-NwdashLog "  firewall       : $(if ($NoFirewall) { 'skipped (-NoFirewall)' } else { "inbound TCP $Port (group $SvcName)" })"
-  Write-NwdashLog "  auth password  : $(if ($AuthPassword) { 'set on first boot (salted hash), then removed from the service env' } else { 'not set here' })"
+  $authLine = switch ($authPlan) {
+    'password'        { 'set on first boot (salted hash), then removed from the service env' }
+    'stored'          { 'already set (data\auth.json is kept)' }
+    'loopback'        { 'none - loopback bind, reachable from this host only' }
+    'unauthenticated' { 'NONE (-AllowUnauthenticated) - anyone who can reach the port controls the dashboard' }
+    default           { 'NONE - an install would be REFUSED: pass -AuthPassword (or -AllowUnauthenticated)' }
+  }
+  Write-NwdashLog "  auth password  : $authLine"
   Write-NwdashLog "  allowed hosts  : $(if ($AllowedHosts) { $AllowedHosts } else { '(unrestricted)' })"
   Write-NwdashLog "  existing state : service=$(if ($svc) { "$($svc.Status)" } else { 'none' }) task=$(if ($task) { 'present (will be migrated)' } else { 'none' }) files=$(if ($existing) { 'present' } else { 'none' })"
   Write-NwdashLog "  backups        : $InstallDir\backups\<version>-<timestamp>\{app,runtime} (keep 3 newest)"
@@ -89,6 +103,16 @@ if ($Check) {
   $names = @(Get-NwdashBackups -InstallDir $InstallDir)
   if ($names.Count) { Write-NwdashLog "  backups found  : $($names -join ', ')" }
   exit 0
+}
+
+# A password-less network install is refused before elevation or any change:
+# the app would refuse to start, and the health gate would only find out after
+# the old install was already removed. -Upgrade decides from the live service.
+if ($authPlan -eq 'refused' -and -not ($Upgrade -or $Rollback -or $Uninstall)) {
+  Stop-Nwdash ("no dashboard password: the service would listen on $(if ($BindHost) { $BindHost } else { 'all interfaces' }) " +
+    "port $Port with no login, and the app refuses to start that way. Nothing was changed. Re-run with " +
+    '-AuthPassword <password> (recommended), -BindHost 127.0.0.1 for access from this host only, or ' +
+    '-AllowUnauthenticated to accept that anyone who can reach the port can read backup data and change the configuration.')
 }
 
 # ---- elevation (everything below changes service/firewall/files) ----
@@ -167,6 +191,27 @@ if ($Upgrade -or $Rollback) {
   $probeHost = Get-NwdashProbeHost -BindHost $liveBind
   $health = "https://${probeHost}:$livePort/api/health"
   Write-NwdashLog "existing service uses port $livePort$(if ($liveBind) { ", bind $liveBind" })"
+
+  if ($Upgrade) {
+    # This build refuses to start on a network bind with no password. Decide
+    # from the LIVE service before anything is stopped (Get-NwdashAuthPlan).
+    $liveEnv = ''
+    try { $liveEnv = ConvertFrom-NwdashNssmOutput -Raw (& $nssm get $SvcName AppEnvironmentExtra 2>$null) } catch { $liveEnv = '' }
+    $envLines = @($liveEnv -split "`r?`n" | Where-Object { $_ })
+    $upgradePlan = Get-NwdashAuthPlan -PasswordGiven $false `
+      -PasswordStored (Test-Path (Join-Path $InstallDir 'data\auth.json')) -BindHost $liveBind `
+      -AllowUnauthenticated ($AllowUnauthenticated.IsPresent -or ($envLines -contains $script:NwdashAllowUnauthEnv))
+    if ($upgradePlan -eq 'refused') {
+      Stop-Nwdash ("the installed service has no dashboard password and listens on $(if ($liveBind) { $liveBind } else { 'all interfaces' }) " +
+        "port $livePort; $BundleVersion refuses to start that way, so nothing was changed. Set a password with a normal " +
+        "install (-AuthPassword <password> -Port $livePort$(if ($liveBind) { " -BindHost $liveBind" }); data\ is kept), " +
+        'or re-run -Upgrade -AllowUnauthenticated to keep running without one.')
+    }
+    if ($upgradePlan -eq 'unauthenticated' -and -not ($envLines -contains $script:NwdashAllowUnauthEnv)) {
+      & $nssm set $SvcName AppEnvironmentExtra (@($envLines) + $script:NwdashAllowUnauthEnv) | Out-Null
+      Write-NwdashWarn "service env: added $($script:NwdashAllowUnauthEnv) (-AllowUnauthenticated) - it runs WITHOUT a dashboard password"
+    }
+  }
 
   $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
   $oldVer = Get-NwdashInstalledVersion -InstallDir $InstallDir
@@ -349,6 +394,10 @@ if ($ServiceAccount) { & $nssm set $SvcName ObjectName $ServiceAccount $ServiceP
 $envExtra = @()
 if ($AllowedHosts) { $envExtra += "DASHBOARD_ALLOWED_HOSTS=$AllowedHosts" }
 if ($AuthPassword) { $envExtra += "DASHBOARD_AUTH_PASSWORD=$AuthPassword" }
+if ($authPlan -eq 'unauthenticated') {
+  $envExtra += $script:NwdashAllowUnauthEnv
+  Write-NwdashWarn "installing WITHOUT a dashboard password (-AllowUnauthenticated): anyone who can reach port $Port can read backup data and change the configuration"
+}
 if ($envExtra.Count) { & $nssm set $SvcName AppEnvironmentExtra $envExtra | Out-Null }
 
 # 4/6 firewall

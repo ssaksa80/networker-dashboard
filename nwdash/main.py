@@ -120,7 +120,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--allow-unauthenticated",
         action="store_true",
-        help="Start on a non-loopback --bind even with no dashboard password. Anyone who can reach the port can then read backup data and change the configuration; use only on an isolated network.",
+        help="Start on a non-loopback --bind even with no dashboard password. Anyone who can reach the port can then read backup data and change the configuration; use only on an isolated network. May also be set via DASHBOARD_ALLOW_UNAUTHENTICATED=1.",
     )
     parser.add_argument(
         "--allowed-hosts",
@@ -128,6 +128,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Comma-separated allow-list of NetWorker hosts/IPs/CIDRs the server may connect to (e.g. nw1.corp.local,10.0.0.0/24). May also be set via DASHBOARD_ALLOWED_HOSTS. If unset, any host is permitted.",
     )
     return parser.parse_args(argv)
+
+
+def allow_unauthenticated_requested(args: argparse.Namespace) -> bool:
+    # deploy/install.ps1 sets the variable rather than the flag: a -Rollback to
+    # an older build ignores an unknown variable but would reject the flag.
+    return bool(args.allow_unauthenticated) or os.environ.get("DASHBOARD_ALLOW_UNAUTHENTICATED", "").strip() == "1"
 
 
 def unauthenticated_exposure_refusal(bind_host: str, auth_enabled: bool, allow_unauthenticated: bool) -> str:
@@ -157,7 +163,7 @@ def run(argv: list[str] | None = None) -> int:
     if auth_password:
         set_auth_password(auth_password)
     _cfg.AUTH_ENABLED = auth_password_configured()
-    refusal = unauthenticated_exposure_refusal(args.bind, _cfg.AUTH_ENABLED, args.allow_unauthenticated)
+    refusal = unauthenticated_exposure_refusal(args.bind, _cfg.AUTH_ENABLED, allow_unauthenticated_requested(args))
     if refusal:
         # Before the certificate and the bind: nothing is listening yet.
         print(refusal, file=sys.stderr)
