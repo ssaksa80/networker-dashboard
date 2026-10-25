@@ -32,6 +32,7 @@ from .auth import (
     _record_login_failure,
     _verify_auth_cookie,
     _verify_csrf_token,
+    revoke_auth_cookie,
     verify_auth_password,
 )
 from .config import (
@@ -550,7 +551,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/logout":
             self._drain_request_body()
-            self._send_json_with_cookie(HTTPStatus.OK, {"ok": True}, "", 0)
+            # Revoke the session itself: expiring the cookie only removes this
+            # browser's copy, and any other copy would stay valid until expiry.
+            revoked = revoke_auth_cookie(self._session_cookie_value())
+            self._send_json_with_cookie(HTTPStatus.OK, {"ok": True, "revoked": revoked}, "", 0)
             return
         # Every early-error path below MUST drain the request body first, or
         # the unread bytes poison the next request on this keep-alive socket.

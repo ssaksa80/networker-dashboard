@@ -163,6 +163,25 @@ class TestServerHttp(unittest.TestCase):
         )
         self.assertEqual(status, 200, "authed POST with CSRF token must be 200")
 
+    def test_logout_revokes_the_cookie_server_side(self):
+        # Regression (review S6): logout only expired the cookie in the browser;
+        # replaying a captured copy kept working for its full 12 h.
+        cookie, token = self._login()
+        other_cookie, _ = self._login()
+        status, body, _ = self._raw_request(
+            "POST", "/api/logout", {}, headers={"X-CSRF-Token": token}, cookie=cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body).get("revoked"))
+        status, _, _ = self._raw_request("GET", "/api/csrf", cookie=cookie)
+        self.assertEqual(status, 401, "a logged-out cookie must stop working everywhere")
+        status, _, _ = self._raw_request(
+            "POST", "/api/ui-theme", {"theme": "default"}, headers={"X-CSRF-Token": token}, cookie=cookie,
+        )
+        self.assertEqual(status, 401)
+        status, _, _ = self._raw_request("GET", "/api/csrf", cookie=other_cookie)
+        self.assertEqual(status, 200, "other logins are unaffected")
+
     def test_csrf_endpoint_matches_login_token(self):
         cookie, token = self._login()
         status, body, _ = self._raw_request("GET", "/api/csrf", cookie=cookie)

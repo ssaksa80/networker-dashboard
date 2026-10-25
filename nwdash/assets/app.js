@@ -2561,11 +2561,25 @@
       }
     }
 
-    document.getElementById("logoutBtn").addEventListener("click", () => {
+    document.getElementById("logoutBtn").addEventListener("click", async () => {
       stopSSE();
+      // End the gateway session on the server (the fetch wrapper adds the CSRF
+      // header). Deleting the cookie only in this browser left any copy of it
+      // valid until it expired.
+      let revoked = false;
+      try {
+        const r = await fetch("/api/logout", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: "{}",
+        });
+        revoked = r.ok && Boolean((await r.json()).revoked);
+      } catch (_e) {}
       profileSelect.value = "";
       clearPassword();
       resetDashboard();
+      // Signed out of the password gate: show the login page.
+      if (revoked) location.reload();
     });
     shareBtn.addEventListener("click", openShareModal);
     // TV wall-display mode (v2.8.0): opens /tv in a new tab; the route reuses

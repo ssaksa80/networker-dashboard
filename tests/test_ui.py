@@ -8,6 +8,16 @@ class TestDashboardHtml(unittest.TestCase):
     def test_contains_csrf_header_wiring(self):
         self.assertIn("X-CSRF-Token", dashboard_html())
 
+    def test_logout_button_ends_the_server_session(self):
+        # Review S6: the Logout button only reset the page and never told the
+        # server, so the session cookie stayed valid.
+        html = dashboard_html()
+        handler = html[html.index('getElementById("logoutBtn").addEventListener'):]
+        handler = handler[:handler.index("\n    });")]  # the listener's own close, not fetch()'s
+        self.assertIn('fetch("/api/logout"', handler)
+        self.assertIn('"Content-Type": "application/json"', handler)
+        self.assertLess(handler.index("/api/logout"), handler.index("resetDashboard()"))
+
     def test_contains_verify_tls_checkbox(self):
         self.assertIn("asVerifyTls", dashboard_html())
 

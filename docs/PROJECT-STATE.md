@@ -82,6 +82,7 @@ how it comes back after a restart/update/crash:
 | `data/profiles.json` | Connection profiles (encrypted passwords) | Read on demand (`load_profiles`) |
 | `data/ui_prefs.json` | Dashboard theme | Read on demand (`load_ui_theme`) |
 | `data/auth.json` | Gateway password hash | Read at boot by `auth.py` |
+| `data/auth_sessions.json` | Live gateway login session ids and their expiry; logout removes one | Loaded by `auth.py` on first cookie check; expired ids are pruned |
 | `data/networker_snapshots.json`, `data/auto_snapshot_config.json` | Local snapshots + auto-save flag | Read on demand |
 | `data/last_good_dashboard.json` | Last successful dashboard (stale fallback) | Read on demand |
 | `data/.session_key`, `data/.auth_key` | DPAPI-wrapped encryption/HMAC keys | Loaded at import in `secrets.py` |
