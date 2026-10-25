@@ -13,9 +13,10 @@ import threading
 import time
 import uuid
 import webbrowser
-from http.cookies import SimpleCookie
 from datetime import datetime
 from http import HTTPStatus
+from http.client import HTTPException
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -23,23 +24,6 @@ from urllib.parse import parse_qsl, urlparse
 from urllib.request import Request, urlopen
 
 from . import config as _cfg
-from .config import (
-    APP_NAME,
-    APP_VERSION,
-    AUTH_TTL_SECONDS,
-    COOKIE_NAME,
-    DEFAULT_MAX_CONNECTIONS,
-    DEFAULT_PORT,
-    DEFAULT_REPORT_RANGE,
-    LOG,
-    MAX_POST_BYTES,
-    PROCESS_START_TIME,
-    _PROFILE_PW_SAVED,
-    _PROFILE_PW_SENTINEL,
-    debug_log,
-    safe_log_text,
-)
-from .secrets import SecretEncryptionError, encrypt_profile_secret
 from .auth import (
     _clear_login_failures,
     _login_rate_limited,
@@ -50,14 +34,30 @@ from .auth import (
     _verify_csrf_token,
     verify_auth_password,
 )
-from .ui import FAVICON_SVG, NETWORKER_LOGO_PATH, dashboard_html, login_page_html, read_only_view_html, tv_page_html
+from .config import (
+    _PROFILE_PW_SAVED,
+    _PROFILE_PW_SENTINEL,
+    APP_NAME,
+    APP_VERSION,
+    AUTH_TTL_SECONDS,
+    COOKIE_NAME,
+    DEFAULT_MAX_CONNECTIONS,
+    DEFAULT_PORT,
+    DEFAULT_REPORT_RANGE,
+    LOG,
+    MAX_POST_BYTES,
+    PROCESS_START_TIME,
+    debug_log,
+    safe_log_text,
+)
+from .emailer import handle_alert_automation
 from .models import (
-    BadRequest,
     SHARED_DASHBOARD_LOCK,
     SHARED_DASHBOARD_STATE,
     SHARED_REFRESH_STOP,
     SSE_CLIENTS,
     SSE_CLIENTS_LOCK,
+    BadRequest,
     _automation_keys_snapshot,
     _session_exists,
     _session_ids_snapshot,
@@ -79,6 +79,8 @@ from .profiles import (
     save_profiles,
     validate_payload,
 )
+from .reports import build_excel_report
+from .secrets import SecretEncryptionError, encrypt_profile_secret
 from .sessions import (
     build_dashboard,
     build_dashboard_from_session,
@@ -102,8 +104,8 @@ from .snapshots import (
     snapshot_summary_text,
     snapshots_to_csv,
 )
-from .reports import build_excel_report
-from .emailer import handle_alert_automation
+from .ui import FAVICON_SVG, NETWORKER_LOGO_PATH, dashboard_html, login_page_html, read_only_view_html, tv_page_html
+
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = f"NetWorkerDashboard/{APP_VERSION}"
@@ -461,7 +463,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 dash = payload.get("dashboard")
                 if isinstance(dash, dict):
                     try:
-                        wfile.write(f"event: dashboard\ndata: {json.dumps(dash, separators=(',', ':'))}\n\n".encode("utf-8"))
+                        wfile.write(f"event: dashboard\ndata: {json.dumps(dash, separators=(',', ':'))}\n\n".encode())
                         wfile.flush()
                     except OSError:
                         pass
@@ -499,9 +501,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
 
             self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
-        except Exception as exc:  # noqa: BLE001
+        except Exception:
             ref = getattr(self, "request_id", "-")
-            LOG.error(f"do_GET unhandled error: {safe_log_text(exc)}", extra={"request_id": ref}, exc_info=True)
+            LOG.exception("do_GET unhandled error", extra={"request_id": ref})
             try:
                 self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
             except Exception as exc2:  # noqa: BLE001 — headers may already be sent
@@ -742,9 +744,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._drain_request_body()
             self._send_error_json(HTTPStatus.BAD_REQUEST, "Request body must be valid JSON.")
-        except Exception as exc:
+        except Exception:
             ref = getattr(self, "request_id", "-")
-            LOG.error(f"do_POST unhandled error: {safe_log_text(exc)}", extra={"request_id": ref}, exc_info=True)
+            LOG.exception("do_POST unhandled error", extra={"request_id": ref})
             self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
 
 
@@ -803,7 +805,9 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
         if isinstance(exc, OSError):
             LOG.debug(f"client {client_address} connection error: {exc}")
         else:
-            LOG.error(f"request error from {client_address}: {exc}", extra={"client": client_address[0] if client_address else "-"}, exc_info=True)
+            # socketserver calls handle_error from inside its except block, so
+            # exc is the in-flight exception; pass it rather than exc_info=True.
+            LOG.error(f"request error from {client_address}: {exc}", extra={"client": client_address[0] if client_address else "-"}, exc_info=exc)
 
 
 def local_port_probe_hosts(bind_host: str) -> list[str]:
@@ -909,7 +913,9 @@ def self_test_dashboard_listener(
                 port = urlparse(url).port or DEFAULT_PORT
                 return True, f"HTTPS listener is healthy on port {port}."
             last_error = f"health endpoint returned unexpected payload: {payload!r}"
-        except Exception as exc:
+        # OSError covers URLError, TLS and timeouts; ValueError a non-JSON body;
+        # AttributeError a JSON body that is not an object.
+        except (OSError, ValueError, AttributeError, HTTPException) as exc:
             last_error = str(exc)
         time.sleep(0.2)
 
@@ -923,7 +929,7 @@ def auto_launch_dashboard(url: str, enabled: bool = True) -> tuple[bool, str]:
         return False, "No dashboard URL available to launch."
     try:
         opened = webbrowser.open_new_tab(url)
-    except Exception as exc:
+    except (webbrowser.Error, OSError) as exc:
         return False, f"Unable to auto-launch browser: {exc}"
     if opened:
         return True, f"Opened dashboard page: {url}"

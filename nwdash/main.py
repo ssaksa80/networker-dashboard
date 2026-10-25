@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from . import config as _cfg
+from .auth import _is_loopback_bind, auth_password_configured, set_auth_password
+from .certs import ensure_certificate
 from .config import (
     APP_NAME,
     APP_VERSION,
@@ -26,8 +28,7 @@ from .config import (
     LOG,
     configure_logging,
 )
-from .auth import _is_loopback_bind, auth_password_configured, set_auth_password
-from .certs import ensure_certificate
+from .emailer import automation_scheduler_loop, cancel_alert_automation, restore_automations_from_disk
 from .models import (
     SHARED_DASHBOARD_LOCK,
     SHARED_DASHBOARD_STATE,
@@ -42,9 +43,6 @@ from .profiles import (
     configure_allowed_hosts,
     migrate_profile_secrets,
 )
-from .sessions import restore_sessions_from_disk
-from .snapshots import auto_snapshot_worker
-from .emailer import automation_scheduler_loop, cancel_alert_automation, restore_automations_from_disk
 from .server import (
     DashboardHandler,
     auto_launch_dashboard,
@@ -54,6 +52,9 @@ from .server import (
     self_test_dashboard_listener,
     service_access_urls,
 )
+from .sessions import restore_sessions_from_disk
+from .snapshots import auto_snapshot_worker
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=APP_NAME)
@@ -236,8 +237,8 @@ def run(argv: list[str] | None = None) -> int:
             rebound = migrate_profile_secrets()
             if rebound:
                 print(f"Re-bound {rebound} saved profile password(s) to their profile.")
-        except Exception as exc:  # noqa: BLE001 — never block startup on a migration
-            LOG.error(f"profile secret migration failed: {exc}", exc_info=True)
+        except Exception:  # never block startup on a migration
+            LOG.exception("profile secret migration failed")
         automations = restore_automations_from_disk()
         if automations:
             print(f"Restored {automations} scheduled email automation(s) from previous run.")
@@ -262,7 +263,7 @@ def run(argv: list[str] | None = None) -> int:
         if not self_test_ok:
             raise SystemExit("Dashboard HTTPS listener did not pass startup self-test.")
 
-        launch_ok, launch_message = auto_launch_dashboard(launch_url, enabled=not args.no_launch)
+        _, launch_message = auto_launch_dashboard(launch_url, enabled=not args.no_launch)
         print(launch_message)
 
         while server_thread.is_alive():
@@ -279,7 +280,7 @@ def run(argv: list[str] | None = None) -> int:
                 server_thread.join(3.0)
             shared_refresh_thread.join(3.0)
             server.server_close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — must still reach the os._exit below
             LOG.debug(f"shutdown cleanup failed: {exc}")
         # Daemon worker/background threads may still be mid-write to stderr (via
         # logging) when the interpreter finalizes — a normal shutdown can then
@@ -290,7 +291,9 @@ def run(argv: list[str] | None = None) -> int:
         try:
             sys.stdout.flush()
             sys.stderr.flush()
-        except Exception as exc:
+        # OSError: broken pipe; ValueError: stream already closed;
+        # AttributeError: no console at all (pythonw/service sets them to None).
+        except (OSError, ValueError, AttributeError) as exc:
             LOG.debug(f"final stdout/stderr flush failed: {exc}")
         os._exit(0)
     return 0

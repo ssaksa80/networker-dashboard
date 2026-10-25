@@ -29,6 +29,7 @@ def _run_node(script: str) -> dict:
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     if proc.returncode != 0:
         raise AssertionError(f"node failed:\n{proc.stderr}")

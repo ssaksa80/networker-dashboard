@@ -64,14 +64,14 @@ class TestLatestSessionRecord(unittest.TestCase):
             "b": {"session_id": "b", "last_used": 50.0, "encrypted_networker_password": "e",
                   "config": {"rest_api_host": "h2", "username": "u"}},
         }), encoding="utf-8")
-        with mock.patch.object(sessions, "_session_items_snapshot", lambda: []), \
+        with mock.patch.object(sessions, "_session_items_snapshot", list), \
                 mock.patch.object(config, "SESSION_PERSISTENCE_FILE", persisted):
             rec = sessions.latest_session_record()
         self.assertEqual(rec["session_id"], "b")
         self.assertEqual(rec["config"]["rest_api_host"], "h2")
 
     def test_none_when_nothing_anywhere(self):
-        with mock.patch.object(sessions, "_session_items_snapshot", lambda: []), \
+        with mock.patch.object(sessions, "_session_items_snapshot", list), \
                 mock.patch.object(config, "SESSION_PERSISTENCE_FILE", self.tmp_path / "none.json"):
             self.assertIsNone(sessions.latest_session_record())
 

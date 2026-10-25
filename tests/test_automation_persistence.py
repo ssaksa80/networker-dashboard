@@ -71,7 +71,7 @@ class TestAutomationRestartPersistence(unittest.TestCase):
         env = dict(os.environ)
         env["DASHBOARD_AUTH_PASSWORD"] = PASSWORD
         mode = "wb" if first else "ab"
-        cls.stdout_log = open(root / "server-stdout.log", mode)
+        cls.stdout_log = cls.enterClassContext(open(root / "server-stdout.log", mode))
         try:
             cls.proc = subprocess.Popen(
                 [sys.executable, "networker_dashboard.py",
@@ -117,6 +117,7 @@ class TestAutomationRestartPersistence(unittest.TestCase):
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                     capture_output=True,
+                    check=False,
                 )
         if cls.stdout_log is not None:
             cls.stdout_log.close()

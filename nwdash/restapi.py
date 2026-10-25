@@ -13,7 +13,7 @@ import re
 import socket
 import ssl
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -31,6 +31,7 @@ from .config import (
 )
 from .models import ApiConfig, BadRequest, RestApiError, generated_at
 from .wmi_health import load_server_health_wmi, server_health_from_payload, unavailable_server_health
+
 
 def host_for_url(host: str) -> str:
     if ":" in host and not host.startswith("["):
@@ -300,7 +301,7 @@ def dashboard_endpoints(config: ApiConfig | None = None) -> dict[str, str]:
 
 
 def build_headers(config: ApiConfig) -> dict[str, str]:
-    token = base64.b64encode(f"{config.username}:{config.password}".encode("utf-8")).decode(
+    token = base64.b64encode(f"{config.username}:{config.password}".encode()).decode(
         "ascii"
     )
     headers = {
@@ -483,7 +484,7 @@ def fetch_json(
             f"elapsedMs={elapsed_ms} error={message}"
         )
         raise RestApiError(exc.code, message, body[:8192]) from exc
-    except (URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
+    except (URLError, TimeoutError, ssl.SSLError) as exc:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         message = describe_url_error(exc)
         debug_log(
@@ -783,7 +784,7 @@ def timestamp(value: Any) -> float:
     try:
         dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt.timestamp()
     except ValueError:
         pass
@@ -791,14 +792,14 @@ def timestamp(value: Any) -> float:
     try:
         dt = email.utils.parsedate_to_datetime(text)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt.timestamp()
     except (TypeError, ValueError, IndexError):
         pass
 
     for fmt in ("%a %b %d %H:%M:%S %Y", "%Y-%m-%d %H:%M:%S"):
         try:
-            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc).timestamp()
+            return datetime.strptime(text, fmt).replace(tzinfo=UTC).timestamp()
         except ValueError:
             continue
     return 0.0

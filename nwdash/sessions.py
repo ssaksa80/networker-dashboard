@@ -8,9 +8,10 @@ import concurrent.futures
 import json
 import time
 import uuid
-from http.cookiejar import CookieJar
 from dataclasses import replace
 from http import HTTPStatus
+from http.client import HTTPException
+from http.cookiejar import CookieJar
 from typing import Any
 
 from . import config as _cfg
@@ -26,13 +27,6 @@ from .config import (
     SESSION_TTL_SECONDS,
     debug_log,
 )
-from .secrets import (
-    WMI_CIPHER,
-    decrypt_process_secret,
-    decrypt_wmi_password,
-    encrypt_process_secret,
-    encrypt_wmi_password,
-)
 from .models import (
     ApiConfig,
     DashboardSession,
@@ -45,8 +39,8 @@ from .models import (
     generated_at,
     stale_dashboard_from_cache,
 )
+from .nwui import build_dashboard_nwui, nwui_login, refresh_server_protection_job_nwui
 from .profiles import _host_allowed, _normalize_host
-from .wmi_health import load_server_health_wmi, unavailable_server_health
 from .restapi import (
     build_dashboard_rest,
     build_headers,
@@ -55,7 +49,20 @@ from .restapi import (
     parse_custom_date_window,
     ssl_context_for_api,
 )
-from .nwui import build_dashboard_nwui, nwui_login, refresh_server_protection_job_nwui
+from .secrets import (
+    WMI_CIPHER,
+    decrypt_process_secret,
+    decrypt_wmi_password,
+    encrypt_process_secret,
+    encrypt_wmi_password,
+)
+from .wmi_health import load_server_health_wmi, unavailable_server_health
+
+# What a background NetWorker login from stored credentials can raise: a refused
+# login (RestApiError), network/TLS/protocol failures urllib does not wrap
+# (OSError, HTTPException), and badly typed stored fields (ValueError, TypeError).
+_LOGIN_FAILURES = (RestApiError, OSError, HTTPException, ValueError, TypeError)
+
 
 def session_config_with_secrets(session: DashboardSession) -> ApiConfig:
     config = session.config
@@ -115,12 +122,12 @@ def reauthenticate_dashboard_session(session: DashboardSession, config: ApiConfi
         debug_log(f"reauthenticate: success for host={config.rest_api_host} mode={config.api_mode}")
         persist_sessions()
         return True
-    except Exception as exc:
+    except _LOGIN_FAILURES as exc:
         debug_log(f"reauthenticate: failed for host={config.rest_api_host} — {exc}")
         return False
 
 
-def _session_to_dict(session_id: str, session: "DashboardSession") -> dict[str, Any]:
+def _session_to_dict(session_id: str, session: DashboardSession) -> dict[str, Any]:
     """Serialize a session to a JSON-safe dict for disk persistence."""
     c = session.config
     return {
@@ -181,6 +188,8 @@ def _restore_session_record(session_id: str, rec: dict[str, Any], now: float) ->
         return False  # can't reauth without password
 
     cfg_raw = rec.get("config", {})
+    if not isinstance(cfg_raw, dict):
+        return False
     config = ApiConfig(
         rest_api_host=str(cfg_raw.get("rest_api_host") or ""),
         rest_api_port=int(cfg_raw.get("rest_api_port") or DEFAULT_API_PORT),
@@ -244,13 +253,15 @@ def restore_sessions_from_disk() -> int:
     restored = 0
     now = time.time()
     for session_id, rec in records.items():
+        if not isinstance(rec, dict):
+            continue
         try:
             if now - float(rec.get("last_used", 0)) > SESSION_TTL_SECONDS:
                 continue
             if _restore_session_record(session_id, rec, now):
                 restored += 1
-        except Exception:
-            continue
+        except _LOGIN_FAILURES as exc:
+            debug_log(f"restore_sessions_from_disk: {session_id[:8]}… not restored: {exc}")
 
     return restored
 
@@ -277,7 +288,7 @@ def recreate_session_from_snapshot(session_id: str, snapshot: dict[str, Any]) ->
         if _restore_session_record(session_id, snapshot, time.time()):
             persist_sessions()
             return True
-    except Exception as exc:  # login/network failure — caller keeps the schedule armed
+    except _LOGIN_FAILURES as exc:  # login/network failure — caller keeps the schedule armed
         debug_log(f"recreate_session_from_snapshot: {session_id[:8]}… failed: {exc}")
     return False
 

@@ -1,5 +1,6 @@
 # tests/test_status_chip.py
 from pathlib import Path
+
 A = Path(__file__).resolve().parents[1] / "nwdash" / "assets"
 
 def test_schedule_rows_render_status_chip():

@@ -8,13 +8,14 @@ import json
 import threading
 import time
 import uuid
-from http.cookiejar import CookieJar
 from dataclasses import dataclass, field
 from datetime import datetime
+from http.cookiejar import CookieJar
 from typing import Any
 
 from . import config as _cfg
 from .config import DATA_DIR, LAST_GOOD_DASHBOARD_FILE, SHARED_REFRESH_SECONDS, debug_log, safe_log_text
+
 
 @dataclass(frozen=True)
 class ApiConfig:
@@ -111,7 +112,7 @@ ALERT_AUTOMATIONS: dict[str, AlertAutomation] = {}
 REGISTRY_LOCK = threading.RLock()
 
 
-def _get_session(session_id: str) -> "DashboardSession | None":
+def _get_session(session_id: str) -> DashboardSession | None:
     with REGISTRY_LOCK:
         return DASHBOARD_SESSIONS.get(session_id)
 
@@ -141,7 +142,7 @@ def _session_ids_snapshot() -> list[str]:
         return list(DASHBOARD_SESSIONS.keys())
 
 
-def _get_automation(key: str) -> "AlertAutomation | None":
+def _get_automation(key: str) -> AlertAutomation | None:
     with REGISTRY_LOCK:
         return ALERT_AUTOMATIONS.get(key)
 
@@ -181,7 +182,7 @@ def _sse_register(wfile: Any) -> bool:
 
 
 def sse_broadcast(event: str, data: str) -> None:
-    payload = f"event: {event}\ndata: {data}\n\n".encode("utf-8")
+    payload = f"event: {event}\ndata: {data}\n\n".encode()
     with SSE_CLIENTS_LOCK:
         clients = list(SSE_CLIENTS)
     dead = []
@@ -189,7 +190,7 @@ def sse_broadcast(event: str, data: str) -> None:
         try:
             wfile.write(payload)
             wfile.flush()
-        except OSError:
+        except (OSError, ValueError):  # ValueError: the client's stream is already closed
             dead.append(wfile)
     if dead:
         with SSE_CLIENTS_LOCK:
@@ -379,7 +380,7 @@ def set_shared_dashboard(session_id: str, dashboard: dict[str, Any]) -> None:
             SHARED_DASHBOARD_STATE["lastError"] = str(shared.get("reportNotice") or "Live refresh is using cached data.")
         try:
             sse_broadcast("dashboard", json.dumps(shared, separators=(",", ":")))
-        except Exception as exc:
+        except (TypeError, ValueError) as exc:
             debug_log(f"SSE broadcast of stale dashboard failed: {exc}")
         return
     if not dashboard_backup_source_available(shared):
@@ -400,7 +401,7 @@ def set_shared_dashboard(session_id: str, dashboard: dict[str, Any]) -> None:
     # Push to SSE subscribers
     try:
         sse_broadcast("dashboard", json.dumps(shared, separators=(",", ":")))
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         debug_log(f"SSE broadcast of shared dashboard failed: {exc}")
 
 
@@ -435,7 +436,11 @@ def shared_dashboard_payload() -> dict[str, Any]:
 
 
 def _shared_dashboard_refresh_once() -> None:
-    from .sessions import build_dashboard_from_session, reauthenticate_dashboard_session, session_config_with_secrets  # late import: avoids circular module import
+    from .sessions import (  # late import: avoids circular module import
+        build_dashboard_from_session,
+        reauthenticate_dashboard_session,
+        session_config_with_secrets,
+    )
     with SHARED_DASHBOARD_LOCK:
         session_id = str(SHARED_DASHBOARD_STATE.get("sessionId") or "")
     if not session_id:

@@ -11,10 +11,12 @@ import sys
 from pathlib import Path
 
 try:
+    from cryptography.exceptions import InvalidTag
     from cryptography.fernet import Fernet, InvalidToken
 except ImportError:  # pragma: no cover - dashboard still runs without WMI credential persistence.
     Fernet = None
     InvalidToken = Exception
+    InvalidTag = Exception
 
 from .config import AUTH_KEY_FILE, DATA_DIR, LOG, SESSION_KEY_FILE
 
@@ -237,9 +239,9 @@ def _derive_profile_key() -> bytes | None:
     if not WMI_CREDENTIAL_KEY:
         return None
     try:
-        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-        from cryptography.hazmat.primitives import hashes as _hashes
         from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import hashes as _hashes
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
         hkdf = HKDF(
             algorithm=_hashes.SHA256(),
             length=32,
@@ -248,7 +250,7 @@ def _derive_profile_key() -> bytes | None:
             backend=default_backend(),
         )
         return hkdf.derive(WMI_CREDENTIAL_KEY)
-    except Exception:
+    except (ImportError, ValueError, TypeError):  # hazmat absent/broken, or unusable key material
         return None
 
 
@@ -284,7 +286,7 @@ def encrypt_profile_secret(plaintext: str, *, name: str, field: str) -> str:
             nonce = os.urandom(12)   # 96-bit nonce — GCM standard
             ct    = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), _profile_aad(name, field))
             return _ENC_V2_PREFIX + base64.b64encode(nonce + ct).decode("ascii")
-        except Exception as exc:
+        except (ImportError, ValueError, OverflowError) as exc:  # OverflowError: input over GCM's size limit
             LOG.error(f"AES-GCM encryption failed for {name}.{field}: {exc}; trying Fernet")
     # Fernet fallback: only reachable when cryptography's hazmat layer is broken
     # or absent. It carries no AAD, so the slot binding above is lost.
@@ -319,7 +321,9 @@ def decrypt_profile_secret(value: str, *, name: str, field: str) -> str:
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
             raw = base64.b64decode(value[len(prefix):])
             return AESGCM(key).decrypt(raw[:12], raw[12:], aad).decode("utf-8")
-        except Exception:
+        # InvalidTag: wrong key or wrong slot; ValueError: bad base64, short
+        # nonce or non-UTF-8 plaintext.
+        except (ImportError, ValueError, InvalidTag):
             return ""
     # Legacy Fernet blob
     return decrypt_process_secret(value)

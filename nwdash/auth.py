@@ -5,9 +5,9 @@ Split from networker_dashboard.py (v2.5.0); behavior unchanged.
 from __future__ import annotations
 
 import base64
-import json
 import hashlib
 import hmac
+import json
 import os
 import threading
 import time
@@ -22,6 +22,7 @@ from .config import (
     PBKDF2_ITERATIONS,
 )
 from .secrets import AUTH_SECRET_KEY
+
 
 def _hash_password(password: str, salt: bytes, iterations: int = PBKDF2_ITERATIONS) -> bytes:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)

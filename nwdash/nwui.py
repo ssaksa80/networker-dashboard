@@ -6,14 +6,13 @@ from __future__ import annotations
 
 import json
 import re
-import socket
 import ssl
 import threading
 import time
 from collections import Counter
-from http.cookiejar import CookieJar
 from dataclasses import replace
 from datetime import datetime
+from http.cookiejar import CookieJar
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
@@ -29,7 +28,6 @@ from .config import (
     safe_log_text,
 )
 from .models import ApiConfig, RestApiError, generated_at
-from .wmi_health import unavailable_server_health
 from .restapi import (
     add_sla_summary,
     api_base_url_for_version,
@@ -67,6 +65,8 @@ from .restapi import (
     strip_query_param,
     timestamp,
 )
+from .wmi_health import unavailable_server_health
+
 
 def json_status_request(
     opener: Any,
@@ -98,7 +98,7 @@ def json_status_request(
         except json.JSONDecodeError:
             data_obj = text
         return exc.code, data_obj, text
-    except (URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
+    except (URLError, TimeoutError, ssl.SSLError) as exc:
         raise RestApiError(502, describe_url_error(exc)) from exc
 
 
@@ -269,9 +269,7 @@ def item_in_report_window(item: Any, start_ts: float | None, end_ts: float | Non
         return True
     if start_ts is not None and item_ts < start_ts:
         return False
-    if end_ts is not None and item_ts > end_ts:
-        return False
-    return True
+    return not (end_ts is not None and item_ts > end_ts)
 
 
 def filter_items_to_report_window(items: list[Any], start_ts: float | None, end_ts: float | None) -> list[Any]:

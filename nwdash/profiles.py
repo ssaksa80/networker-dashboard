@@ -4,8 +4,8 @@ Split from networker_dashboard.py (v2.5.0); behavior unchanged.
 """
 from __future__ import annotations
 
-import json
 import ipaddress
+import json
 import socket
 import threading
 from typing import Any
@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 
 from . import config as _cfg
 from .config import (
+    _PROFILE_PW_SAVED,
+    _PROFILE_PW_SENTINEL,
     API_VERSION_PATTERN,
     CUSTOM_REPORT_RANGE,
     DATA_DIR,
@@ -23,16 +25,14 @@ from .config import (
     LOG,
     PROFILES_FILE,
     REPORT_RANGES,
-    _PROFILE_PW_SAVED,
-    _PROFILE_PW_SENTINEL,
     safe_log_text,
 )
+from .models import ApiConfig, BadRequest
 from .secrets import (
     decrypt_profile_secret,
     encrypt_profile_secret,
     profile_secret_needs_rebinding,
 )
-from .models import ApiConfig, BadRequest
 
 # ── Connection profiles ───────────────────────────────────────────────────────
 PROFILES_LOCK = threading.Lock()
@@ -361,7 +361,7 @@ def _host_allowed(host: str) -> bool:
     return all(ip in ALLOWED_PINNED_IPS or _ip_in_networks(ip) for ip in resolved)
 
 
-def _assert_host_allowed(config: "ApiConfig") -> None:
+def _assert_host_allowed(config: ApiConfig) -> None:
     for host in {config.rest_api_host, config.backup_server_host or config.rest_api_host}:
         if host and not _host_allowed(host):
             raise BadRequest(f"Host '{host}' is not in the configured allow-list.")

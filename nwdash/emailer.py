@@ -5,10 +5,9 @@ Split from networker_dashboard.py (v2.5.0); behavior unchanged.
 from __future__ import annotations
 
 import email.utils
-import json
 import hashlib
+import json
 import smtplib
-import socket
 import ssl
 import threading
 import time
@@ -19,11 +18,10 @@ from http import HTTPStatus
 from typing import Any
 
 from .config import APP_NAME, AUTOMATIONS_FILE, DATA_DIR, DEFAULT_API_PORT, LOG, debug_log, safe_log_text
-from .secrets import WMI_CIPHER, decrypt_process_secret, decrypt_profile_secret, encrypt_process_secret
 from .models import (
+    SHARED_REFRESH_STOP,
     AlertAutomation,
     BadRequest,
-    SHARED_REFRESH_STOP,
     SmtpDeliveryError,
     _automation_items_snapshot,
     _get_automation,
@@ -39,6 +37,8 @@ from .models import (
     session_automation_keys,
     shared_reliable_dashboard_for_session,
 )
+from .reports import dashboard_alert_lines, dashboard_report_email, render_dashboard_snapshot_png
+from .secrets import WMI_CIPHER, decrypt_process_secret, decrypt_profile_secret, encrypt_process_secret
 from .sessions import (
     build_dashboard_from_session,
     connection_snapshot_for_session,
@@ -62,7 +62,7 @@ from .snapshots import (
     saved_email_smtp_password,
     set_email_profile_connection,
 )
-from .reports import dashboard_alert_lines, dashboard_report_email, render_dashboard_snapshot_png
+
 
 def within_quiet_hours(start: str, end: str, hhmm: str | None = None) -> bool:
     """True when the current time (HH:MM) falls inside [start, end).
@@ -79,7 +79,7 @@ def within_quiet_hours(start: str, end: str, hhmm: str | None = None) -> bool:
             h, m = (int(p) for p in v.split(":", 1))
             return h * 60 + m
         now_m, s_m, e_m = _mins(hhmm), _mins(start), _mins(end)
-    except Exception:
+    except (ValueError, AttributeError):
         return False
     if s_m == e_m:
         return False
@@ -124,7 +124,7 @@ def smtp_exception_detail(exc: BaseException) -> str:
         return f"SMTP connection rejected: code={exc.smtp_code} response={smtp_error}"
     if isinstance(exc, smtplib.SMTPServerDisconnected):
         return f"SMTP server disconnected: {exc}"
-    if isinstance(exc, TimeoutError) or isinstance(exc, socket.timeout):
+    if isinstance(exc, TimeoutError):
         return "SMTP connection timed out."
     if isinstance(exc, ssl.SSLError):
         return f"TLS/SSL error: {exc}"
@@ -165,7 +165,7 @@ def send_smtp_email(
                         filename=filename,
                     )
         if attachments:
-            for _, (attachment_bytes, mime_type, filename) in attachments.items():
+            for attachment_bytes, mime_type, filename in attachments.values():
                 maintype, _, subtype = mime_type.partition("/")
                 message.add_attachment(
                     attachment_bytes,
@@ -209,13 +209,7 @@ def send_smtp_email(
         diagnostics["stage"] = "sent"
         diagnostics["detail"] = "Email accepted by SMTP server."
         return diagnostics
-    except (
-        smtplib.SMTPException,
-        TimeoutError,
-        socket.timeout,
-        OSError,
-        ssl.SSLError,
-    ) as exc:
+    except (smtplib.SMTPException, TimeoutError, OSError, ssl.SSLError) as exc:
         detail = smtp_exception_detail(exc)
         debug_log(f"SMTP delivery failed at {stage}: {detail}")
         raise SmtpDeliveryError(stage, detail, diagnostics) from exc
@@ -786,7 +780,7 @@ def _dashboard_content_signature(dashboard: dict[str, Any]) -> str:
         payload["alerts"] = sorted(_alert_key(a) for a in (tables.get("alerts") or []))
         blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha1(blob).hexdigest()
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return ""
 
 
