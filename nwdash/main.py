@@ -118,11 +118,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Dashboard access password. May also be supplied via the DASHBOARD_AUTH_PASSWORD environment variable. Stored only as a salted hash.",
     )
     parser.add_argument(
+        "--allow-unauthenticated",
+        action="store_true",
+        help="Start on a non-loopback --bind even with no dashboard password. Anyone who can reach the port can then read backup data and change the configuration; use only on an isolated network.",
+    )
+    parser.add_argument(
         "--allowed-hosts",
         default="",
         help="Comma-separated allow-list of NetWorker hosts/IPs/CIDRs the server may connect to (e.g. nw1.corp.local,10.0.0.0/24). May also be set via DASHBOARD_ALLOWED_HOSTS. If unset, any host is permitted.",
     )
     return parser.parse_args(argv)
+
+
+def unauthenticated_exposure_refusal(bind_host: str, auth_enabled: bool, allow_unauthenticated: bool) -> str:
+    """Why startup must stop, or "" when the bind is acceptable: a network-
+    reachable listener with no password lets anyone who can reach the port
+    read every backup and rewrite SMTP, profiles and schedules."""
+    if auth_enabled or allow_unauthenticated or _is_loopback_bind(bind_host):
+        return ""
+    return (
+        f"Refusing to listen on {bind_host} with no dashboard password: anyone who can reach "
+        "this port could read all backup data and change the configuration. Set "
+        "DASHBOARD_AUTH_PASSWORD (or --auth-password), bind to 127.0.0.1, or pass "
+        "--allow-unauthenticated to accept that exposure."
+    )
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -138,6 +157,12 @@ def run(argv: list[str] | None = None) -> int:
     if auth_password:
         set_auth_password(auth_password)
     _cfg.AUTH_ENABLED = auth_password_configured()
+    refusal = unauthenticated_exposure_refusal(args.bind, _cfg.AUTH_ENABLED, args.allow_unauthenticated)
+    if refusal:
+        # Before the certificate and the bind: nothing is listening yet.
+        print(refusal, file=sys.stderr)
+        LOG.error(refusal, extra={"event": "auth"})
+        return 2
     configure_allowed_hosts(args.allowed_hosts or os.environ.get("DASHBOARD_ALLOWED_HOSTS") or "")
     cert_path = Path(args.cert).expanduser().resolve()
     key_path = Path(args.key).expanduser().resolve()
@@ -191,8 +216,8 @@ def run(argv: list[str] | None = None) -> int:
         LOG.info("authentication enabled", extra={"event": "auth"})
     elif not _is_loopback_bind(args.bind):
         print("=" * 72)
-        print("WARNING: Bound to a non-loopback address with NO authentication.")
-        print("Anyone who can reach this port can view all backup data.")
+        print("WARNING: Bound to a non-loopback address with NO authentication (--allow-unauthenticated).")
+        print("Anyone who can reach this port can view all backup data and change the configuration.")
         print("Set DASHBOARD_AUTH_PASSWORD (or --auth-password), or bind to 127.0.0.1.")
         print("=" * 72)
         LOG.warning("exposed to non-loopback with no authentication", extra={"event": "auth"})

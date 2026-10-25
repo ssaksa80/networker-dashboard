@@ -262,6 +262,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
         token = self.headers.get("X-CSRF-Token") or ""
         return _verify_csrf_token(self._session_cookie_value(), token)
 
+    def _json_body_declared(self) -> bool:
+        # A cross-site page can POST text/plain, form-urlencoded or multipart
+        # without a CORS preflight; application/json forces one, and this server
+        # never answers a preflight. Our UI always sends JSON.
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0]
+        return content_type.strip().lower() == "application/json"
+
+    def _same_origin(self) -> bool:
+        # Browsers attach Sec-Fetch-Site and Origin to cross-site POSTs; clients
+        # that send neither (curl, scripts, the tests) are not browsers acting
+        # for the operator, so they are let through.
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site and site != "same-origin":
+            return False
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        if not origin:
+            return True
+        host = (self.headers.get("Host") or "").strip().lower()
+        return bool(host) and origin == f"https://{host}"
+
     def _send_json_with_cookie(self, status: int, payload: dict[str, Any], cookie_value: str, max_age: int) -> None:
         body = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
         cookie = (
@@ -513,6 +533,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.request_id = uuid.uuid4().hex[:8]
         self._body_consumed = False  # one handler instance serves many keep-alive requests
         path = urlparse(self.path).path
+        # Cross-site gate for EVERY POST, with or without a password. The CSRF
+        # token below exists only when auth is on, so without these a page the
+        # operator visits could drive the API of a password-less install.
+        if not self._json_body_declared():
+            self._drain_request_body()
+            self._send_error_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json.")
+            return
+        if not self._same_origin():
+            self._drain_request_body()
+            self._send_error_json(HTTPStatus.FORBIDDEN, "Cross-origin request refused.")
+            return
         # Always-open auth endpoints
         if path == "/api/login":
             self._handle_login()

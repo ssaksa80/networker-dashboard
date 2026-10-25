@@ -21,11 +21,15 @@ package installs required on the host.
 ## Quick start
 
 ```powershell
-# optional but recommended
+# required unless you bind to 127.0.0.1
 $env:DASHBOARD_AUTH_PASSWORD = "choose-a-password"
 
 python networker_dashboard.py
 ```
+
+Without a password the dashboard starts only on a loopback `--bind`
+(`127.0.0.1`); `--allow-unauthenticated` overrides that, for an isolated
+network only.
 
 First start writes a development TLS certificate to `.certs/` and opens
 the dashboard at `https://<host>:8443/`. Supply a real certificate with
@@ -40,6 +44,7 @@ the dashboard at `https://<host>:8443/`. Supply a real certificate with
 | `--cert` / `--key` | `.certs/…` | TLS certificate/key (PEM) |
 | `--no-auto-cert` | off | Require an existing certificate |
 | `--auth-password` | — | Dashboard password (or `DASHBOARD_AUTH_PASSWORD`) |
+| `--allow-unauthenticated` | off | Start on a non-loopback `--bind` with no password |
 | `--allowed-hosts` | any | Allow-list of NetWorker hosts/CIDRs (or `DASHBOARD_ALLOWED_HOSTS`) |
 | `--no-launch` | off | Don't open a browser after startup |
 | `--debug` | off | Verbose REST diagnostics (never logs credentials) |
