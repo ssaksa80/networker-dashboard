@@ -159,7 +159,8 @@ def run(argv: list[str] | None = None) -> int:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    # Per connection, never the listening socket: see ExclusiveThreadingHTTPServer.
+    server.ssl_context = context
     access_urls = service_access_urls(args.bind, selected_port)
     launch_url = preferred_launch_url(access_urls)
 

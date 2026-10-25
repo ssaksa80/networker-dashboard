@@ -732,10 +732,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
 class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False
     daemon_threads = True
+    # Set by run(). The LISTENING socket stays plain TCP: wrapping it made
+    # accept() run each TLS handshake on the serve_forever thread, so one client
+    # that connected and never sent a ClientHello blocked every new connection.
+    # Each accepted socket is wrapped instead, and handshakes in its worker.
+    ssl_context: ssl.SSLContext | None = None
 
     def __init__(self, *args: Any, max_connections: int = DEFAULT_MAX_CONNECTIONS, **kwargs: Any) -> None:
         self._conn_semaphore = threading.BoundedSemaphore(max(1, int(max_connections)))
         super().__init__(*args, **kwargs)
+
+    def get_request(self) -> tuple[Any, Any]:
+        request, client_address = super().get_request()
+        if self.ssl_context is not None:
+            # No I/O here: the handshake is deferred to the worker thread.
+            request = self.ssl_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
+        return request, client_address
+
+    def _tls_handshake(self, request: Any, client_address: Any) -> bool:
+        """Complete a deferred handshake, bounded by the request timeout. A failed
+        or stalled handshake drops only this connection."""
+        request.settimeout(_cfg.REQUEST_TIMEOUT_SECONDS)
+        try:
+            request.do_handshake()
+        except (OSError, ValueError) as exc:  # SSLError and timeouts are OSErrors
+            LOG.debug(f"TLS handshake with {client_address} failed: {exc}")
+            self.shutdown_request(request)
+            return False
+        return True
 
     def server_bind(self) -> None:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -770,6 +794,8 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
         try:
+            if isinstance(request, ssl.SSLSocket) and not self._tls_handshake(request, client_address):
+                return
             super().process_request_thread(request, client_address)
         finally:
             self._release_slot()
@@ -830,7 +856,7 @@ def can_exclusively_bind_port(bind_host: str, port: int) -> bool:
 
 def bind_dashboard_server(
     bind_host: str, requested_port: int, max_connections: int = DEFAULT_MAX_CONNECTIONS
-) -> tuple[ThreadingHTTPServer, int, bool]:
+) -> tuple[ExclusiveThreadingHTTPServer, int, bool]:
     if requested_port != 0 and not can_exclusively_bind_port(bind_host, requested_port):
         server = ExclusiveThreadingHTTPServer((bind_host, 0), DashboardHandler, max_connections=max_connections)
         return server, int(server.server_address[1]), True
