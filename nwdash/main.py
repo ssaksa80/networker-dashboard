@@ -257,19 +257,40 @@ def run(argv: list[str] | None = None) -> int:
     threading.Thread(target=auto_snapshot_worker, name="auto-snapshot", daemon=True).start()
     threading.Thread(target=automation_scheduler_loop, name="automation-scheduler", daemon=True).start()
 
+    exit_code = 0
     try:
         self_test_ok, self_test_message = self_test_dashboard_listener(launch_url, cert_path=cert_path)
         print(f"Startup self-test: {self_test_message}")
         if not self_test_ok:
-            raise SystemExit("Dashboard HTTPS listener did not pass startup self-test.")
+            # Advisory only: the listener is already bound and serving. Security
+            # software that intercepts loopback TLS presents its own certificate,
+            # so the pinned check fails on a healthy listener; treating that as
+            # fatal stopped the service seconds after every start.
+            print("Continuing to serve. Check the URLs above from a browser.")
+            LOG.warning(f"startup self-test failed; still serving: {self_test_message}", extra={"event": "self_test"})
 
         _, launch_message = auto_launch_dashboard(launch_url, enabled=not args.no_launch)
         print(launch_message)
 
         while server_thread.is_alive():
             server_thread.join(1.0)
+        # serve_forever() returns only after shutdown(), which nothing but the
+        # finally block below calls: the listener stopped on its own.
+        LOG.critical("HTTPS listener stopped unexpectedly", extra={"event": "fatal"})
+        exit_code = 1
     except KeyboardInterrupt:
         print("\nStopping dashboard.")
+    except SystemExit as exc:
+        # os._exit() below discards a SystemExit's status (it once reported a
+        # fatal self-test as success), so carry the status across by hand.
+        if exc.code is None or isinstance(exc.code, int):
+            exit_code = exc.code or 0
+        else:
+            print(exc.code, file=sys.stderr)
+            exit_code = 1
+    except Exception:
+        LOG.exception("fatal error; stopping", extra={"event": "fatal"})
+        exit_code = 1
     finally:
         try:
             for automation_id in _automation_keys_snapshot():
@@ -295,8 +316,8 @@ def run(argv: list[str] | None = None) -> int:
         # AttributeError: no console at all (pythonw/service sets them to None).
         except (OSError, ValueError, AttributeError) as exc:
             LOG.debug(f"final stdout/stderr flush failed: {exc}")
-        os._exit(0)
-    return 0
+        os._exit(exit_code)
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
