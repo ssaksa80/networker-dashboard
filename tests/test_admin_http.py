@@ -6,6 +6,7 @@ Boots the real app from a temp copy (tests/e2e_server.py), with and without a
 gateway password.
 """
 import json
+import time
 import unittest
 
 from e2e_server import AppServer
@@ -84,6 +85,23 @@ class TestAdminWithPassword(unittest.TestCase):
         self.assertEqual(status, 200)
         status, body = self.get("/api/admin/overview", cookie)
         self.assertEqual(status, 403)
+
+    def test_background_refresh_does_not_keep_the_window_open(self):
+        # The Logs tab re-polls every 4 s; if each poll extended the window, a
+        # console left on that tab would never lock.
+        cookie, csrf = self._signed_in(admin=True)
+        until = self.get("/api/admin/state", cookie)[1]["unlockedUntil"]
+        time.sleep(1.2)  # the window is reported in whole seconds
+        status, _body = self.get("/api/admin/logs?level=INFO", cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.get("/api/admin/state", cookie)[1]["unlockedUntil"], until)
+        status, _b, _h = self.server.request("GET", "/api/admin/logs?level=INFO", headers={"X-NWDash-Activity": "1"}, cookie=cookie)
+        self.assertEqual(status, 200)
+        extended = self.get("/api/admin/state", cookie)[1]["unlockedUntil"]
+        self.assertGreater(extended, until)
+        time.sleep(1.2)
+        self.assertEqual(self.post("/api/admin/appearance", {"motion": "subtle"}, cookie, csrf)[0], 200)
+        self.assertGreater(self.get("/api/admin/state", cookie)[1]["unlockedUntil"], extended, "a change is activity")
 
     def test_admin_sign_in_opens_the_window(self):
         cookie, _csrf = self._signed_in(admin=True)
@@ -180,26 +198,54 @@ class TestAdminWithPassword(unittest.TestCase):
 
 class TestAdminWithoutPassword(unittest.TestCase):
     """No password: the console opens to the server itself (these requests come
-    from 127.0.0.1) and offers to set the first password."""
+    from 127.0.0.1, with no proxy header) once given the setup code the service
+    wrote to data/, and offers to set the first password."""
 
     def setUp(self):
         self.server = AppServer().start()
         self.addCleanup(self.server.stop)
 
-    def test_open_on_loopback_without_unlocking(self):
+    def setup_code(self):
+        return (self.server.root / "data" / "setup-code.txt").read_text(encoding="ascii").strip()
+
+    def test_open_on_loopback_with_the_setup_code(self):
         status, body = _json(self.server.request("GET", "/api/admin/state"))
         self.assertEqual(body["access"], "open")
         self.assertFalse(body["passwordSet"])
+        self.assertEqual(body["setupCodeFile"], "setup-code.txt")
         status, body = _json(self.server.request("GET", "/api/admin/overview"))
+        self.assertEqual((status, body["code"]), (403, "setup_code_required"))
+        code = {"X-NWDash-Setup-Code": self.setup_code()}
+        status, body = _json(self.server.request("GET", "/api/admin/overview", headers=code))
+        self.assertEqual(status, 200)
+        status, body = _json(self.server.request("POST", "/api/admin/appearance", {"motion": "off"}, headers=code))
         self.assertEqual(status, 200)
         status, body = _json(self.server.request("POST", "/api/admin/unlock", {"password": "x"}))
         self.assertEqual(status, 409)
+        self.assertIn("setup code", self.server.output())  # the start-up message names where it is
+
+    def test_a_local_reverse_proxy_is_not_the_server_itself(self):
+        # The proxy connects from loopback, so only its forwarding header tells.
+        code = self.setup_code()
+        proxied = {"X-Forwarded-For": "192.0.2.9"}
+        status, body = _json(self.server.request("GET", "/api/admin/state", headers=proxied))
+        self.assertEqual(body["access"], "denied")
+        status, body = _json(self.server.request("GET", "/api/admin/overview", headers={**proxied, "X-NWDash-Setup-Code": code}))
+        self.assertEqual((status, body["code"]), (403, "denied"))
+        status, body = _json(self.server.request("POST", "/api/admin/setup", {"password": "first long password", "setupCode": code},
+                                                 headers={"Via": "1.1 proxy"}))
+        self.assertEqual(status, 403)
+        self.assertFalse(_json(self.server.request("GET", "/api/admin/state"))[1]["passwordSet"])
 
     def test_set_the_first_password(self):
-        status, body = _json(self.server.request("POST", "/api/admin/setup", {"password": "short"}))
+        status, body = _json(self.server.request("POST", "/api/admin/setup", {"password": "first long password"}))
+        self.assertEqual((status, body["code"]), (403, "setup_code_required"))
+        code = self.setup_code()
+        status, body = _json(self.server.request("POST", "/api/admin/setup", {"password": "short", "setupCode": code}))
         self.assertEqual(status, 400)
-        status, raw, headers = self.server.request("POST", "/api/admin/setup", {"password": "first long password"})
+        status, raw, headers = self.server.request("POST", "/api/admin/setup", {"password": "first long password", "setupCode": code})
         self.assertEqual(status, 200, raw)
+        self.assertFalse((self.server.root / "data" / "setup-code.txt").exists(), "the code is one-time")
         cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
         self.assertTrue(cookie)
         # Sign-in is now on for everyone: no cookie, no API.

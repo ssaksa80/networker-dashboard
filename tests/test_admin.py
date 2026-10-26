@@ -4,6 +4,7 @@ Unit level: every file the code touches is patched to a temp dir, and the
 runtime flags (_cfg.AUTH_ENABLED, ALLOWLIST_SOURCE, ...) are patched per test.
 The HTTP routes are exercised end to end in test_admin_http.py.
 """
+import http.client
 import json
 import tempfile
 import time
@@ -35,6 +36,8 @@ class TempDataMixin:
             (admin, "AUDIT_FILE", self.dir / "audit.jsonl"),
             (admin, "CONSOLE_ALLOWLIST_FILE", self.dir / "allowed_hosts.json"),
             (admin, "LOG_FILE", self.dir / "networker_dashboard.log"),
+            (admin, "SETUP_CODE_FILE", self.dir / "setup-code.txt"),
+            (admin, "_setup_code", ""),
             (snapshots, "DATA_DIR", self.dir),
             (snapshots, "UI_PREFS_FILE", self.dir / "ui_prefs.json"),
             (_cfg, "AUTH_ENABLED", True),
@@ -111,7 +114,10 @@ class TestConsoleAccess(TempDataMixin, unittest.TestCase):
             self.assertEqual(admin.console_access("127.0.0.1", True), "open")
             self.assertEqual(admin.console_access("::1", True), "open")
             self.assertEqual(admin.console_access("192.0.2.41", True), "denied")
-            self.assertTrue(admin.admin_window_open(""))
+            # Being on loopback is not enough: the setup code stands in for a password.
+            self.assertFalse(admin.admin_window_open(""))
+            code, _written = admin.prepare_setup_code()
+            self.assertTrue(admin.admin_window_open("", code))
 
     def test_window_is_needed_when_a_password_is_set(self):
         sid = auth.session_id_of_cookie(auth._make_auth_cookie())
@@ -140,6 +146,73 @@ class TestConsoleAccess(TempDataMixin, unittest.TestCase):
         self.sessions.unlock_admin(sid, 5)
         admin.touch_admin_window(sid)
         self.assertGreater(self.sessions.admin_until(sid), time.time() + 60)
+
+
+class TestNoPasswordLocality(TempDataMixin, unittest.TestCase):
+    """With no password, "on the server itself" must survive a reverse proxy on
+    the same host, which connects from loopback too."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(_cfg, "AUTH_ENABLED", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _headers(**values):
+        message = http.client.HTTPMessage()  # what the request handler passes
+        for name, value in values.items():
+            message[name.replace("_", "-")] = value
+        return message
+
+    def test_any_proxy_header_makes_a_loopback_request_remote(self):
+        self.assertTrue(admin.is_local_request("127.0.0.1", self._headers(Host="127.0.0.1:8443")))
+        for name in sorted(admin._PROXY_HEADERS):
+            for spelling in (name, name.upper(), name.title()):
+                with self.subTest(header=spelling):
+                    headers = self._headers(**{spelling: "192.0.2.9"})
+                    self.assertFalse(admin.is_local_request("127.0.0.1", headers))
+                    self.assertEqual(admin.console_access("127.0.0.1", False, headers), "denied")
+        self.assertFalse(admin.is_local_request("192.0.2.41", self._headers()))
+
+    def test_setup_code_is_written_checked_and_one_time(self):
+        code, written = admin.prepare_setup_code()
+        self.assertTrue(written)
+        self.assertEqual((self.dir / "setup-code.txt").read_text(encoding="ascii").strip(), code)
+        self.assertRegex(code, r"^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$")
+        self.assertTrue(admin.setup_code_ok(code))
+        self.assertTrue(admin.setup_code_ok(code.lower().replace("-", " ")))  # as typed
+        self.assertFalse(admin.setup_code_ok(""))
+        self.assertFalse(admin.setup_code_ok("AAAA-AAAA-AAAA"))
+        newer, _ = admin.prepare_setup_code()  # every start makes a new one
+        if newer != code:  # 1 in 2**60 they match
+            self.assertFalse(admin.setup_code_ok(code))
+        admin.clear_setup_code()
+        self.assertFalse(admin.setup_code_ok(newer))
+        self.assertFalse((self.dir / "setup-code.txt").exists())
+
+    def test_first_password_needs_this_server_and_the_code(self):
+        code, _ = admin.prepare_setup_code()
+        proxied = self._headers(X_Forwarded_For="192.0.2.9")
+        status, _body = admin.first_password("a long enough password", "127.0.0.1", proxied, code)
+        self.assertEqual(status, HTTPStatus.FORBIDDEN)
+        status, body = admin.first_password("a long enough password", "127.0.0.1", self._headers(), "")
+        self.assertEqual((status, body["code"]), (HTTPStatus.FORBIDDEN, "setup_code_required"))
+        self.assertFalse(_cfg.AUTH_ENABLED)
+        status, _body = admin.first_password("a long enough password", "127.0.0.1", self._headers(), code)
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertTrue(_cfg.AUTH_ENABLED)
+        self.assertTrue(auth.verify_auth_password("a long enough password"))
+        self.assertFalse((self.dir / "setup-code.txt").exists(), "the code is one-time")
+
+    def test_guessing_the_code_locks_the_address_out(self):
+        code, _ = admin.prepare_setup_code()
+        for _ in range(_cfg.LOGIN_MAX_ATTEMPTS):
+            status, _body = admin.first_password("a long enough password", "127.0.0.1", self._headers(), "WRNG-WRNG-WRNG")
+            self.assertEqual(status, HTTPStatus.FORBIDDEN)
+        status, _body = admin.first_password("a long enough password", "127.0.0.1", self._headers(), code)
+        self.assertEqual(status, HTTPStatus.TOO_MANY_REQUESTS)
+        self.assertFalse(_cfg.AUTH_ENABLED)
 
 
 class TestAudit(TempDataMixin, unittest.TestCase):
@@ -231,15 +304,17 @@ class TestFirstPassword(TempDataMixin, unittest.TestCase):
         self.assertFalse(_cfg.AUTH_ENABLED)
 
     def test_sets_the_password_and_turns_sign_in_on(self):
-        status, _body = admin.first_password("a good long password", "127.0.0.1")
+        code, _ = admin.prepare_setup_code()
+        status, _body = admin.first_password("a good long password", "127.0.0.1", None, code)
         self.assertEqual(status, HTTPStatus.OK)
         self.assertTrue(_cfg.AUTH_ENABLED)
         self.assertTrue(auth.verify_auth_password("a good long password"))
-        status, _body = admin.first_password("another long password", "127.0.0.1")
+        status, _body = admin.first_password("another long password", "127.0.0.1", None, code)
         self.assertEqual(status, HTTPStatus.CONFLICT)
 
     def test_weak_password_is_refused(self):
-        status, _body = admin.first_password("short", "127.0.0.1")
+        code, _ = admin.prepare_setup_code()
+        status, _body = admin.first_password("short", "127.0.0.1", None, code)
         self.assertEqual(status, HTTPStatus.BAD_REQUEST)
         self.assertFalse(_cfg.AUTH_ENABLED)
 

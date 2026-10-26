@@ -33,6 +33,7 @@
       let tab = "health";
       const dirty = {};
       let continuedWithoutPassword = false;
+      let setupCode = "";  // no password set: the code from the server's data folder
       let expiredNotice = "";
 
       // ── Talking to the server ───────────────────────────────────────────
@@ -43,13 +44,18 @@
           if (r.ok) csrf = (await r.json()).csrfToken || "";
         } catch (_e) { /* signed out */ }
       }
-      async function api(method, path, payload, retried) {
+      // `background` marks timed refreshes: only reads a person asked for (and
+      // every change) keep the admin window open, so an unattended console locks.
+      async function api(method, path, payload, retried, background) {
         const opts = {method, cache: "no-store", headers: {}};
         if (method !== "GET") {
           opts.headers["Content-Type"] = "application/json";
           opts.body = JSON.stringify(payload || {});
           if (csrf) opts.headers["X-CSRF-Token"] = csrf;
+        } else if (!background) {
+          opts.headers["X-NWDash-Activity"] = "1";
         }
+        if (setupCode) opts.headers["X-NWDash-Setup-Code"] = setupCode;
         const r = await fetch(path, opts);
         let data = {};
         try { data = await r.json(); } catch (_e) { data = {}; }
@@ -63,17 +69,23 @@
           showGate("stepup");
           throw new GateError("locked");
         }
+        if (r.status === 403 && data.code === "setup_code_required" && continuedWithoutPassword) {
+          setupCode = "";
+          continuedWithoutPassword = false;
+          showGate("setup");
+          throw new GateError("setup code");
+        }
         if (r.status === 403 && method !== "GET" && !retried && !data.code) {
           await refreshCsrf();
-          return api(method, path, payload, true);
+          return api(method, path, payload, true, background);
         }
         if (!r.ok || data.ok === false) throw new Error(data.error || data.message || ("Request failed (HTTP " + r.status + ")."));
-        if (path.indexOf("/api/admin/") === 0 && state.passwordSet && state.unlocked) {
+        if (!background && path.indexOf("/api/admin/") === 0 && state.passwordSet && state.unlocked) {
           state.unlockedUntil = Math.floor(Date.now() / 1000) + state.unlockSeconds;
         }
         return data;
       }
-      const get = (path) => api("GET", path);
+      const get = (path, background) => api("GET", path, null, false, background);
       const post = (path, payload) => api("POST", path, payload);
       function fail(e) { if (!(e instanceof GateError)) toast(e.message || String(e), "bad"); }
 
@@ -254,6 +266,8 @@
           body: '<div class="wsteps"><span class="on">1 · Password</span><span>2 · Console</span></div>' +
             "<p>With no password, the admin console opens only on the server itself (you are on " + esc(state.client || "this server") +
             "). Setting one turns on sign-in for everyone who opens the dashboard.</p>" +
+            '<label class="f">Setup code<input id="gCode" class="mono" autocomplete="one-time-code" spellcheck="false" placeholder="XXXX-XXXX-XXXX">' +
+            "<small>In <span class=\"mono\">data\\" + esc(state.setupCodeFile || "setup-code.txt") + "</span> in the dashboard's folder on the server. A new one is made at every restart.</small></label>" +
             '<label class="f">New password<input id="gNew" type="password" autocomplete="new-password"><span class="strength"><i id="gBar"></i></span><small id="gHint">At least 12 characters.</small></label>' +
             '<label class="f">Confirm password<input id="gConf" type="password" autocomplete="new-password"></label>' +
             '<button class="btn" type="submit">Set password and continue</button>' +
@@ -261,7 +275,8 @@
           submit: async (form) => {
             const pw = $("#gNew", form).value;
             if (pw !== $("#gConf", form).value) throw new Error("The two passwords do not match.");
-            const r = await fetch("/api/admin/setup", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({password: pw})});
+            const r = await fetch("/api/admin/setup", {method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({password: pw, setupCode: $("#gCode", form).value.trim()})});
             const data = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(data.error || "The password could not be set.");
             csrf = data.csrfToken || "";
@@ -270,7 +285,19 @@
           },
           init: (form) => {
             $("#gNew", form).addEventListener("input", () => strength($("#gNew", form), $("#gBar", form), $("#gHint", form), 12));
-            $("[data-continue]", form).addEventListener("click", () => { continuedWithoutPassword = true; showConsole(); });
+            $("[data-continue]", form).addEventListener("click", async () => {
+              // The code stands in for a password: check it before opening.
+              setupCode = $("#gCode", form).value.trim();
+              try {
+                await get("/api/admin/overview");
+              } catch (err) {
+                setupCode = "";
+                if (!(err instanceof GateError)) toast(err.message, "bad");
+                return;
+              }
+              continuedWithoutPassword = true;
+              showConsole();
+            });
           },
         }),
         stepup: () => ({
@@ -510,12 +537,14 @@
       let logPaused = false;
       let logTimer = 0;
       let logLines = [];
-      async function loadLogs() {
+      // `background` is the 4-second auto-refresh: it must not keep the admin
+      // window open, or a console left on this tab would never lock.
+      async function loadLogs(background) {
         clearTimeout(logTimer);
         if (tab !== "logs" || body.dataset.view !== "console") return;
         const params = new URLSearchParams({level: $("#lgLevel").value, q: $("#lgQuery").value.trim(), lines: "400"});
         try {
-          const data = await get("/api/admin/logs?" + params.toString());
+          const data = await get("/api/admin/logs?" + params.toString(), background === true);
           const before = new Set(logLines.map((l) => l.ts + l.msg));
           logLines = data.lines || [];
           const box = $("#lgBox");
@@ -526,7 +555,7 @@
           if (!logPaused && (atBottom || !before.size)) box.scrollTop = box.scrollHeight;
           $("#lgCount").textContent = logLines.length + " lines · " + (data.file || "");
         } catch (e) { fail(e); }
-        if (!logPaused) logTimer = setTimeout(loadLogs, 4000);
+        if (!logPaused) logTimer = setTimeout(() => loadLogs(true), 4000);
       }
       $("#lgLevel").addEventListener("change", () => { logLines = []; loadLogs(); });
       let logQueryTimer = 0;
