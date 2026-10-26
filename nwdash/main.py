@@ -118,11 +118,36 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Dashboard access password. May also be supplied via the DASHBOARD_AUTH_PASSWORD environment variable. Stored only as a salted hash.",
     )
     parser.add_argument(
+        "--allow-unauthenticated",
+        action="store_true",
+        help="Start on a non-loopback --bind even with no dashboard password. Anyone who can reach the port can then read backup data and change the configuration; use only on an isolated network. May also be set via DASHBOARD_ALLOW_UNAUTHENTICATED=1.",
+    )
+    parser.add_argument(
         "--allowed-hosts",
         default="",
         help="Comma-separated allow-list of NetWorker hosts/IPs/CIDRs the server may connect to (e.g. nw1.corp.local,10.0.0.0/24). May also be set via DASHBOARD_ALLOWED_HOSTS. If unset, any host is permitted.",
     )
     return parser.parse_args(argv)
+
+
+def allow_unauthenticated_requested(args: argparse.Namespace) -> bool:
+    # deploy/install.ps1 sets the variable rather than the flag: a -Rollback to
+    # an older build ignores an unknown variable but would reject the flag.
+    return bool(args.allow_unauthenticated) or os.environ.get("DASHBOARD_ALLOW_UNAUTHENTICATED", "").strip() == "1"
+
+
+def unauthenticated_exposure_refusal(bind_host: str, auth_enabled: bool, allow_unauthenticated: bool) -> str:
+    """Why startup must stop, or "" when the bind is acceptable: a network-
+    reachable listener with no password lets anyone who can reach the port
+    read every backup and rewrite SMTP, profiles and schedules."""
+    if auth_enabled or allow_unauthenticated or _is_loopback_bind(bind_host):
+        return ""
+    return (
+        f"Refusing to listen on {bind_host} with no dashboard password: anyone who can reach "
+        "this port could read all backup data and change the configuration. Set "
+        "DASHBOARD_AUTH_PASSWORD (or --auth-password), bind to 127.0.0.1, or pass "
+        "--allow-unauthenticated to accept that exposure."
+    )
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -138,6 +163,12 @@ def run(argv: list[str] | None = None) -> int:
     if auth_password:
         set_auth_password(auth_password)
     _cfg.AUTH_ENABLED = auth_password_configured()
+    refusal = unauthenticated_exposure_refusal(args.bind, _cfg.AUTH_ENABLED, allow_unauthenticated_requested(args))
+    if refusal:
+        # Before the certificate and the bind: nothing is listening yet.
+        print(refusal, file=sys.stderr)
+        LOG.error(refusal, extra={"event": "auth"})
+        return 2
     configure_allowed_hosts(args.allowed_hosts or os.environ.get("DASHBOARD_ALLOWED_HOSTS") or "")
     cert_path = Path(args.cert).expanduser().resolve()
     key_path = Path(args.key).expanduser().resolve()
@@ -159,7 +190,8 @@ def run(argv: list[str] | None = None) -> int:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    # Per connection, never the listening socket: see ExclusiveThreadingHTTPServer.
+    server.ssl_context = context
     access_urls = service_access_urls(args.bind, selected_port)
     launch_url = preferred_launch_url(access_urls)
 
@@ -190,8 +222,8 @@ def run(argv: list[str] | None = None) -> int:
         LOG.info("authentication enabled", extra={"event": "auth"})
     elif not _is_loopback_bind(args.bind):
         print("=" * 72)
-        print("WARNING: Bound to a non-loopback address with NO authentication.")
-        print("Anyone who can reach this port can view all backup data.")
+        print("WARNING: Bound to a non-loopback address with NO authentication (--allow-unauthenticated).")
+        print("Anyone who can reach this port can view all backup data and change the configuration.")
         print("Set DASHBOARD_AUTH_PASSWORD (or --auth-password), or bind to 127.0.0.1.")
         print("=" * 72)
         LOG.warning("exposed to non-loopback with no authentication", extra={"event": "auth"})
@@ -257,19 +289,40 @@ def run(argv: list[str] | None = None) -> int:
     threading.Thread(target=auto_snapshot_worker, name="auto-snapshot", daemon=True).start()
     threading.Thread(target=automation_scheduler_loop, name="automation-scheduler", daemon=True).start()
 
+    exit_code = 0
     try:
         self_test_ok, self_test_message = self_test_dashboard_listener(launch_url, cert_path=cert_path)
         print(f"Startup self-test: {self_test_message}")
         if not self_test_ok:
-            raise SystemExit("Dashboard HTTPS listener did not pass startup self-test.")
+            # Advisory only: the listener is already bound and serving. Security
+            # software that intercepts loopback TLS presents its own certificate,
+            # so the pinned check fails on a healthy listener; treating that as
+            # fatal stopped the service seconds after every start.
+            print("Continuing to serve. Check the URLs above from a browser.")
+            LOG.warning(f"startup self-test failed; still serving: {self_test_message}", extra={"event": "self_test"})
 
         _, launch_message = auto_launch_dashboard(launch_url, enabled=not args.no_launch)
         print(launch_message)
 
         while server_thread.is_alive():
             server_thread.join(1.0)
+        # serve_forever() returns only after shutdown(), which nothing but the
+        # finally block below calls: the listener stopped on its own.
+        LOG.critical("HTTPS listener stopped unexpectedly", extra={"event": "fatal"})
+        exit_code = 1
     except KeyboardInterrupt:
         print("\nStopping dashboard.")
+    except SystemExit as exc:
+        # os._exit() below discards a SystemExit's status (it once reported a
+        # fatal self-test as success), so carry the status across by hand.
+        if exc.code is None or isinstance(exc.code, int):
+            exit_code = exc.code or 0
+        else:
+            print(exc.code, file=sys.stderr)
+            exit_code = 1
+    except Exception:
+        LOG.exception("fatal error; stopping", extra={"event": "fatal"})
+        exit_code = 1
     finally:
         try:
             for automation_id in _automation_keys_snapshot():
@@ -295,8 +348,8 @@ def run(argv: list[str] | None = None) -> int:
         # AttributeError: no console at all (pythonw/service sets them to None).
         except (OSError, ValueError, AttributeError) as exc:
             LOG.debug(f"final stdout/stderr flush failed: {exc}")
-        os._exit(0)
-    return 0
+        os._exit(exit_code)
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:

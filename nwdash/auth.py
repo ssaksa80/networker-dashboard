@@ -15,8 +15,10 @@ from typing import Any
 
 from .config import (
     AUTH_CONFIG_FILE,
+    AUTH_SESSIONS_FILE,
     AUTH_TTL_SECONDS,
     DATA_DIR,
+    LOG,
     LOGIN_MAX_ATTEMPTS,
     LOGIN_WINDOW_SECONDS,
     PBKDF2_ITERATIONS,
@@ -74,34 +76,128 @@ def verify_auth_password(password: str) -> bool:
     return hmac.compare_digest(candidate, expected)
 
 
-def _make_auth_cookie() -> str:
-    now = int(time.time())
-    payload = base64.urlsafe_b64encode(
-        json.dumps({"iat": now, "exp": now + AUTH_TTL_SECONDS}).encode("utf-8")
-    ).decode("ascii").rstrip("=")
-    sig = base64.urlsafe_b64encode(
+class _LoginSessions:
+    """Session ids of the logins that are still valid, with their expiry.
+
+    The signed cookie alone stayed valid for its whole TTL after logout: the
+    server only told the browser to drop it, so a copied cookie kept working.
+    Each login now puts a random id in the signed payload, a cookie is accepted
+    only while its id is listed here, and logout removes the id. The table is
+    persisted in data/ so a restart does not sign everyone out, and entries are
+    pruned once they expire.
+    """
+
+    MAX_ENTRIES = 1000  # oldest logins are dropped beyond this
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._expiry: dict[str, int] | None = None  # loaded on first use
+
+    def _live(self) -> dict[str, int]:
+        """The pruned table, loading it on first use. Caller holds the lock."""
+        if self._expiry is None:
+            self._expiry = {}
+            try:
+                raw = json.loads(AUTH_SESSIONS_FILE.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                raw = {}
+            if isinstance(raw, dict):
+                self._expiry = {str(k): int(v) for k, v in raw.items() if isinstance(v, (int, float))}
+        now = int(time.time())
+        for sid in [sid for sid, exp in self._expiry.items() if exp <= now]:
+            del self._expiry[sid]
+        return self._expiry
+
+    def _save(self, table: dict[str, int]) -> None:
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = AUTH_SESSIONS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(table), encoding="utf-8")
+            tmp.replace(AUTH_SESSIONS_FILE)
+        except OSError as exc:
+            # The in-memory table still holds until restart; after one, a logout
+            # that was not saved would be undone.
+            LOG.warning(f"could not write {AUTH_SESSIONS_FILE.name}: {exc}", extra={"event": "auth"})
+
+    def add(self, sid: str, exp: int) -> None:
+        with self._lock:
+            table = self._live()
+            table[sid] = exp
+            while len(table) > self.MAX_ENTRIES:
+                del table[min(table, key=table.__getitem__)]
+            self._save(table)
+
+    def __contains__(self, sid: str) -> bool:
+        with self._lock:
+            return bool(sid) and sid in self._live()
+
+    def discard(self, sid: str) -> bool:
+        with self._lock:
+            table = self._live()
+            if table.pop(sid, None) is None:
+                return False
+            self._save(table)
+            return True
+
+
+LOGIN_SESSIONS = _LoginSessions()
+
+
+def _sign(payload: str) -> str:
+    return base64.urlsafe_b64encode(
         hmac.new(AUTH_SECRET_KEY, payload.encode("ascii"), hashlib.sha256).digest()
     ).decode("ascii").rstrip("=")
-    return f"{payload}.{sig}"
+
+
+def _make_auth_cookie() -> str:
+    now = int(time.time())
+    sid = os.urandom(16).hex()
+    exp = now + AUTH_TTL_SECONDS
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"iat": now, "exp": exp, "sid": sid}).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    LOGIN_SESSIONS.add(sid, exp)
+    return f"{payload}.{_sign(payload)}"
+
+
+def _signed_cookie_payload(value: str) -> dict[str, Any] | None:
+    """The payload of a cookie this server signed, or None."""
+    if not value or "." not in value:
+        return None
+    payload, _, sig = value.rpartition(".")
+    if not payload or not sig:
+        return None
+    try:
+        if not hmac.compare_digest(sig, _sign(payload)):
+            return None
+        padded = payload + "=" * (-len(payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except (ValueError, TypeError):  # bad base64/JSON/UTF-8, or a non-ASCII cookie
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _verify_auth_cookie(value: str) -> bool:
-    if not value or "." not in value:
-        return False
-    payload, _, sig = value.rpartition(".")
-    if not payload or not sig:
-        return False
-    expected_sig = base64.urlsafe_b64encode(
-        hmac.new(AUTH_SECRET_KEY, payload.encode("ascii"), hashlib.sha256).digest()
-    ).decode("ascii").rstrip("=")
-    if not hmac.compare_digest(sig, expected_sig):
+    data = _signed_cookie_payload(value)
+    if data is None:
         return False
     try:
-        padded = payload + "=" * (-len(payload) % 4)
-        data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-        return int(data.get("exp", 0)) > int(time.time())
-    except (ValueError, json.JSONDecodeError):
+        if int(data.get("exp", 0)) <= int(time.time()):
+            return False
+    except (TypeError, ValueError):
         return False
+    # Cookies issued before session ids existed carry none: a one-time re-login.
+    return str(data.get("sid") or "") in LOGIN_SESSIONS
+
+
+def revoke_auth_cookie(value: str) -> bool:
+    """Logout: forget this cookie's session id, so every copy of the cookie
+    stops working, not only the one the browser deletes. True when a live
+    session was ended."""
+    data = _signed_cookie_payload(value)
+    if data is None:
+        return False
+    return LOGIN_SESSIONS.discard(str(data.get("sid") or ""))
 
 
 def _make_csrf_token(cookie_value: str) -> str:

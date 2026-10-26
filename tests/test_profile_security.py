@@ -174,6 +174,68 @@ class TestProfileHostBinding(ProfileFixtureMixin, unittest.TestCase):
         self.assertEqual(result["password"], "prod-secret")
 
 
+class TestResaveKeepsSecretsBound(ProfileFixtureMixin, unittest.TestCase):
+    """Re-saving a profile at a new target must not carry its secrets along.
+
+    The defect (review S2): a save with the "(saved)" placeholder kept the
+    encrypted passwords while host/port/user changed. The guard above compares
+    the request against the STORED profile, so it then approved the new host.
+    """
+
+    def setUp(self):
+        self._patch(profiles_mod, "encrypt_profile_secret", lambda raw, *, name, field: f"enc:v2:typed-{field}")
+
+    def _resave(self, **changes):
+        data = dict(STORED_PROFILE, password=SAVED, wmiPassword=SAVED)
+        data.update(changes)
+        stored = dict(STORED_PROFILE, _enc_password="enc:v2:stored-pw", _enc_wmiPassword="enc:v2:stored-wmi")
+        return profiles_mod.profile_record_for_save("prod-nw", data, stored)
+
+    def test_unchanged_target_keeps_both_secrets(self):
+        record = self._resave(reportRange="7d")
+        self.assertEqual(record["_enc_password"], "enc:v2:stored-pw")
+        self.assertEqual(record["_enc_wmiPassword"], "enc:v2:stored-wmi")
+        self.assertNotIn("password", record)
+
+    def test_respelled_same_target_keeps_the_secrets(self):
+        record = self._resave(restApiHost="https://PROD-NW.corp.local:9090")
+        self.assertEqual(record["_enc_password"], "enc:v2:stored-pw")
+
+    def test_every_bound_field_drops_the_secrets(self):
+        for field, value in (
+            ("restApiHost", "attacker.example"),
+            ("restApiPort", "9443"),
+            ("backupServerHost", "attacker.example"),
+            ("backupServerPort", "9443"),
+            ("username", "someone-else"),
+            ("verifyTls", False),
+        ):
+            with self.subTest(field=field):
+                record = self._resave(**{field: value})
+                self.assertNotIn("_enc_password", record)
+                self.assertNotIn("_enc_wmiPassword", record)
+                self.assertEqual(record[field], value)
+
+    def test_blank_password_is_treated_like_the_placeholder(self):
+        record = self._resave(restApiHost="attacker.example", password="", wmiPassword="")
+        self.assertNotIn("_enc_password", record)
+
+    def test_typed_password_is_stored_for_the_new_target(self):
+        record = self._resave(restApiHost="dr-nw.corp.local", password="new-pw")
+        self.assertEqual(record["_enc_password"], "enc:v2:typed-password")
+        self.assertNotIn("_enc_wmiPassword", record)  # not retyped, so not carried either
+
+    def test_unparseable_target_drops_the_secrets_without_failing_the_save(self):
+        record = self._resave(restApiHost="not a/host")
+        self.assertNotIn("_enc_password", record)
+
+    def test_guard_then_has_nothing_to_send_to_the_new_host(self):
+        self.use_profiles({"prod-nw": self._resave(restApiHost="attacker.example")})
+        with self.assertRaises(BadRequest) as ctx:
+            profiles_mod._resolve_profile_password(_payload(restApiHost="attacker.example"))
+        self.assertIn("has no saved password", str(ctx.exception))
+
+
 class TestDecryptFailureMessage(ProfileFixtureMixin, unittest.TestCase):
     """A dead key must not be reported as 'Password is required.'"""
 
@@ -616,6 +678,33 @@ class TestProfilesApiEndToEnd(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertNotIn("prod-nw", body["profiles"])
         self.assertEqual(body["sessionsPurged"], 0)
+
+    def test_05_resave_at_a_new_host_drops_the_saved_password(self):
+        status, body = self._post_api("/api/profiles", {
+            "action": "save", "name": "reaim", "data": dict(STORED_PROFILE, password="prod-secret"),
+        })
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["profiles"]["reaim"]["password"], SAVED)
+        # The UI re-submits the "(saved)" placeholder it was given.
+        status, body = self._post_api("/api/profiles", {
+            "action": "save", "name": "reaim",
+            "data": dict(STORED_PROFILE, restApiHost="attacker.example", password=SAVED),
+        })
+        self.assertEqual(status, 200, body)
+        self.assertNotEqual(body["profiles"]["reaim"].get("password"), SAVED)
+        status, body = self._post_api("/api/dashboard", {
+            "profileName": "reaim",
+            "restApiHost": "attacker.example",
+            "restApiPort": "9090",
+            "backupServerHost": "authc.corp.local",
+            "backupServerPort": "9090",
+            "username": "administrator",
+            "password": SENTINEL,
+            "verifyTls": True,
+        })
+        self.assertEqual(status, 400, body)
+        self.assertIn("has no saved password", body.get("error", ""))
+        self._post_api("/api/profiles", {"action": "delete", "name": "reaim"})
 
 
 if __name__ == "__main__":

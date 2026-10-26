@@ -32,11 +32,10 @@ from .auth import (
     _record_login_failure,
     _verify_auth_cookie,
     _verify_csrf_token,
+    revoke_auth_cookie,
     verify_auth_password,
 )
 from .config import (
-    _PROFILE_PW_SAVED,
-    _PROFILE_PW_SENTINEL,
     APP_NAME,
     APP_VERSION,
     AUTH_TTL_SECONDS,
@@ -76,11 +75,11 @@ from .profiles import (
     _mask_profiles,
     _resolve_profile_password,
     load_profiles,
+    profile_record_for_save,
     save_profiles,
     validate_payload,
 )
 from .reports import build_excel_report
-from .secrets import SecretEncryptionError, encrypt_profile_secret
 from .sessions import (
     build_dashboard,
     build_dashboard_from_session,
@@ -263,6 +262,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _csrf_ok(self) -> bool:
         token = self.headers.get("X-CSRF-Token") or ""
         return _verify_csrf_token(self._session_cookie_value(), token)
+
+    def _json_body_declared(self) -> bool:
+        # A cross-site page can POST text/plain, form-urlencoded or multipart
+        # without a CORS preflight; application/json forces one, and this server
+        # never answers a preflight. Our UI always sends JSON.
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0]
+        return content_type.strip().lower() == "application/json"
+
+    def _same_origin(self) -> bool:
+        # Browsers attach Sec-Fetch-Site and Origin to cross-site POSTs; clients
+        # that send neither (curl, scripts, the tests) are not browsers acting
+        # for the operator, so they are let through.
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site and site != "same-origin":
+            return False
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        if not origin:
+            return True
+        host = (self.headers.get("Host") or "").strip().lower()
+        return bool(host) and origin == f"https://{host}"
 
     def _send_json_with_cookie(self, status: int, payload: dict[str, Any], cookie_value: str, max_age: int) -> None:
         body = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
@@ -515,13 +534,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.request_id = uuid.uuid4().hex[:8]
         self._body_consumed = False  # one handler instance serves many keep-alive requests
         path = urlparse(self.path).path
+        # Cross-site gate for EVERY POST, with or without a password. The CSRF
+        # token below exists only when auth is on, so without these a page the
+        # operator visits could drive the API of a password-less install.
+        if not self._json_body_declared():
+            self._drain_request_body()
+            self._send_error_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json.")
+            return
+        if not self._same_origin():
+            self._drain_request_body()
+            self._send_error_json(HTTPStatus.FORBIDDEN, "Cross-origin request refused.")
+            return
         # Always-open auth endpoints
         if path == "/api/login":
             self._handle_login()
             return
         if path == "/api/logout":
             self._drain_request_body()
-            self._send_json_with_cookie(HTTPStatus.OK, {"ok": True}, "", 0)
+            # Revoke the session itself: expiring the cookie only removes this
+            # browser's copy, and any other copy would stay valid until expiry.
+            revoked = revoke_auth_cookie(self._session_cookie_value())
+            self._send_json_with_cookie(HTTPStatus.OK, {"ok": True, "revoked": revoked}, "", 0)
             return
         # Every early-error path below MUST drain the request body first, or
         # the unread bytes poison the next request on this keep-alive socket.
@@ -617,30 +650,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             raise BadRequest("Profile name required.")
                         if not isinstance(data, dict):
                             raise BadRequest("Profile data must be an object.")
-                        # Encrypt password fields; keep all other fields as-is
-                        safe: dict[str, Any] = {}
-                        for k, v in data.items():
-                            if k in ("password", "wmiPassword"):
-                                raw = str(v or "").strip()
-                                if raw and raw not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
-                                    try:
-                                        # AAD-bound to this profile+field: the blob
-                                        # cannot be moved to another profile/slot.
-                                        safe[f"_enc_{k}"] = encrypt_profile_secret(raw, name=name, field=k)
-                                    except SecretEncryptionError as exc:
-                                        # Never store "" as though the password saved.
-                                        raise BadRequest(str(exc)) from exc
-                                elif k in profiles.get(name, {}):
-                                    # Keep existing encrypted value if no new one provided
-                                    safe[f"_enc_{k}"] = profiles[name].get(f"_enc_{k}", "")
-                            else:
-                                safe[k] = v
-                        # Preserve existing encrypted passwords not touched this save
-                        existing = profiles.get(name, {})
-                        for enc_key in ("_enc_password", "_enc_wmiPassword"):
-                            if enc_key not in safe and enc_key in existing:
-                                safe[enc_key] = existing[enc_key]
-                        profiles[name] = safe
+                        # Encrypts typed passwords; keeps stored ones only while
+                        # the profile still targets the same connection.
+                        profiles[name] = profile_record_for_save(name, data, profiles.get(name, {}))
                         save_profiles(profiles)
                         self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(profiles)})
                     elif action == "delete":
@@ -755,10 +767,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
 class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False
     daemon_threads = True
+    # Set by run(). The LISTENING socket stays plain TCP: wrapping it made
+    # accept() run each TLS handshake on the serve_forever thread, so one client
+    # that connected and never sent a ClientHello blocked every new connection.
+    # Each accepted socket is wrapped instead, and handshakes in its worker.
+    ssl_context: ssl.SSLContext | None = None
 
     def __init__(self, *args: Any, max_connections: int = DEFAULT_MAX_CONNECTIONS, **kwargs: Any) -> None:
         self._conn_semaphore = threading.BoundedSemaphore(max(1, int(max_connections)))
         super().__init__(*args, **kwargs)
+
+    def get_request(self) -> tuple[Any, Any]:
+        request, client_address = super().get_request()
+        if self.ssl_context is not None:
+            # No I/O here: the handshake is deferred to the worker thread.
+            request = self.ssl_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
+        return request, client_address
+
+    def _tls_handshake(self, request: Any, client_address: Any) -> bool:
+        """Complete a deferred handshake, bounded by the request timeout. A failed
+        or stalled handshake drops only this connection."""
+        request.settimeout(_cfg.REQUEST_TIMEOUT_SECONDS)
+        try:
+            request.do_handshake()
+        except (OSError, ValueError) as exc:  # SSLError and timeouts are OSErrors
+            LOG.debug(f"TLS handshake with {client_address} failed: {exc}")
+            self.shutdown_request(request)
+            return False
+        return True
 
     def server_bind(self) -> None:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -793,6 +829,8 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
         try:
+            if isinstance(request, ssl.SSLSocket) and not self._tls_handshake(request, client_address):
+                return
             super().process_request_thread(request, client_address)
         finally:
             self._release_slot()
@@ -853,7 +891,7 @@ def can_exclusively_bind_port(bind_host: str, port: int) -> bool:
 
 def bind_dashboard_server(
     bind_host: str, requested_port: int, max_connections: int = DEFAULT_MAX_CONNECTIONS
-) -> tuple[ThreadingHTTPServer, int, bool]:
+) -> tuple[ExclusiveThreadingHTTPServer, int, bool]:
     if requested_port != 0 and not can_exclusively_bind_port(bind_host, requested_port):
         server = ExclusiveThreadingHTTPServer((bind_host, 0), DashboardHandler, max_connections=max_connections)
         return server, int(server.server_address[1]), True

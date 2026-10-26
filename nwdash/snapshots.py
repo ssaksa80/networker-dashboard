@@ -23,10 +23,12 @@ from .config import (
     EMAIL_CONFIG_FILE,
     EMAIL_PROFILES_FILE,
     HOST_PATTERN,
+    LOG,
     THEME_PALETTES,
     TIME_HHMM_PATTERN,
     UI_PREFS_FILE,
     debug_log,
+    safe_log_text,
 )
 from .models import SHARED_DASHBOARD_LOCK, SHARED_DASHBOARD_STATE, SHARED_REFRESH_STOP, BadRequest
 from .profiles import SNAPSHOTS_LOCK, parse_port
@@ -463,6 +465,87 @@ def saved_email_smtp_password() -> str:
     return ""
 
 
+# ── Stored SMTP secret <-> server binding ─────────────────────────────────────
+# A stored SMTP password may only travel to the server it was saved for: SMTP
+# AUTH hands it to whoever answers on smtpHost. Without this, a caller could
+# pair the saved password with its own smtpHost on a `test` email and receive
+# it. As with connection profiles (profiles._resolve_profile_password), a stored
+# secret is substituted only when the request names the same server, and a save
+# that re-aims the server drops the stored secret instead of carrying it along.
+_SMTP_BOUND_FIELD_LABELS = ("SMTP server", "SMTP port", "SMTP username", "SMTP security")
+
+
+def smtp_target(host: Any, port: Any, username: Any, security: Any) -> tuple[str, int, str, str]:
+    """The server a stored SMTP secret is bound to, normalized as
+    parse_smtp_settings normalizes a request (and the host case-insensitively)."""
+    try:
+        port_number = int(str(port or 587).strip())
+    except ValueError:
+        port_number = -1  # unparseable: matches no saved port
+    return (
+        str(host or "").strip().lower(),
+        port_number,
+        str(username or "").strip(),
+        str(security or "starttls").strip().lower(),
+    )
+
+
+def settings_smtp_target(settings: dict[str, Any]) -> tuple[str, int, str, str]:
+    """smtp_target of a parse_smtp_settings result."""
+    return smtp_target(
+        settings["smtp_host"], settings["smtp_port"], settings["smtp_username"], settings["smtp_security"]
+    )
+
+
+def smtp_target_changes(saved: tuple[str, int, str, str], requested: tuple[str, int, str, str]) -> list[str]:
+    """Labels of the binding fields that differ; empty when a secret stored for
+    `saved` may be sent to `requested`."""
+    return [
+        label
+        for label, was, now in zip(_SMTP_BOUND_FIELD_LABELS, saved, requested, strict=True)
+        if was != now
+    ]
+
+
+def smtp_secret_refused(
+    source: str, saved: tuple[str, int, str, str], requested: tuple[str, int, str, str]
+) -> BadRequest:
+    """Log and return the error for a request that would send `source`'s stored
+    SMTP password to a server other than the one it was saved for."""
+    changes = smtp_target_changes(saved, requested)
+    LOG.warning(
+        "refused to send the stored SMTP password of the %s to a different server "
+        "(changed: %s; saved host=%s, requested host=%s)",
+        safe_log_text(source, 80),
+        ", ".join(changes),
+        safe_log_text(saved[0], 120),
+        safe_log_text(requested[0], 120),
+        extra={"event": "smtp_target_mismatch"},
+    )
+    return BadRequest(
+        f"The SMTP password saved with the {source} can only be sent to its own server "
+        f"({saved[2] or '(no username)'}@{saved[0]}:{saved[1]}). This request changed: {', '.join(changes)}. "
+        "Enter the SMTP password to use a different server."
+    )
+
+
+def _config_smtp_target(smtp: dict[str, Any]) -> tuple[str, int, str, str]:
+    return smtp_target(smtp.get("host"), smtp.get("port"), smtp.get("username"), smtp.get("security"))
+
+
+def saved_email_smtp_secret() -> tuple[tuple[str, int, str, str], str]:
+    """(bound server, password) of the shared SMTP transport in email_config.json."""
+    smtp = load_email_config().get("smtp")
+    smtp = smtp if isinstance(smtp, dict) else {}
+    return _config_smtp_target(smtp), decrypt_process_secret(str(smtp.get("encrypted_password") or ""))
+
+
+def _email_profile_smtp_target(profile: dict[str, Any]) -> tuple[str, int, str, str]:
+    return smtp_target(
+        profile.get("smtpHost"), profile.get("smtpPort"), profile.get("smtpUsername"), profile.get("smtpSecurity")
+    )
+
+
 # ── Named email notification profiles ───────────────────────────────────────
 # data/email_profiles.json: {name: {smtpHost, smtpPort, ..., _enc_smtpPassword}}
 # — the same field set the Email Alert Automation modal submits (validated via
@@ -528,6 +611,10 @@ def save_email_profile(name: str, payload: dict[str, Any]) -> dict[str, Any]:
         raw_password = settings["smtp_password"]
         if raw_password and raw_password not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
             encrypted = encrypt_profile_secret(raw_password, name=name, field="smtpPassword")
+        elif smtp_target_changes(_email_profile_smtp_target(existing), settings_smtp_target(settings)):
+            # Re-aimed at another server with no new password: the stored one
+            # stays bound to the server it was saved for, so drop it.
+            encrypted = ""
         else:
             # Blank or sentinel password on save keeps the stored one.
             encrypted = str(existing.get("_enc_smtpPassword") or "")
@@ -598,7 +685,8 @@ def resolve_email_profile_password(payload: dict[str, Any]) -> dict[str, Any]:
     """When the form submits the "(saved)" sentinel (a loaded email profile),
     swap in the profile's stored SMTP password before parsing. Falls back to
     empty (→ existing automation / saved email-config password) when there is
-    no matching stored secret."""
+    no matching stored secret. Refuses (BadRequest) when the request names a
+    different server from the one the profile's password was saved for."""
     password = str(payload.get("smtpPassword") or "")
     if password not in (_PROFILE_PW_SENTINEL, _PROFILE_PW_SAVED):
         return payload
@@ -608,7 +696,14 @@ def resolve_email_profile_password(payload: dict[str, Any]) -> dict[str, Any]:
         with EMAIL_PROFILES_LOCK:
             profiles = load_email_profiles()
         profile = profiles.get(name)
-        if isinstance(profile, dict):
+        if isinstance(profile, dict) and profile.get("_enc_smtpPassword"):
+            saved = _email_profile_smtp_target(profile)
+            requested = smtp_target(
+                payload.get("smtpHost"), payload.get("smtpPort"),
+                payload.get("smtpUsername"), payload.get("smtpSecurity"),
+            )
+            if smtp_target_changes(saved, requested):
+                raise smtp_secret_refused(f"email profile '{name}'", saved, requested)
             stored = decrypt_profile_secret(
                 str(profile.get("_enc_smtpPassword") or ""), name=name, field="smtpPassword"
             )
@@ -625,10 +720,13 @@ def save_email_config_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     with EMAIL_CONFIG_LOCK:
         cfg = load_email_config()
         prev_smtp = cfg.get("smtp") if isinstance(cfg.get("smtp"), dict) else {}
-        # Keep the previously saved password if the form left it blank.
+        # Keep the previously saved password if the form left it blank, unless
+        # the form re-aims the transport at another server (see smtp_target).
         encrypted = str(prev_smtp.get("encrypted_password") or "")
         if settings["smtp_password"]:
             encrypted = encrypt_process_secret(settings["smtp_password"])
+        elif smtp_target_changes(_config_smtp_target(prev_smtp), settings_smtp_target(settings)):
+            encrypted = ""
         smtp = {
             "host": settings["smtp_host"],
             "port": settings["smtp_port"],

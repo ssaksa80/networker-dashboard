@@ -112,6 +112,7 @@ EMAIL_CONFIG_FILE = DATA_DIR / "email_config.json"
 EMAIL_PROFILES_FILE = DATA_DIR / "email_profiles.json"
 AUTH_KEY_FILE = DATA_DIR / ".auth_key"
 AUTH_CONFIG_FILE = DATA_DIR / "auth.json"
+AUTH_SESSIONS_FILE = DATA_DIR / "auth_sessions.json"
 COOKIE_NAME = "nwdash_auth"
 AUTH_TTL_SECONDS = 43200  # 12 hours
 PBKDF2_ITERATIONS = 200_000

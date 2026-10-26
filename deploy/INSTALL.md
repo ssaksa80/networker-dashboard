@@ -156,6 +156,7 @@ Setup-NWDash.cmd -InstallDir D:\apps\nwdash   custom install directory
 Setup-NWDash.cmd -Port 9443                   custom HTTPS port
 Setup-NWDash.cmd -BindHost 192.0.2.10         pin ONE interface (co-tenancy)
 Setup-NWDash.cmd -AuthPassword <pw>           set the dashboard password
+Setup-NWDash.cmd -AllowUnauthenticated        run with NO password (isolated networks only)
 Setup-NWDash.cmd -AllowedHosts 198.51.100.0/24  NetWorker host allow-list
 Setup-NWDash.cmd -NoUpdate ...                skip the release check
 ```
@@ -197,8 +198,17 @@ Setup-NWDash.cmd -AuthPassword <choose-a-password>
 The app reads `DASHBOARD_AUTH_PASSWORD` once at first boot, persists a
 **salted PBKDF2 hash** in `data\auth.json`, and the installer then **removes
 the plaintext from the service environment** — it never stays in the
-registry. Without a password the dashboard runs unauthenticated; set one on
-any host other than a lab box.
+registry.
+
+A password is **required** unless the dashboard is bound to loopback
+(`-BindHost 127.0.0.1`): with no `-AuthPassword` and no stored
+`data\auth.json`, the installer refuses before it changes anything, and the
+app itself refuses to start on a network bind without one. `-Upgrade` checks
+the installed service the same way before stopping it. To run without a
+password on an isolated network anyway, pass `-AllowUnauthenticated`: the
+installer then sets `DASHBOARD_ALLOW_UNAUTHENTICATED=1` in the service
+environment, and anyone who can reach the port can read backup data and change
+the configuration.
 
 ### Legacy scheduled-task migration
 
