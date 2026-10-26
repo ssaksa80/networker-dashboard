@@ -97,9 +97,10 @@ and rollback is clean.
 keys in `ui_prefs.json`) are ignored by v2.13.1. A console-saved allow-list
 stops applying until you set `-AllowedHosts` again.
 
-**CI note:** GitHub Actions is billing-blocked for this account. The gates
-(ruff 0.17.2 + the full 246-test suite) were run **locally** on Windows, on
-Python 3.13 and on this bundle's embedded Python 3.12.10: both green.
+**Gates:** GitHub Actions (tests + secret scan) green on the release commit.
+The gates (ruff 0.17.2 + the full 246-test suite) were also run **locally**
+on Windows, on Python 3.13 and on this bundle's embedded Python 3.12.10: both
+green. The bundle was booted in the installed layout on its own runtime.
 
 ---
 
