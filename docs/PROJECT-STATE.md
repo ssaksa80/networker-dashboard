@@ -55,6 +55,35 @@ extraction (SHA-256 against the prior revision).
   flag default to verify (fail closed). The startup self-test pins the
   server's own certificate instead of disabling verification.
 
+## Designs, sidebar and admin console
+
+- **Four designs** (`body[data-design]`): Daylight (the 15 themes, as
+  before), Aurora Flow, Command Deck and DEDB Navy. `assets/design.css`
+  holds their palettes (they override the theme variables app.css uses) and
+  the sidebar, hero and motion styles; `assets/design.js` switches them. A
+  viewer's choice lives in their browser; the admin console sets the default.
+  No library and no CDN: the "glow flow" is CSS (`@property --g` keyframes,
+  background-position beams, SVG `animateMotion`) plus a small tween.
+  Reduced-motion systems always get motion off.
+- **Sidebar**: docked, collapsed to icons, or floating (drag by the header,
+  double-click to park, minimise to a button); on narrow screens it slides
+  over the page. The connection form and the old account-menu buttons moved
+  into it with their ids unchanged, so app.js still binds them.
+- **Protection-flow hero**: drawn from the dashboard payload only
+  (`summary` counts and `tables.jobs`), via `NWDesign.onDashboard(data)`
+  called at the end of app.js `renderDashboard`.
+- **Admin console** at `/admin` (`assets/admin.*`, `nwdash/admin.py`),
+  modelled on DEDB's: title bar, tab strip, 12 sections, audit log. DEDB gates
+  on an admin role; here the gate is signed in **and** the password typed
+  again within 15 minutes (the "admin window", kept in memory per login and
+  extended by each admin request). With no password set, `/admin` opens only
+  to a browser on the server itself and offers to set the first password.
+  Every `/api/admin/*` route re-checks this; POSTs also keep the global JSON,
+  same-origin and CSRF rules. Sections that edit existing data
+  (connections, email, schedules, snapshots) call the same routes the
+  dashboard uses, which stay as open to a signed-in user as before; those
+  routes now write audit entries too.
+
 ## Verification
 
 ```
@@ -80,9 +109,11 @@ how it comes back after a restart/update/crash:
 | `data/email_config.json` | Shared SMTP transport + per-type recipients | Read on demand (`load_email_config`) |
 | `data/sessions.json` | Encrypted NetWorker dashboard sessions | `restore_sessions_from_disk()` at boot (re-login; best effort) |
 | `data/profiles.json` | Connection profiles (encrypted passwords) | Read on demand (`load_profiles`) |
-| `data/ui_prefs.json` | Dashboard theme | Read on demand (`load_ui_theme`) |
+| `data/ui_prefs.json` | Dashboard theme, plus the default design, motion level and sidebar mode set in the admin console | Read on demand (`load_ui_theme`, `load_ui_prefs`); saves merge keys |
 | `data/auth.json` | Gateway password hash | Read at boot by `auth.py` |
-| `data/auth_sessions.json` | Live gateway login session ids and their expiry; logout removes one | Loaded by `auth.py` on first cookie check; expired ids are pruned |
+| `data/auth_sessions.json` | Live gateway login session ids, their expiry, and when/where each signed in; logout removes one | Loaded by `auth.py` on first cookie check; expired ids are pruned. Files from before the metadata (bare expiry numbers) still load |
+| `data/audit.jsonl` (+ `.1`) | Admin console audit log: sign-ins, failed sign-ins and every change, with old/new values (never passwords) | Appended by `admin.audit()`; rotated once at 2 MB |
+| `data/allowed_hosts.json` | NetWorker host allow-list saved from the admin console | Read at boot only when neither `--allowed-hosts` nor `DASHBOARD_ALLOWED_HOSTS` is set (those win, and make the list read-only in the console) |
 | `data/networker_snapshots.json`, `data/auto_snapshot_config.json` | Local snapshots + auto-save flag | Read on demand |
 | `data/last_good_dashboard.json` | Last successful dashboard (stale fallback) | Read on demand |
 | `data/.session_key`, `data/.auth_key` | DPAPI-wrapped encryption/HMAC keys | Loaded at import in `secrets.py` |

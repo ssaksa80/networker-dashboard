@@ -113,6 +113,13 @@ EMAIL_PROFILES_FILE = DATA_DIR / "email_profiles.json"
 AUTH_KEY_FILE = DATA_DIR / ".auth_key"
 AUTH_CONFIG_FILE = DATA_DIR / "auth.json"
 AUTH_SESSIONS_FILE = DATA_DIR / "auth_sessions.json"
+AUDIT_FILE = DATA_DIR / "audit.jsonl"
+AUDIT_MAX_BYTES = 2 * 1024 * 1024  # then rotated once to audit.jsonl.1
+CONSOLE_ALLOWLIST_FILE = DATA_DIR / "allowed_hosts.json"
+ADMIN_UNLOCK_SECONDS = 15 * 60  # admin changes ask for the password again after this long idle
+UI_DESIGNS = ("daylight", "aurora", "command", "dedb")
+UI_MOTION_LEVELS = ("full", "subtle", "off")
+UI_SIDEBAR_MODES = ("dock", "float")
 COOKIE_NAME = "nwdash_auth"
 AUTH_TTL_SECONDS = 43200  # 12 hours
 PBKDF2_ITERATIONS = 200_000
@@ -185,3 +192,12 @@ def debug_log(message: str) -> None:
 DEFAULT_MAX_SSE_CLIENTS = 50
 MAX_SSE_CLIENTS = DEFAULT_MAX_SSE_CLIENTS
 ALLOWLIST_ENABLED = False
+# Where the allow-list came from at boot: "startup" (--allowed-hosts or
+# DASHBOARD_ALLOWED_HOSTS, read-only in the admin console), "console" (saved
+# by the admin console in CONSOLE_ALLOWLIST_FILE) or "none".
+ALLOWLIST_SOURCE = "none"
+# True when --auth-password / DASHBOARD_AUTH_PASSWORD set the password this
+# boot: a password changed in the admin console is then replaced at restart.
+AUTH_PASSWORD_FROM_STARTUP = False
+TLS_CERT_FILE = ""  # the serving certificate, set by run()
+TLS_CERT_AUTO = False  # True when run() generated/used the self-signed one

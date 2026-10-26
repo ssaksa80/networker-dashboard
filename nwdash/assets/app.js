@@ -357,6 +357,7 @@
         bad: "rgba(189, 43, 58, 0.95)",
       };
       topStatus.style.background = colors[tone] || colors.neutral;
+      topStatus.dataset.tone = colors[tone] ? tone : "neutral";
     }
 
     function setLoading(loading) {
@@ -964,6 +965,8 @@
       refreshSnapshotStatus();
       scheduleAutoRefresh();
       scheduleServerHealthRefresh();
+      // design.js: the protection-flow hero, metric count-ups, sidebar badges.
+      if (window.NWDesign) window.NWDesign.onDashboard(data);
     }
 
     function renderFailure(data, fallbackMessage) {
@@ -986,6 +989,7 @@
         : (fallbackMessage || "Unable to load dashboard.");
       notice.classList.add("show");
       setStatus("REST API failed", "bad");
+      if (window.NWDesign) window.NWDesign.onReset();
     }
 
     function resetDashboard() {
@@ -1023,6 +1027,7 @@
       document.body.classList.remove("connected");
       document.body.classList.add("connection-open");
       refreshBtn.disabled = false;
+      if (window.NWDesign) window.NWDesign.onReset();
     }
 
     function currentRefreshMs() {
