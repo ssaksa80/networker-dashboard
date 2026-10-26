@@ -7,14 +7,15 @@ from __future__ import annotations
 import base64
 import json
 import re
-import subprocess
 import socket
+import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
 from .config import safe_log_text
 from .models import ApiConfig
+
 
 def unavailable_server_health(detail: str = "CPU/RAM metrics were not exposed by the tested endpoints.") -> dict[str, Any]:
     return {

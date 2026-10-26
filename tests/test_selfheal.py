@@ -1,7 +1,9 @@
 """The one flaw the original engine had: a schedule without a session snapshot
 went silently inert. These tests pin the self-healing behavior that fixes it."""
 import importlib
+
 from nwdash import emailer
+
 
 def _rec(host="10.0.0.9"):
     return {"session_id": "s-live", "last_used": 9.0, "encrypted_networker_password": "enc",

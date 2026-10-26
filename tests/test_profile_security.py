@@ -28,9 +28,9 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from nwdash import profiles as profiles_mod  # noqa: E402
-from nwdash import secrets as secrets_mod  # noqa: E402
-from nwdash.models import BadRequest  # noqa: E402
+from nwdash import profiles as profiles_mod
+from nwdash import secrets as secrets_mod
+from nwdash.models import BadRequest
 
 SENTINEL = "__profile_password__"
 SAVED = "(saved)"
@@ -120,9 +120,8 @@ class TestProfileHostBinding(ProfileFixtureMixin, unittest.TestCase):
             {"username": "someone-else"},
             {"verifyTls": False},
         ):
-            with self.subTest(**override):
-                with self.assertRaises(BadRequest):
-                    profiles_mod._resolve_profile_password(_payload(**override))
+            with self.subTest(**override), self.assertRaises(BadRequest):
+                profiles_mod._resolve_profile_password(_payload(**override))
 
     def test_url_and_case_spellings_of_the_same_host_still_work(self):
         for spelling in (
@@ -242,6 +241,7 @@ class TestProfileSecretAad(unittest.TestCase):
     def test_v1_blobs_still_decrypt(self):
         """Existing saved profiles must not break on the format change."""
         import base64
+
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         key = secrets_mod._derive_profile_key()
         nonce = os.urandom(12)
@@ -276,6 +276,7 @@ class TestProfileSecretMigration(ProfileFixtureMixin, unittest.TestCase):
 
     def _v1(self, plaintext):
         import base64
+
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         nonce = os.urandom(12)
         ct = AESGCM(secrets_mod._derive_profile_key()).encrypt(nonce, plaintext.encode(), b"profile")
@@ -495,7 +496,7 @@ class TestProfilesApiEndToEnd(unittest.TestCase):
         cls.port = _free_port()
         env = dict(os.environ)
         env["DASHBOARD_AUTH_PASSWORD"] = PASSWORD
-        cls.stdout_log = open(root / "server-stdout.log", "wb")
+        cls.stdout_log = cls.enterClassContext(open(root / "server-stdout.log", "wb"))
         try:
             cls.proc = subprocess.Popen(
                 [sys.executable, "networker_dashboard.py",

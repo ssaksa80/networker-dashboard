@@ -56,7 +56,7 @@ class TestThemeLockstep(unittest.TestCase):
         self.assertEqual(parse_theme(""), "default")
 
     def test_js_theme_picker_names_match_backend(self):
-        block = re.search(r"const THEMES = \[(.*?)\];", self.js, re.S)
+        block = re.search(r"const THEMES = \[(.*?)\];", self.js, re.DOTALL)
         self.assertIsNotNone(block, "THEMES const missing from app.js")
         names = set(re.findall(r'\[\s*"(\w+)"', block.group(1)))
         self.assertEqual(names, EXPECTED_THEMES)
@@ -65,7 +65,7 @@ class TestThemeLockstep(unittest.TestCase):
 
     def test_html_select_fallback_lists_all_15_themes(self):
         select = re.search(
-            r'<select id="themeSelect".*?</select>', self.html, re.S
+            r'<select id="themeSelect".*?</select>', self.html, re.DOTALL
         )
         self.assertIsNotNone(select)
         options = set(re.findall(r'<option value="(\w+)"', select.group(0)))

@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -23,9 +23,10 @@ from .config import (
     debug_log,
     safe_log_text,
 )
-from .ui import networker_logo_src
 from .models import generated_at
 from .snapshots import report_theme_palette
+from .ui import networker_logo_src
+
 
 def dashboard_alert_lines(dashboard: dict[str, Any]) -> tuple[str, list[str]]:
     summary = dashboard.get("summary") or {}
@@ -616,7 +617,7 @@ def render_dashboard_snapshot_png(dashboard: dict[str, Any]) -> bytes | None:
             f"--screenshot={png_path}",
             html_path.as_uri(),
         ]
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
         if result.returncode != 0 or not png_path.exists():
             debug_log(f"Dashboard email snapshot failed: {result.stderr or result.stdout or result.returncode}")
             return None
@@ -654,8 +655,8 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
     sla_missed = report_int(summary.get("slaMissedJobs"))
     range_label = str(summary.get("rangeLabel") or summary.get("range") or "Selected range")
     generated = str(dashboard.get("generatedAt") or generated_at())
-    backup_server = str((target.get("backupServer") or "--"))
-    api_mode = str((target.get("apiMode") or "--")).upper()
+    backup_server = str(target.get("backupServer") or "--")
+    api_mode = str(target.get("apiMode") or "--").upper()
     connection_label, connection_color = report_connection_label(summary)
     server_status = str(health.get("label") or "Unavailable")
     server_status_color = palette["green"] if str(health.get("status") or "").lower() == "ok" else palette["red"]
@@ -1054,7 +1055,7 @@ def simple_rels_xml(target: str, rel_type: str) -> str:
 
 
 def core_props_xml() -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
  xmlns:dc="http://purl.org/dc/elements/1.1/"

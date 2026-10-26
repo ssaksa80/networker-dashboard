@@ -10,7 +10,7 @@ import logging.handlers
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -130,7 +130,7 @@ _LOG_EXTRA_KEYS = ("request_id", "client", "status", "path", "event")
 class _JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         obj = {
-            "ts": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            "ts": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "msg": record.getMessage(),

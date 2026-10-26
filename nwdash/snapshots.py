@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .config import (
+    _PROFILE_PW_SAVED,
+    _PROFILE_PW_SENTINEL,
     ALERT_AUTOMATION_MAX_INTERVAL_MINUTES,
     ALERT_AUTOMATION_MIN_INTERVAL_MINUTES,
     AUTO_SNAPSHOT_FILE,
@@ -24,18 +26,17 @@ from .config import (
     THEME_PALETTES,
     TIME_HHMM_PATTERN,
     UI_PREFS_FILE,
-    _PROFILE_PW_SAVED,
-    _PROFILE_PW_SENTINEL,
     debug_log,
 )
+from .models import SHARED_DASHBOARD_LOCK, SHARED_DASHBOARD_STATE, SHARED_REFRESH_STOP, BadRequest
+from .profiles import SNAPSHOTS_LOCK, parse_port
 from .secrets import (
     decrypt_process_secret,
     decrypt_profile_secret,
     encrypt_process_secret,
     encrypt_profile_secret,
 )
-from .models import BadRequest, SHARED_DASHBOARD_LOCK, SHARED_DASHBOARD_STATE, SHARED_REFRESH_STOP
-from .profiles import SNAPSHOTS_LOCK, parse_port
+
 
 def parse_email_recipients(value: Any) -> list[str]:
     raw = str(value or "").replace(";", ",")

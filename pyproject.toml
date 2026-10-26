@@ -12,3 +12,8 @@ crypto = ["cryptography"]
 
 [tool.ruff]
 line-length = 120
+
+[tool.ruff.lint]
+# The package's shared logger: ruff applies its logging checks (and BLE001's
+# "exception was logged" exemption) to LOG as it would to logging.getLogger().
+logger-objects = ["nwdash.config.LOG"]
