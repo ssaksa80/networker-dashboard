@@ -26,7 +26,10 @@ from .config import (
     LOG,
     THEME_PALETTES,
     TIME_HHMM_PATTERN,
+    UI_DESIGNS,
+    UI_MOTION_LEVELS,
     UI_PREFS_FILE,
+    UI_SIDEBAR_MODES,
     debug_log,
     safe_log_text,
 )
@@ -239,12 +242,52 @@ def load_ui_theme() -> str:
         return ""
 
 
-def save_ui_theme(theme: str) -> str:
-    resolved = parse_theme(theme)
+def _read_ui_prefs_file() -> dict[str, Any]:
+    try:
+        data = json.loads(UI_PREFS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _pick(value: Any, allowed: tuple[str, ...], default: str) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in allowed else default
+
+
+def load_ui_prefs() -> dict[str, str]:
+    """The look every viewer starts with: theme, design, motion and sidebar.
+    A viewer's own choices, kept in their browser, win over these."""
+    data = _read_ui_prefs_file()
+    return {
+        "theme": parse_theme(data.get("theme")),
+        "design": _pick(data.get("design"), UI_DESIGNS, UI_DESIGNS[0]),
+        "motion": _pick(data.get("motion"), UI_MOTION_LEVELS, UI_MOTION_LEVELS[0]),
+        "sidebar": _pick(data.get("sidebar"), UI_SIDEBAR_MODES, UI_SIDEBAR_MODES[0]),
+    }
+
+
+def save_ui_prefs(changes: dict[str, Any]) -> dict[str, str]:
+    """Merge the given keys into ui_prefs.json; unknown values are refused."""
+    allowed = {"design": UI_DESIGNS, "motion": UI_MOTION_LEVELS, "sidebar": UI_SIDEBAR_MODES}
     with UI_THEME_LOCK:
+        data = _read_ui_prefs_file()
+        for key, value in changes.items():
+            if key == "theme":
+                data["theme"] = parse_theme(value)
+            elif key in allowed:
+                text = str(value or "").strip().lower()
+                if text not in allowed[key]:
+                    raise BadRequest(f"{key} must be one of: {', '.join(allowed[key])}.")
+                data[key] = text
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        UI_PREFS_FILE.write_text(json.dumps({"theme": resolved}), encoding="utf-8")
-    return resolved
+        UI_PREFS_FILE.write_text(json.dumps(data), encoding="utf-8")
+    return load_ui_prefs()
+
+
+def save_ui_theme(theme: str) -> str:
+    # Merges: the file also holds the admin console's design defaults.
+    return save_ui_prefs({"theme": theme})["theme"]
 
 
 def _auto_snapshot_once() -> str:

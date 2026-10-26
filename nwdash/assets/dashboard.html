@@ -6,10 +6,215 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>NetWorker Backup & Recovery Dashboard</title>
   <style>__APP_CSS__</style>
+  <style>__DESIGN_CSS__</style>
 </head>
 <body class="connection-open">
+  <svg width="0" height="0" class="nw-sprite" aria-hidden="true" focusable="false">
+    <symbol id="nw-i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="nw-i-flow" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M7.3 11 16.7 7M7.3 13l9.4 4"/></symbol>
+    <symbol id="nw-i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="nw-i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="nw-i-restore" viewBox="0 0 24 24"><path d="M1 4v6h6"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></symbol>
+    <symbol id="nw-i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="nw-i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="nw-i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></symbol>
+    <symbol id="nw-i-doc" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></symbol>
+    <symbol id="nw-i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="nw-i-heat" viewBox="0 0 24 24"><path d="M4 4h4v4H4zM10 4h4v4h-4zM16 4h4v4h-4zM4 10h4v4H4zM10 10h4v4h-4zM16 10h4v4h-4zM4 16h4v4H4zM10 16h4v4h-4zM16 16h4v4h-4z"/></symbol>
+    <symbol id="nw-i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="nw-i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
+    <symbol id="nw-i-server" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></symbol>
+    <symbol id="nw-i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="nw-i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></symbol>
+    <symbol id="nw-i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></symbol>
+    <symbol id="nw-i-tv" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="13" rx="2"/><path d="m17 2-5 5-5-5"/></symbol>
+    <symbol id="nw-i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="nw-i-ext" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3"/></symbol>
+    <symbol id="nw-i-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+    <symbol id="nw-i-float" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="5" y="7" width="7" height="10" rx="1.5"/></symbol>
+    <symbol id="nw-i-dock" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+    <symbol id="nw-i-chev" viewBox="0 0 24 24"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></symbol>
+    <symbol id="nw-i-min" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="nw-i-menu" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
+    <symbol id="nw-i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="nw-i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+  </svg>
+  <div class="nw-frame">
+    <aside id="navSidebar" class="nav-side" aria-label="Main navigation">
+      <div class="nav-head" id="navGrip">
+        <div class="nav-logo" aria-hidden="true"><img src="__NETWORKER_LOGO_SRC__" alt=""></div>
+        <div class="nav-title"><strong>NetWorker</strong><small>Backup &amp; Recovery</small></div>
+        <div class="nav-tools">
+          <button id="navFloatBtn" class="nav-icon" type="button" title="Float the sidebar" aria-label="Float the sidebar"></button>
+          <button id="navCollapseBtn" class="nav-icon" type="button" title="Collapse to icons" aria-label="Collapse to icons"></button>
+        </div>
+      </div>
+      <div class="nav-scroll">
+        <nav class="nav-list" aria-label="Dashboard sections">
+          <span class="nav-group">Monitor</span>
+          <button class="nav-link" type="button" data-nav-go="top" aria-current="true"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-grid"/></svg><span>Overview</span></button>
+          <button class="nav-link" type="button" data-nav-go="flowHero"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-flow"/></svg><span>Protection flow</span></button>
+          <button class="nav-link" type="button" data-nav-table="jobs"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-list"/></svg><span>Recent jobs</span></button>
+          <button class="nav-link" type="button" data-nav-table="failedJobs"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-alert"/></svg><span>Failed jobs</span><em id="navBadgeFailed" class="nav-badge" hidden></em></button>
+          <button class="nav-link" type="button" data-nav-table="recovery"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-restore"/></svg><span>Restores</span></button>
+          <button class="nav-link" type="button" data-nav-table="cloneJobs"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-copy"/></svg><span>Clone jobs</span></button>
+          <button class="nav-link" type="button" data-nav-table="alerts"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-bell"/></svg><span>Alerts</span><em id="navBadgeAlerts" class="nav-badge" hidden></em></button>
+          <button class="nav-link" type="button" data-nav-table="clients"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-monitor"/></svg><span>Clients</span></button>
+          <button class="nav-link" type="button" data-nav-table="logs"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-doc"/></svg><span>Logs</span></button>
+          <button class="nav-link" type="button" data-nav-table="timeline"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-clock"/></svg><span>Timeline</span></button>
+          <button class="nav-link" type="button" data-nav-table="heatmap"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-heat"/></svg><span>Heatmap</span></button>
+          <span class="nav-group">Insights</span>
+          <button class="nav-link" type="button" data-nav-go="healthSection"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-activity"/></svg><span>Server health</span></button>
+          <button class="nav-link" type="button" data-nav-go="snapshotSection"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-camera"/></svg><span>Snapshots</span></button>
+          <span class="nav-group">Actions</span>
+          <button class="nav-link" type="button" id="showConnectionBtn"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-server"/></svg><span>Connection</span></button>
+          <button class="nav-link" type="button" id="addServerBtn"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-plus"/></svg><span>Add server</span></button>
+          <button class="nav-link hidden" type="button" id="shareBtn"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-link"/></svg><span>Share</span></button>
+          <button class="nav-link" type="button" id="alertConfigBtn"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-mail"/></svg><span>Email</span></button>
+          <button class="nav-link" type="button" id="tvModeBtn" title="Open the TV wall-display mode in a new tab"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-tv"/></svg><span>TV mode</span></button>
+          <a id="adminConsoleLink" class="nav-link" href="/admin" target="_blank" rel="noopener"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-shield"/></svg><span>Admin console</span><svg class="nw-ic nav-ext" aria-hidden="true"><use href="#nw-i-ext"/></svg></a>
+          <button class="nav-link danger hidden" type="button" id="logoutBtn"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-out"/></svg><span>Logout</span></button>
+        </nav>
+        <section class="nav-conn" aria-label="Connection">
+          <!-- Collapsed connection summary (visible when connected) -->
+          <div id="connCollapsedBar" class="conn-collapsed-bar">
+            <span>Connected to <strong id="collapsedHost">—</strong></span>
+            <span id="collapsedRange"></span>
+            <button id="collapsedEditBtn" class="ghost conn-edit-btn" type="button">Edit connection</button>
+          </div>
+        <aside id="connectionPanel" class="panel connection">
+          <div class="panel-head">
+            <h2>Connection</h2>
+          </div>
+          <!-- Profile bar -->
+          <div class="profile-bar">
+            <select id="profileSelect" aria-label="Saved connection profiles">
+              <option value="">— Select saved profile —</option>
+            </select>
+            <button id="profileSaveBtn" class="ghost" type="button">Save</button>
+            <button id="profileDeleteBtn" class="ghost" type="button">Delete</button>
+          </div>
+          <form id="connectionForm" autocomplete="off">
+            <label>
+              API / NWUI server IP/DNS
+              <input id="restApiHost" name="restApiHost" placeholder="10.10.10.20" required autocomplete="off" spellcheck="false">
+            </label>
+
+            <label>
+              API source
+              <select id="apiMode" name="apiMode">
+                <option value="auto" selected>Auto discover</option>
+                <option value="nwui">NWUI API</option>
+                <option value="rest">NetWorker REST API</option>
+              </select>
+            </label>
+
+            <div class="row-2">
+              <label>
+                API / NWUI port
+                <input id="restApiPort" name="restApiPort" value="9090" inputmode="numeric" autocomplete="off">
+              </label>
+              <label>
+                API version
+                <select id="apiVersion" name="apiVersion">
+                  <option value="auto" selected>Auto</option>
+                  <option value="v3">v3</option>
+                  <option value="v2">v2</option>
+                  <option value="v1">v1</option>
+                </select>
+              </label>
+            </div>
+
+            <label>
+              Backup server IP/DNS
+              <input id="backupServerHost" name="backupServerHost" placeholder="10.10.10.30" autocomplete="off" spellcheck="false">
+            </label>
+
+            <div class="row-2">
+              <label>
+                AuthC port
+                <input id="backupServerPort" name="backupServerPort" value="9090" inputmode="numeric" autocomplete="off">
+              </label>
+              <label>
+                Timeout seconds
+                <input id="timeoutSeconds" name="timeoutSeconds" value="30" inputmode="numeric" autocomplete="off">
+              </label>
+            </div>
+
+            <label>
+              Report range
+              <select id="reportRange" name="reportRange">
+                <option value="24h" selected>Last 24 hours</option>
+                <option value="7d">Last week</option>
+                <option value="30d">Last month</option>
+                <option value="custom">Custom dates</option>
+              </select>
+            </label>
+
+            <div class="row-2 custom-date-field" data-custom-range hidden>
+              <label>
+                Start date
+                <input id="customStartDate" name="customStartDate" placeholder="DD-MM-YYYY" autocomplete="off" inputmode="numeric">
+              </label>
+              <label>
+                End date
+                <input id="customEndDate" name="customEndDate" placeholder="DD-MM-YYYY" autocomplete="off" inputmode="numeric">
+              </label>
+            </div>
+
+            <label>
+              Username
+              <input id="username" name="username" placeholder="Administrator" required autocomplete="off" spellcheck="false">
+            </label>
+
+            <label>
+              Password
+              <input id="password" name="password" type="password" required autocomplete="new-password">
+            </label>
+
+            <label class="check-row">
+              <input id="useWmiHealth" name="useWmiHealth" type="checkbox" checked>
+              <span>Use WMI for Windows CPU/RAM health</span>
+            </label>
+
+            <label>
+              WMI username
+              <input id="wmiUsername" name="wmiUsername" placeholder="DOMAIN\\svc_networker_health" autocomplete="off" spellcheck="false">
+            </label>
+
+            <label>
+              WMI password
+              <input id="wmiPassword" name="wmiPassword" type="password" autocomplete="new-password">
+            </label>
+
+            <label class="check-row">
+              <input id="useAuthcHeader" name="useAuthcHeader" type="checkbox" checked>
+              <span>Send X-NW-AUTHC-BASE-URL for backup server</span>
+            </label>
+
+            <label class="check-row">
+              <input id="verifyTls" name="verifyTls" type="checkbox" checked>
+              <span>Verify REST API TLS certificate</span>
+            </label>
+
+            <div class="actions">
+              <button id="connectBtn" class="primary" type="submit">Connect</button>
+              <button id="discoverBtn" class="ghost" type="button">Discover</button>
+              <button id="refreshBtn" class="ghost" type="button">Refresh</button>
+              <button id="clearBtn" class="ghost icon" type="button" title="Clear form">x</button>
+            </div>
+          </form>
+        </aside>
+        </section>
+      </div>
+    </aside>
+    <button id="navFab" class="nav-fab" type="button" hidden title="Show the sidebar" aria-label="Show the sidebar"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-menu"/></svg></button>
+    <div id="navScrim" class="nav-scrim"></div>
+
+    <div class="nw-main">
   <header class="topbar">
     <div class="topbar-brand">
+      <button id="navOpenBtn" class="top-btn top-icon" type="button" aria-label="Open the navigation" aria-expanded="false" aria-controls="navSidebar"><svg class="nw-ic" aria-hidden="true"><use href="#nw-i-menu"/></svg></button>
       <div class="topbar-logo" aria-hidden="true">
         <img src="__NETWORKER_LOGO_SRC__" alt="">
       </div>
@@ -20,153 +225,41 @@
     </div>
     <div class="topbar-actions">
       <div id="topStatus" class="status-pill">Not connected</div>
-      <button class="collapse-toggle" type="button" data-toggle-target="accountMenu" aria-expanded="false">
-        <span class="caret">&#9656;</span> Account
-      </button>
-      <div id="accountMenu" class="account-menu collapsible">
-        <button id="showConnectionBtn" class="topbar-button" type="button">Connection</button>
-        <button id="addServerBtn" class="topbar-button" type="button">+ Server</button>
-        <button id="shareBtn" class="topbar-button hidden" type="button">Share</button>
-        <button id="tvModeBtn" class="topbar-button" type="button" title="Open the TV wall-display mode in a new tab">&#128250; TV mode</button>
-        <button id="logoutBtn" class="topbar-button danger hidden" type="button">Logout</button>
-        <button id="alertConfigBtn" class="topbar-button" type="button">Email</button>
-      </div>
+      <button id="designBtn" class="top-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="designMenu" title="Change the design"><span class="swatch" aria-hidden="true"></span><span class="label">Design</span></button>
+      <button id="schemeBtn" class="top-btn top-icon" type="button" hidden></button>
+      <div id="designMenu" class="design-menu" role="dialog" aria-label="Design" hidden></div>
     </div>
   </header>
 
-  <!-- Collapsed connection bar (visible when connected) -->
-  <div id="connCollapsedBar" class="conn-collapsed-bar">
-    <span>Connected to <strong id="collapsedHost">—</strong></span>
-    <span id="collapsedRange" style="margin-left:4px"></span>
-    <button id="collapsedEditBtn" class="ghost conn-edit-btn" type="button">Edit connection</button>
-  </div>
-
   <main id="mainShell" class="shell">
-    <aside id="connectionPanel" class="panel connection">
-      <div class="panel-head">
-        <h2>Connection</h2>
-      </div>
-      <!-- Profile bar -->
-      <div class="profile-bar">
-        <select id="profileSelect" aria-label="Saved connection profiles">
-          <option value="">— Select saved profile —</option>
-        </select>
-        <button id="profileSaveBtn" class="ghost" type="button">Save</button>
-        <button id="profileDeleteBtn" class="ghost" type="button">Delete</button>
-      </div>
-      <form id="connectionForm" autocomplete="off">
-        <label>
-          API / NWUI server IP/DNS
-          <input id="restApiHost" name="restApiHost" placeholder="10.10.10.20" required autocomplete="off" spellcheck="false">
-        </label>
-
-        <label>
-          API source
-          <select id="apiMode" name="apiMode">
-            <option value="auto" selected>Auto discover</option>
-            <option value="nwui">NWUI API</option>
-            <option value="rest">NetWorker REST API</option>
-          </select>
-        </label>
-
-        <div class="row-2">
-          <label>
-            API / NWUI port
-            <input id="restApiPort" name="restApiPort" value="9090" inputmode="numeric" autocomplete="off">
-          </label>
-          <label>
-            API version
-            <select id="apiVersion" name="apiVersion">
-              <option value="auto" selected>Auto</option>
-              <option value="v3">v3</option>
-              <option value="v2">v2</option>
-              <option value="v1">v1</option>
-            </select>
-          </label>
-        </div>
-
-        <label>
-          Backup server IP/DNS
-          <input id="backupServerHost" name="backupServerHost" placeholder="10.10.10.30" autocomplete="off" spellcheck="false">
-        </label>
-
-        <div class="row-2">
-          <label>
-            AuthC port
-            <input id="backupServerPort" name="backupServerPort" value="9090" inputmode="numeric" autocomplete="off">
-          </label>
-          <label>
-            Timeout seconds
-            <input id="timeoutSeconds" name="timeoutSeconds" value="30" inputmode="numeric" autocomplete="off">
-          </label>
-        </div>
-
-        <label>
-          Report range
-          <select id="reportRange" name="reportRange">
-            <option value="24h" selected>Last 24 hours</option>
-            <option value="7d">Last week</option>
-            <option value="30d">Last month</option>
-            <option value="custom">Custom dates</option>
-          </select>
-        </label>
-
-        <div class="row-2 custom-date-field" data-custom-range hidden>
-          <label>
-            Start date
-            <input id="customStartDate" name="customStartDate" placeholder="DD-MM-YYYY" autocomplete="off" inputmode="numeric">
-          </label>
-          <label>
-            End date
-            <input id="customEndDate" name="customEndDate" placeholder="DD-MM-YYYY" autocomplete="off" inputmode="numeric">
-          </label>
-        </div>
-
-        <label>
-          Username
-          <input id="username" name="username" placeholder="Administrator" required autocomplete="off" spellcheck="false">
-        </label>
-
-        <label>
-          Password
-          <input id="password" name="password" type="password" required autocomplete="new-password">
-        </label>
-
-        <label class="check-row">
-          <input id="useWmiHealth" name="useWmiHealth" type="checkbox" checked>
-          <span>Use WMI for Windows CPU/RAM health</span>
-        </label>
-
-        <label>
-          WMI username
-          <input id="wmiUsername" name="wmiUsername" placeholder="DOMAIN\\svc_networker_health" autocomplete="off" spellcheck="false">
-        </label>
-
-        <label>
-          WMI password
-          <input id="wmiPassword" name="wmiPassword" type="password" autocomplete="new-password">
-        </label>
-
-        <label class="check-row">
-          <input id="useAuthcHeader" name="useAuthcHeader" type="checkbox" checked>
-          <span>Send X-NW-AUTHC-BASE-URL for backup server</span>
-        </label>
-
-        <label class="check-row">
-          <input id="verifyTls" name="verifyTls" type="checkbox" checked>
-          <span>Verify REST API TLS certificate</span>
-        </label>
-
-        <div class="actions">
-          <button id="connectBtn" class="primary" type="submit">Connect</button>
-          <button id="discoverBtn" class="ghost" type="button">Discover</button>
-          <button id="refreshBtn" class="ghost" type="button">Refresh</button>
-          <button id="clearBtn" class="ghost icon" type="button" title="Clear form">x</button>
-        </div>
-      </form>
-    </aside>
-
     <section class="dashboard">
+      <section id="flowHero" class="flow-hero" aria-label="Protection flow">
+        <div class="fh-head">
+          <span class="fh-eyebrow">Protection flow</span>
+          <span id="fhState" class="fh-state">Not connected</span>
+        </div>
+        <div class="fh-orbs">
+          <div class="fh-body">
+            <div class="nw-dial" aria-hidden="true">
+              <svg viewBox="0 0 230 230"><defs><filter id="fhGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+                <circle class="track" cx="115" cy="115" r="96" fill="none" stroke-width="12"/>
+                <circle class="arc" id="fhArc" cx="115" cy="115" r="96" fill="none" stroke-width="12" stroke-dasharray="603.19" stroke-dashoffset="603.19" stroke-linecap="round" transform="rotate(-90 115 115)" filter="url(#fhGlow)"/>
+              </svg>
+              <div class="nw-dial-in"><div class="nw-dial-num"><span id="fhPct">0</span><small>%</small></div><div id="fhCap" class="nw-dial-cap">No jobs yet</div></div>
+            </div>
+            <div class="fh-flowcol">
+              <div id="fhFlow" class="nw-flow" role="list" aria-label="Clients, policies, backups, clones, restores and SLA"></div>
+              <div id="fhSteps" class="nw-steps"></div>
+            </div>
+          </div>
+        </div>
+        <div id="fhRibbon" class="fh-ribbon"></div>
+        <div class="fh-pipe">
+          <svg id="fhPipe" viewBox="0 0 960 230" role="img" aria-label="Jobs flowing from policies to backups, clones and restores"></svg>
+          <div id="fhHud" class="fh-hud"></div>
+        </div>
+      </section>
+
       <section id="dashboardToolbar" class="dashboard-toolbar" aria-label="Dashboard controls">
         <div class="collapse-bar">
           <button class="collapse-toggle" type="button" data-toggle-target="viewControls" aria-expanded="false">
@@ -356,7 +449,7 @@
         </div>
       </section>
 
-      <section class="section">
+      <section id="healthSection" class="section">
         <div class="section-head">
           <h2>NetWorker Server Health</h2>
           <span id="generatedAt" class="meta">Waiting for connection</span>
@@ -386,7 +479,7 @@
         </div>
       </section>
 
-      <section class="section" aria-label="Local snapshot growth">
+      <section id="snapshotSection" class="section" aria-label="Local snapshot growth">
         <div class="section-head">
           <h2>Local Snapshot Growth</h2>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -655,7 +748,10 @@
       </section>
     </section>
   </main>
+    </div>
+  </div>
 
+  <script>__DESIGN_JS__</script>
   <script>__APP_JS__</script>
 </body>
 </html>

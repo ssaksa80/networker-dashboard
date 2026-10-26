@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as _cfg
+from .admin import load_console_allowlist
 from .auth import _is_loopback_bind, auth_password_configured, set_auth_password
 from .certs import ensure_certificate
 from .config import (
@@ -162,6 +163,7 @@ def run(argv: list[str] | None = None) -> int:
     auth_password = args.auth_password or os.environ.get("DASHBOARD_AUTH_PASSWORD") or ""
     if auth_password:
         set_auth_password(auth_password)
+    _cfg.AUTH_PASSWORD_FROM_STARTUP = bool(auth_password)
     _cfg.AUTH_ENABLED = auth_password_configured()
     refusal = unauthenticated_exposure_refusal(args.bind, _cfg.AUTH_ENABLED, allow_unauthenticated_requested(args))
     if refusal:
@@ -169,7 +171,12 @@ def run(argv: list[str] | None = None) -> int:
         print(refusal, file=sys.stderr)
         LOG.error(refusal, extra={"event": "auth"})
         return 2
-    configure_allowed_hosts(args.allowed_hosts or os.environ.get("DASHBOARD_ALLOWED_HOSTS") or "")
+    # The start-up setting wins; the admin console's saved list applies only
+    # when the service is started without one (it is read-only there otherwise).
+    startup_hosts = args.allowed_hosts or os.environ.get("DASHBOARD_ALLOWED_HOSTS") or ""
+    console_hosts = "" if startup_hosts else load_console_allowlist()
+    configure_allowed_hosts(startup_hosts or console_hosts)
+    _cfg.ALLOWLIST_SOURCE = "startup" if startup_hosts else ("console" if console_hosts else "none")
     cert_path = Path(args.cert).expanduser().resolve()
     key_path = Path(args.key).expanduser().resolve()
 
@@ -179,6 +186,8 @@ def run(argv: list[str] | None = None) -> int:
             raise SystemExit("Certificate/key missing and --no-auto-cert was provided.")
     else:
         used_embedded_cert = ensure_certificate(cert_path, key_path)
+    _cfg.TLS_CERT_FILE = str(cert_path)
+    _cfg.TLS_CERT_AUTO = used_embedded_cert
 
     if not 0 <= int(args.port) <= 65535:
         raise SystemExit("HTTPS port must be between 0 and 65535.")

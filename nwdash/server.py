@@ -23,8 +23,10 @@ from typing import Any
 from urllib.parse import parse_qsl, urlparse
 from urllib.request import Request, urlopen
 
+from . import admin as _admin
 from . import config as _cfg
 from .auth import (
+    LOGIN_SESSIONS,
     _clear_login_failures,
     _login_rate_limited,
     _make_auth_cookie,
@@ -33,6 +35,7 @@ from .auth import (
     _verify_auth_cookie,
     _verify_csrf_token,
     revoke_auth_cookie,
+    session_id_of_cookie,
     verify_auth_password,
 )
 from .config import (
@@ -95,15 +98,37 @@ from .snapshots import (
     email_config_public,
     list_snapshot_summary,
     load_auto_snapshot_config,
+    load_ui_prefs,
     load_ui_theme,
     save_auto_snapshot_config,
     save_dashboard_snapshot,
+    save_ui_prefs,
     save_ui_theme,
     snapshot_history_all,
     snapshot_summary_text,
     snapshots_to_csv,
 )
-from .ui import FAVICON_SVG, NETWORKER_LOGO_PATH, dashboard_html, login_page_html, read_only_view_html, tv_page_html
+from .ui import (
+    FAVICON_SVG,
+    NETWORKER_LOGO_PATH,
+    admin_page_html,
+    dashboard_html,
+    login_page_html,
+    read_only_view_html,
+    tv_page_html,
+)
+
+# Alert-automation actions that change something (the rest only read), for the
+# audit log; the value is how the audit names the change.
+_AUDITED_AUTOMATION_ACTIONS = {
+    "save": "Email settings saved",
+    "start": "Schedule started",
+    "stop": "Schedule stopped",
+    "set_enabled": "Schedule paused or resumed",
+    "save-profile": "Email profile saved",
+    "delete-profile": "Email profile deleted",
+    "toggle-profile": "Email profile switched",
+}
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -309,16 +334,169 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if verify_auth_password(password):
             _clear_login_failures(ip)
-            cookie_value = _make_auth_cookie()
-            self._send_json_with_cookie(
-                HTTPStatus.OK,
-                {"ok": True, "csrfToken": _make_csrf_token(cookie_value)},
-                cookie_value,
-                AUTH_TTL_SECONDS,
-            )
+            cookie_value = _make_auth_cookie(ip, str(self.headers.get("User-Agent") or ""))
+            sid = session_id_of_cookie(cookie_value)
+            body: dict[str, Any] = {"ok": True, "csrfToken": _make_csrf_token(cookie_value)}
+            if payload.get("admin") is True:
+                # Signing in on /admin types the password just now, which is
+                # what the admin window asks for, so it opens with the login.
+                body["unlockedUntil"] = int(LOGIN_SESSIONS.unlock_admin(sid, _admin.ADMIN_UNLOCK_SECONDS))
+            _admin.audit("Signed in", ip=ip, sid=sid, item="admin console" if payload.get("admin") is True else "dashboard")
+            self._send_json_with_cookie(HTTPStatus.OK, body, cookie_value, AUTH_TTL_SECONDS)
         else:
             _record_login_failure(ip)
+            _admin.audit("Sign-in failed", ip=ip, item="dashboard", field="password", new="wrong")
             self._send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid password.")
+
+    def _sid(self) -> str:
+        """This request's login session id ("" with no password or no login)."""
+        return session_id_of_cookie(self._session_cookie_value()) if _cfg.AUTH_ENABLED else ""
+
+    def _audit(self, action: str, **fields: Any) -> None:
+        _admin.audit(action, ip=self.client_address[0], sid=self._sid(), **fields)
+
+    def _admin_gate(self) -> bool:
+        """The admin console's checks on top of the dashboard's sign-in: from the
+        server itself when there is no password, and the admin window open. On
+        failure the error has been sent (and the body drained)."""
+        access = _admin.console_access(self.client_address[0], self._authenticated())
+        if access not in ("ok", "open"):
+            self._drain_request_body()
+            self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "code": access,
+                                                   "error": "The admin console is not available from this address."})
+            return False
+        sid = self._sid()
+        if not _admin.admin_window_open(sid):
+            self._drain_request_body()
+            self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "code": "unlock_required",
+                                                   "error": "Type the password again to make admin changes."})
+            return False
+        _admin.touch_admin_window(sid)
+        return True
+
+    def _listener_probe(self) -> tuple[bool, str]:
+        host = str(self.server.server_address[0])
+        if host in ("0.0.0.0", "::", ""):
+            host = "127.0.0.1"
+        port = int(self.server.server_address[1])
+        url = f"https://[{host}]:{port}" if ":" in host else f"https://{host}:{port}"
+        cert = Path(_cfg.TLS_CERT_FILE) if _cfg.TLS_CERT_FILE else None
+        return self_test_dashboard_listener(url, timeout_seconds=3.0, cert_path=cert)
+
+    def _handle_admin_get(self, path: str, query: dict[str, str]) -> None:
+        if not self._admin_gate():
+            return
+        sid = self._sid()
+        route = path[len("/api/admin/"):]
+        if route == "overview":
+            self._send_json(HTTPStatus.OK, _admin.overview())
+        elif route == "sessions":
+            self._send_json(HTTPStatus.OK, {"ok": True, "sessions": _admin.list_sessions(sid),
+                                            "lifetimeHours": _admin.session_lifetime_hours()})
+        elif route == "audit":
+            date = query.get("date", "")
+            if date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "date must be YYYY-MM-DD.")
+                return
+            rows = _admin.read_audit(date=date, action=query.get("action", ""), query=query.get("q", ""))
+            self._send_json(HTTPStatus.OK, {"ok": True, "entries": rows, "actions": _admin.audit_actions()})
+        elif route == "logs":
+            try:
+                lines = int(query.get("lines") or 300)
+            except ValueError:
+                lines = 300
+            self._send_json(HTTPStatus.OK, _admin.read_log(query.get("level", "INFO"), query.get("q", ""), lines))
+        elif route == "tls":
+            self._send_json(HTTPStatus.OK, _admin.tls_info())
+        elif route == "security":
+            self._send_json(HTTPStatus.OK, {
+                "ok": True,
+                "passwordSet": bool(_cfg.AUTH_ENABLED),
+                "passwordFromStartup": bool(_cfg.AUTH_PASSWORD_FROM_STARTUP),
+                "passwordMinLength": _admin.PASSWORD_MIN_LENGTH,
+                "lifetimeHours": _admin.session_lifetime_hours(),
+                "unlockMinutes": _admin.ADMIN_UNLOCK_SECONDS // 60,
+                "allowlist": _admin.allowlist_view(),
+            })
+        elif route == "shares":
+            self._send_json(HTTPStatus.OK, {"ok": True, "links": _admin.list_share_links()})
+        elif route == "appearance":
+            self._send_json(HTTPStatus.OK, {"ok": True, **load_ui_prefs()})
+        else:
+            self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
+
+    def _handle_admin_post(self, path: str) -> None:
+        route = path[len("/api/admin/"):]
+        ip = self.client_address[0]
+        if route in ("unlock", "lock"):
+            access = _admin.console_access(ip, self._authenticated())
+            if access not in ("ok", "open"):
+                self._drain_request_body()
+                self._send_error_json(HTTPStatus.FORBIDDEN, "The admin console is not available from this address.")
+                return
+            payload = self._read_json_body()
+            if route == "lock":
+                self._send_json(HTTPStatus.OK, _admin.lock(self._sid(), ip))
+                return
+            status, body = _admin.unlock(self._sid(), str(payload.get("password") or ""), ip)
+            self._send_json(status, body)
+            return
+        if not self._admin_gate():
+            return
+        sid = self._sid()
+        payload = self._read_json_body()
+        if route == "self-test":
+            result = _admin.run_self_test(self._listener_probe)
+            _admin.audit("Self-test run", ip=ip, sid=sid, item="health",
+                         new=f"{result['failures']} failed, {result['warnings']} warnings")
+            self._send_json(HTTPStatus.OK, result)
+        elif route == "sessions/revoke":
+            status, body = _admin.revoke_session(str(payload.get("id") or ""), sid, ip)
+            self._send_json(status, body)
+        elif route == "sessions/revoke-others":
+            self._send_json(HTTPStatus.OK, _admin.revoke_other_sessions(sid, ip))
+        elif route == "password":
+            status, body = _admin.change_password(sid, str(payload.get("current") or ""), str(payload.get("new") or ""), ip)
+            self._send_json(status, body)
+        elif route == "allowlist":
+            status, body = _admin.save_allowlist(payload.get("entries"), sid, ip)
+            self._send_json(status, body)
+        elif route == "shares/revoke":
+            status, body = _admin.revoke_share_link(str(payload.get("id") or ""), sid, ip)
+            self._send_json(status, body)
+        elif route == "shares/revoke-all":
+            self._send_json(HTTPStatus.OK, _admin.revoke_all_share_links(sid, ip))
+        elif route == "appearance":
+            before = load_ui_prefs()
+            changes = {k: payload[k] for k in ("theme", "design", "motion", "sidebar") if k in payload}
+            after = save_ui_prefs(changes)
+            for key in changes:
+                if before.get(key) != after.get(key):
+                    _admin.audit("Appearance changed", ip=ip, sid=sid, item="default for every viewer",
+                                 field=key, old=before.get(key), new=after.get(key))
+            self._send_json(HTTPStatus.OK, {"ok": True, **after})
+        else:
+            self._send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
+
+    def _handle_first_password(self) -> None:
+        """POST /api/admin/setup: the first gateway password, from the server
+        itself. Answers like a login, so this browser stays signed in."""
+        ip = self.client_address[0]
+        try:
+            payload = self._read_json_body()
+        except (BadRequest, json.JSONDecodeError):
+            self._drain_request_body()
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "Invalid request.")
+            return
+        status, body = _admin.first_password(str(payload.get("password") or ""), ip)
+        if status != HTTPStatus.OK:
+            self._send_json(status, body)
+            return
+        cookie_value = _make_auth_cookie(ip, str(self.headers.get("User-Agent") or ""))
+        sid = session_id_of_cookie(cookie_value)
+        body["csrfToken"] = _make_csrf_token(cookie_value)
+        body["unlockedUntil"] = int(LOGIN_SESSIONS.unlock_admin(sid, _admin.ADMIN_UNLOCK_SECONDS))
+        self._send_json_with_cookie(HTTPStatus.OK, body, cookie_value, AUTH_TTL_SECONDS)
 
     def _handle_token_dashboard(self, path: str) -> None:
         token = path[len("/api/view/"):].strip("/")
@@ -406,6 +584,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_bytes(HTTPStatus.OK, dashboard_html().encode("utf-8"), "text/html; charset=utf-8")
                 return
 
+            # --- Admin console: the page carries its own sign-in, and asks
+            # /api/admin/state which screen to show; every admin API below the
+            # auth gate re-checks access and the admin window. ---
+            if path in ("/admin", "/admin/"):
+                self._send_bytes(HTTPStatus.OK, admin_page_html().encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if path == "/api/admin/state":
+                authenticated = self._authenticated()
+                sid = self._sid() if authenticated else ""
+                self._send_json(HTTPStatus.OK, _admin.console_state(sid, self.client_address[0], authenticated))
+                return
+
             # --- TV wall-display mode: auth-gated exactly like / ---
             if path == "/tv":
                 if _cfg.AUTH_ENABLED and not self._authenticated():
@@ -465,7 +655,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, email_config_public())
                 return
             if path == "/api/ui-theme":
-                self._send_json(HTTPStatus.OK, {"ok": True, "theme": load_ui_theme() or "default"})
+                prefs = load_ui_prefs()
+                self._send_json(HTTPStatus.OK, {"ok": True, **prefs, "theme": load_ui_theme() or "default"})
+                return
+            if path.startswith("/api/admin/"):
+                self._handle_admin_get(path, dict(parse_qsl(urlparse(self.path).query, keep_blank_values=True)))
                 return
             if path == "/api/stream":
                 wfile = self.wfile
@@ -551,10 +745,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/logout":
             self._drain_request_body()
+            sid = self._sid()
             # Revoke the session itself: expiring the cookie only removes this
             # browser's copy, and any other copy would stay valid until expiry.
             revoked = revoke_auth_cookie(self._session_cookie_value())
+            if revoked:
+                _admin.audit("Signed out", ip=self.client_address[0], sid=sid)
             self._send_json_with_cookie(HTTPStatus.OK, {"ok": True, "revoked": revoked}, "", 0)
+            return
+        if path == "/api/admin/setup":
+            self._handle_first_password()
             return
         # Every early-error path below MUST drain the request body first, or
         # the unread bytes poison the next request on this keep-alive socket.
@@ -569,6 +769,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._drain_request_body()
             self._send_error_json(HTTPStatus.FORBIDDEN, "CSRF token missing or invalid.")
             return
+        if path.startswith("/api/admin/"):
+            try:
+                self._handle_admin_post(path)
+            except (BadRequest, json.JSONDecodeError) as exc:
+                self._drain_request_body()
+                message = str(exc) if isinstance(exc, BadRequest) else "Request body must be valid JSON."
+                self._send_error_json(HTTPStatus.BAD_REQUEST, message)
+            except Exception:
+                ref = getattr(self, "request_id", "-")
+                LOG.exception("admin POST unhandled error", extra={"request_id": ref})
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
+            return
         allowed = {"/api/dashboard", "/api/export", "/api/server-health",
                    "/api/alert-automation", "/api/snapshots",
                    "/api/share", "/api/multi-server", "/api/profiles",
@@ -581,7 +793,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json_body()
             if path == "/api/ui-theme":
+                # Every dashboard load re-posts its theme, so only a real
+                # change is worth an audit line.
+                before = load_ui_theme() or "default"
                 theme = save_ui_theme(payload.get("theme"))
+                if theme != before:
+                    self._audit("Theme changed", item="appearance", field="theme", old=before, new=theme)
                 self._send_json(HTTPStatus.OK, {"ok": True, "theme": theme})
                 return
             if path == "/api/snapshots":
@@ -593,6 +810,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     with SNAPSHOTS_LOCK:
                         delete_snapshot_by_date(date_str)
                         summaries = list_snapshot_summary()
+                    self._audit("Snapshot deleted", item=date_str, old="kept", new="deleted")
                     self._send_json(HTTPStatus.OK, {"ok": True, "snapshots": summaries})
                     return
                 if snap_action == "annotate":
@@ -602,11 +820,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         raise BadRequest("Invalid date format. Use YYYY-MM-DD.")
                     with SNAPSHOTS_LOCK:
                         annotate_snapshot(date_str, note)
+                    self._audit("Snapshot note changed", item=date_str, field="note", new=note)
                     self._send_json(HTTPStatus.OK, {"ok": True})
                     return
                 if snap_action == "auto-config":
                     enabled = bool(payload.get("enabled", False))
+                    was_enabled = load_auto_snapshot_config()
                     save_auto_snapshot_config(enabled)
+                    if was_enabled != enabled:
+                        self._audit("Auto-snapshot " + ("on" if enabled else "off"), item="snapshots",
+                                    field="enabled", old="on" if was_enabled else "off", new="on" if enabled else "off")
                     # Capture immediately on enable so the first snapshot does not
                     # wait up to 10 minutes for the next worker tick, and report
                     # the outcome so the UI can confirm it actually saved.
@@ -628,6 +851,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 with SNAPSHOTS_LOCK:
                     record = save_dashboard_snapshot(dashboard)
                     comparison = compare_dashboard_snapshots(payload.get("range", "7d"))
+                self._audit("Snapshot saved", item=record.get("date", ""))
                 self._send_json(
                     HTTPStatus.OK,
                     {
@@ -652,8 +876,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             raise BadRequest("Profile data must be an object.")
                         # Encrypts typed passwords; keeps stored ones only while
                         # the profile still targets the same connection.
+                        existed = name in profiles
                         profiles[name] = profile_record_for_save(name, data, profiles.get(name, {}))
                         save_profiles(profiles)
+                        self._audit("Profile saved", item=name, field="server",
+                                    new=str(profiles[name].get("restApiHost") or ""), old="" if existed else "(new)")
                         self._send_json(HTTPStatus.OK, {"ok": True, "profiles": _mask_profiles(profiles)})
                     elif action == "delete":
                         name = str(payload.get("name") or "").strip()
@@ -665,6 +892,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             str(removed.get("restApiHost") or ""),
                             str(removed.get("username") or ""),
                         )
+                        if removed:
+                            self._audit("Profile deleted", item=name, old=str(removed.get("restApiHost") or ""), new="deleted")
                         self._send_json(HTTPStatus.OK, {
                             "ok": True,
                             "profiles": _mask_profiles(profiles),
@@ -682,10 +911,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if not session_id or not _session_exists(session_id):
                         raise BadRequest("Valid session ID required to create share link.")
                     token = create_share_token(session_id)
+                    self._audit("Share link created", item=f"{token[:4]}…{token[-4:]}", field="expires", new="in 24 hours")
                     self._send_json(HTTPStatus.OK, {"ok": True, "token": token})
                 elif action == "revoke":
                     token = str(payload.get("token") or "").strip()
-                    revoke_share_token(token)
+                    if revoke_share_token(token):
+                        self._audit("Share link revoked", item=f"{token[:4]}…{token[-4:]}", old="active", new="revoked")
                     self._send_json(HTTPStatus.OK, {"ok": True})
                 else:
                     raise BadRequest("action must be 'create' or 'revoke'.")
@@ -702,6 +933,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             if path == "/api/alert-automation":
                 status, body = handle_alert_automation(payload)
+                action = str(payload.get("action") or "").strip().lower()
+                if status < 400 and action in _AUDITED_AUTOMATION_ACTIONS:
+                    item = (payload.get("profileName") or payload.get("scheduleType")
+                            or str(payload.get("automationId") or "")[:12] or "email")
+                    detail = ("on" if payload.get("enabled") else "off") if "enabled" in payload else ""
+                    self._audit(_AUDITED_AUTOMATION_ACTIONS[action], item=item, new=detail)
                 self._send_json(status, body)
                 return
 

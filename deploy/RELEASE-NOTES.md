@@ -19,6 +19,91 @@ under which bump) is [`../RELEASING.md`](../RELEASING.md).
 
 ---
 
+## v3.0.0 — new look, admin console, and a password for network installs
+
+Major tier: a network install with no dashboard password no longer upgrades
+or starts unless the operator says so (below). Everything else is additive,
+and rollback is clean.
+
+### Before you upgrade (mandatory)
+
+- **Network installs need a dashboard password.** If the service listens on
+  anything other than `127.0.0.1` and no password is stored, `Setup-NWDash.cmd`
+  / `install.ps1 -Upgrade` now **refuses before stopping the service**, and the
+  app itself exits with code 2 at start. Either:
+  - set one: `Setup-NWDash.cmd -AuthPassword <password>` (stored as a salted
+    hash; the plaintext is removed from the service environment after the
+    first healthy boot), or
+  - keep running open on an isolated network: `Setup-NWDash.cmd
+    -AllowUnauthenticated` (sets `DASHBOARD_ALLOW_UNAUTHENTICATED=1`).
+  Loopback-only installs are not affected.
+- **Scripts that POST to the API** must send `Content-Type: application/json`
+  (anything else gets 415), and browsers on another site are refused (403).
+  The dashboard itself already does this.
+
+### What's new
+
+- **Four designs, switchable from the Design button** in the top bar:
+  Daylight Glow (today's look, follows the 15 themes), Aurora Flow (dark
+  navy glass), Command Deck (carbon, neon) and DEDB Navy (DEDB's look). Each
+  viewer's choice is kept in their browser; the admin console sets the
+  default (Daylight until changed). Motion has Full, Subtle and Off; PCs set
+  to reduce motion always get Off. Nothing is loaded from the internet.
+- **Protection flow** at the top of the dashboard: clients, policies,
+  backups, clones, restores and SLA as glowing steps (or a job timeline per
+  policy, or a pipeline, depending on the design).
+- **New left sidebar** with the navigation, the actions that were under
+  Account, and the connection form. It docks, collapses to icons, or floats
+  (drag it by its header, double-click to park it, minimise it to a button).
+- **Admin console at `/admin`** (also linked from the sidebar), laid out like
+  DEDB's: Health with a self-test, Sessions, Audit, Logs, Connections, Email,
+  Schedules, Snapshots, Share links, Appearance, Security and TLS. It asks
+  for the dashboard password again before admin changes after 15 minutes
+  idle. With no password set it opens only on the server itself, and offers
+  to set one.
+- **Audit log**: sign-ins, failed sign-ins and changes (from the console and
+  from the dashboard) with old and new values, in `data\audit.jsonl`.
+  Passwords are never recorded.
+- **Allow-list from the console**: when the service is not started with
+  `-AllowedHosts` / `DASHBOARD_ALLOWED_HOSTS`, the NetWorker host allow-list
+  can be edited under Security (`data\allowed_hosts.json`). A start-up
+  allow-list still wins and shows read-only there.
+- **Logout ends the session on the server**, not just in that browser
+  (`data\auth_sessions.json`); the console's Sessions tab can sign others out.
+
+### Fixes since v2.13.1
+
+- The service no longer restart-loops when security software intercepts its
+  own loopback TLS: the start-up self-test only warns now, and a real crash
+  exits non-zero instead of reporting success.
+- A slow or silent client can no longer stall new connections (TLS
+  handshakes moved off the accept loop).
+- A stored SMTP or profile password is dropped, not reused, when a save
+  points it at a different server or account.
+- The built-in development certificate was regenerated. Installs keep the
+  certificate already in their `.certs` folder.
+
+### Support notes
+
+- **Everyone is signed in again once** after the upgrade if they used a
+  password before: sessions issued by v2.13.1 carry no session id.
+- The self-test's HTTPS-listener step can warn on hosts whose antivirus
+  inspects loopback TLS; the dashboard is still serving.
+
+### Rollback
+
+`Setup-NWDash.cmd -Rollback` restores v2.13.1 cleanly: the new files under
+`data\` (`audit.jsonl`, `allowed_hosts.json`, `auth_sessions.json`, the extra
+keys in `ui_prefs.json`) are ignored by v2.13.1. A console-saved allow-list
+stops applying until you set `-AllowedHosts` again.
+
+**Gates:** GitHub Actions (tests + secret scan) green on the release commit.
+The gates (ruff 0.17.2 + the full 246-test suite) were also run **locally**
+on Windows, on Python 3.13 and on this bundle's embedded Python 3.12.10: both
+green. The bundle was booted in the installed layout on its own runtime.
+
+---
+
 ## v2.13.1 — Aptos/Arial typography everywhere
 
 Patch tier.

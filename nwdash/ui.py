@@ -32,10 +32,61 @@ def _load_asset(name: str) -> str:
 
 _APP_CSS = _load_asset("app.css")
 _APP_JS = _load_asset("app.js")
+# The four designs (Daylight, Aurora, Command, DEDB Navy), the sidebar and the
+# glow-flow motion: shared by the dashboard and the admin console.
+_DESIGN_CSS = _load_asset("design.css")
+_DESIGN_JS = _load_asset("design.js")
 HTML_PAGE = (
     _load_asset("dashboard.html")
     .replace("__APP_CSS__", _APP_CSS)
+    .replace("__DESIGN_CSS__", _DESIGN_CSS)
+    .replace("__DESIGN_JS__", _DESIGN_JS)
     .replace("__APP_JS__", _APP_JS)
+)
+def _admin_theme_css() -> str:
+    """The theme variables app.css defines, generated for /admin from
+    THEME_PALETTES so the console needs no copy of app.css. The title bar
+    takes each theme's dashboard header colour in the Daylight design."""
+    blocks = []
+    for name, palette in THEME_PALETTES.items():
+        selector = ":root" if name == "default" else f'body[data-theme="{name}"]'
+        top = _ADMIN_TOPBAR.get(name, "#102832")
+        blocks.append(
+            f"{selector}{{"
+            f"--bg:{palette['bg']};--surface:{palette['surface']};--surface-2:{palette['surface2']};"
+            f"--ink:{palette['ink']};--muted:{palette['muted']};--line:{palette['line']};"
+            f"--brand:{palette['brand']};--brand-ink:{palette['brandInk']};--green:{palette['green']};"
+            f"--red:{palette['red']};--amber:{palette['amber']};--blue:{palette['blue']};--top-bg:{top}}}"
+        )
+    return "\n".join(blocks)
+
+
+# The dashboard's per-theme header colours (app.css .topbar rules).
+_ADMIN_TOPBAR = {
+    "default": "#102832",
+    "midnight": "#090f10",
+    "graphite": "#28363a",
+    "contrast": "#000000",
+    "ocean": "#075563",
+    "forest": "#24492f",
+    "ruby": "#64213b",
+    "steel": "#2f4054",
+    "arctic": "#0b5e72",
+    "citrus": "#536d14",
+    "harbor": "#204f61",
+    "ember": "#7a3e2d",
+    "violet": "#3c2a66",
+    "sandstone": "#5c4a2e",
+    "carbon": "#000000",
+}
+
+_ADMIN_PAGE = (
+    _load_asset("admin.html")
+    .replace("__ADMIN_THEME_CSS__", _admin_theme_css())
+    .replace("__DESIGN_CSS__", _DESIGN_CSS)
+    .replace("__ADMIN_CSS__", _load_asset("admin.css"))
+    .replace("__DESIGN_JS__", _DESIGN_JS)
+    .replace("__ADMIN_JS__", _load_asset("admin.js"))
 )
 _LOGIN_HTML = _load_asset("login.html")
 _VIEW_TEMPLATE = _load_asset("view.html")
@@ -137,6 +188,11 @@ def networker_logo_src() -> str:
 
 def dashboard_html() -> str:
     return HTML_PAGE.replace("__NETWORKER_LOGO_SRC__", networker_logo_src())
+
+
+def admin_page_html() -> str:
+    """The admin console served at /admin; it signs in and gates itself."""
+    return _ADMIN_PAGE.replace("__NETWORKER_LOGO_SRC__", networker_logo_src())
 
 
 def tv_page_html() -> str:
