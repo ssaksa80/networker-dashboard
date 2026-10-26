@@ -346,6 +346,15 @@ class TestLogsAndTls(TempDataMixin, unittest.TestCase):
         with mock.patch.object(_cfg, "TLS_CERT_FILE", str(self.dir / "absent.pem")):
             self.assertFalse(admin.tls_info()["ok"])
 
+    def test_embedded_runtime_is_the_one_with_a_pth_file(self):
+        # The bundle's python.org embeddable runtime keeps python312._pth
+        # beside python.exe; a regular install does not.
+        exe = self.dir / "python.exe"
+        with mock.patch.object(admin.sys, "executable", str(exe)):
+            self.assertFalse(admin.embedded_runtime())
+            (self.dir / "python312._pth").write_text("python312.zip\n.\n", encoding="utf-8")
+            self.assertTrue(admin.embedded_runtime())
+
 
 class TestSelfTest(TempDataMixin, unittest.TestCase):
     def test_steps_and_outcome(self):

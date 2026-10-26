@@ -240,7 +240,7 @@ def overview() -> dict[str, Any]:
         "ok": True,
         "version": APP_VERSION,
         "python": platform.python_version(),
-        "embedded": "embed" in sys.executable.lower() or not Path(sys.prefix, "Lib", "site-packages").exists(),
+        "embedded": embedded_runtime(),
         "uptimeSeconds": int(time.time() - PROCESS_START_TIME),
         "startedAt": datetime.fromtimestamp(PROCESS_START_TIME).astimezone().isoformat(timespec="seconds"),
         "threads": threading.active_count(),
@@ -257,6 +257,12 @@ def overview() -> dict[str, Any]:
         "dataFreePercent": free_pct,
         "auditEntriesToday": len(read_audit(date=datetime.now().strftime("%Y-%m-%d"), limit=10000)),
     }
+
+
+def embedded_runtime() -> bool:
+    """True on python.org's embeddable runtime (what the bundle ships): it is
+    the one with a pythonXY._pth file beside python.exe."""
+    return any(Path(sys.executable).parent.glob("python*._pth"))
 
 
 def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> tuple[bool, str]:
