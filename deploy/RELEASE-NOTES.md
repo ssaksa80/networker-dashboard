@@ -19,6 +19,56 @@ under which bump) is [`../RELEASING.md`](../RELEASING.md).
 
 ---
 
+## v3.0.1 — admin console security fixes
+
+Patch tier: two security fixes in the admin console that v3.0.0 added.
+Nothing under `data\` changes format, URLs and the service command line are
+the same, and rollback is clean. Upgrade every v3.0.0 install.
+
+### Fixes
+
+- **An idle admin console now locks.** v3.0.0 extended the 15-minute admin
+  window on every admin request, including the Logs tab's 4-second
+  auto-refresh, so a console left open on Logs could still change the
+  password and the allow-list for the whole sign-in (up to 12 hours). Now
+  only changes and the pages you open count as activity; the auto-refresh
+  does not.
+- **No-password installs and a reverse proxy on the same server.** With no
+  password set, v3.0.0 opened `/admin` to any request from the server's own
+  address. A reverse proxy on that server (IIS ARR, nginx) connects from the
+  same address, so anyone who could reach the proxy got the console and
+  could set the first password, locking the operator out. Now:
+  - a request that carries a proxy-forwarding header (`Forwarded`, `Via`,
+    `X-Forwarded-*`, `X-Real-IP`, `X-Client-IP`, `X-Original-URL`,
+    `X-ARR-Log-ID`) is never treated as coming from the server itself, and
+  - the console asks for a **setup code** before it opens without a
+    password. The service writes a new one to `data\setup-code.txt` at every
+    start (the log shows only the path) and deletes it when the first
+    password is set from the console. Wrong codes count toward the sign-in
+    lockout.
+
+### Support notes
+
+- **No password yet?** Opening `/admin` on the server now asks for the setup
+  code: copy it from `data\setup-code.txt` in the install folder
+  (`C:\apps\networker-dashboard\data\` by default). Restarting the service
+  replaces the code.
+- An admin console left open asks for the password again after 15 minutes
+  without a click, even on the Logs tab. That is the fix, not a fault.
+- Reload any admin console tab that was open during the upgrade, so it picks
+  up the new page.
+
+### Rollback
+
+`Setup-NWDash.cmd -Rollback` restores v3.0.0, and with it both issues. The
+one new file, `data\setup-code.txt`, is ignored by v3.0.0.
+
+**Gates:** ruff 0.17.2 and the full 252-test suite run **locally** on
+Windows, on Python 3.14 and on this bundle's embedded Python 3.12.10: both
+green. GitHub Actions runs the same gates on the release commit.
+
+---
+
 ## v3.0.0 — new look, admin console, and a password for network installs
 
 Major tier: a network install with no dashboard password no longer upgrades
@@ -59,10 +109,8 @@ and rollback is clean.
   DEDB's: Health with a self-test, Sessions, Audit, Logs, Connections, Email,
   Schedules, Snapshots, Share links, Appearance, Security and TLS. It asks
   for the dashboard password again before admin changes after 15 minutes
-  idle; the Logs tab's auto-refresh does not count as activity. With no
-  password set it opens only on the server itself, never through a reverse
-  proxy, and asks for the one-time setup code the service writes to
-  `data\setup-code.txt` at start, then offers to set a password.
+  idle. With no password set it opens only on the server itself, and offers
+  to set one. (v3.0.1 fixes two security issues in this console; upgrade.)
 - **Audit log**: sign-ins, failed sign-ins and changes (from the console and
   from the dashboard) with old and new values, in `data\audit.jsonl`.
   Passwords are never recorded.
