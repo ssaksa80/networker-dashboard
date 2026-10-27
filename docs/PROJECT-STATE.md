@@ -76,8 +76,14 @@ extraction (SHA-256 against the prior revision).
   modelled on DEDB's: title bar, tab strip, 12 sections, audit log. DEDB gates
   on an admin role; here the gate is signed in **and** the password typed
   again within 15 minutes (the "admin window", kept in memory per login and
-  extended by each admin request). With no password set, `/admin` opens only
-  to a browser on the server itself and offers to set the first password.
+  extended by admin activity: every change, and GETs the console marks
+  `X-NWDash-Activity: 1`; timed refreshes leave it off so an unattended
+  console still locks). With no password set, `/admin` opens only to a
+  browser on the server itself: a loopback peer with no proxy-forwarding
+  header (a local reverse proxy also connects from loopback), plus the
+  one-time setup code `run()` writes to `data/setup-code.txt` at every start
+  (nginx's default `proxy_pass` adds no forwarding header, so the code is
+  what proves file access). It then offers to set the first password.
   Every `/api/admin/*` route re-checks this; POSTs also keep the global JSON,
   same-origin and CSRF rules. Sections that edit existing data
   (connections, email, schedules, snapshots) call the same routes the

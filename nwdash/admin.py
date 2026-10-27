@@ -13,10 +13,12 @@ here take plain values and return (status, body) like handle_alert_automation.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
 import platform
+import secrets
 import shutil
 import socket
 import ssl
@@ -51,6 +53,7 @@ from .config import (
     LOG,
     LOG_FILE,
     PROCESS_START_TIME,
+    SETUP_CODE_FILE,
 )
 from .models import (
     SHARE_TOKEN_LOCK,
@@ -90,40 +93,128 @@ def is_loopback_client(ip: str) -> bool:
         return False
 
 
-def console_access(client_ip: str, authenticated: bool) -> str:
+# A reverse proxy on this host connects from loopback, so its socket address
+# says nothing about where the browser is. Proxies that forward add one of
+# these (IIS ARR adds X-ARR-Log-ID and X-Forwarded-For by default); a request
+# carrying any of them is never treated as coming from the server itself.
+_PROXY_HEADERS = frozenset({
+    "forwarded", "via", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto",
+    "x-forwarded-server", "x-real-ip", "x-client-ip", "x-original-url", "x-arr-log-id",
+})
+
+
+def is_local_request(client_ip: str, headers: Any = None) -> bool:
+    """From a browser on the server itself: a loopback peer, not via a proxy.
+    A proxy that adds none of the headers above (nginx's default proxy_pass)
+    still passes this, which is why no-password access also needs the setup code."""
+    if not is_loopback_client(client_ip):
+        return False
+    names = {str(name).lower() for name in (headers.keys() if headers is not None else ())}
+    return not names & _PROXY_HEADERS
+
+
+def console_access(client_ip: str, authenticated: bool, headers: Any = None) -> str:
     """'ok' (signed in), 'login', 'open' (no password, on the server itself)
-    or 'denied' (no password, from another machine)."""
+    or 'denied' (no password, from another machine or through a proxy)."""
     if _cfg.AUTH_ENABLED:
         return "ok" if authenticated else "login"
-    return "open" if is_loopback_client(client_ip) else "denied"
+    return "open" if is_local_request(client_ip, headers) else "denied"
 
 
-def admin_window_open(sid: str) -> bool:
-    """Admin reads and changes need the window open; with no password there is
-    nothing to type again, and console_access already limited it to loopback."""
+def admin_window_open(sid: str, setup_code: str = "") -> bool:
+    """Admin reads and changes need the window open. With no password there is
+    nothing to type again, so the setup code stands in for it: only someone
+    who can read the server's data folder has it."""
     if not _cfg.AUTH_ENABLED:
-        return True
+        return setup_code_ok(setup_code)
     return bool(sid) and LOGIN_SESSIONS.admin_until(sid) > 0
 
 
 def touch_admin_window(sid: str) -> None:
-    """Every admin request keeps the window open for another full period."""
+    """Keep the window open for another full period. Called for admin activity
+    only (changes, and reads the person asked for), never for background
+    refreshes, so an unattended console still locks."""
     if _cfg.AUTH_ENABLED and sid and LOGIN_SESSIONS.admin_until(sid) > 0:
         LOGIN_SESSIONS.unlock_admin(sid, ADMIN_UNLOCK_SECONDS)
 
 
-def console_state(sid: str, client_ip: str, authenticated: bool) -> dict[str, Any]:
+def console_state(sid: str, client_ip: str, authenticated: bool, headers: Any = None, setup_code: str = "") -> dict[str, Any]:
     until = LOGIN_SESSIONS.admin_until(sid) if (_cfg.AUTH_ENABLED and sid) else 0.0
-    return {
+    state = {
         "ok": True,
-        "access": console_access(client_ip, authenticated),
+        "access": console_access(client_ip, authenticated, headers),
         "passwordSet": bool(_cfg.AUTH_ENABLED),
-        "unlocked": admin_window_open(sid),
+        "unlocked": admin_window_open(sid, setup_code),
         "unlockedUntil": int(until),
         "unlockSeconds": ADMIN_UNLOCK_SECONDS,
         "client": client_ip,
         "version": APP_VERSION,
     }
+    if not _cfg.AUTH_ENABLED:
+        state["setupCodeFile"] = SETUP_CODE_FILE.name
+    return state
+
+
+# ── Setup code (no password set) ────────────────────────────────────────────
+# Loopback alone cannot prove the browser is on the server (see _PROXY_HEADERS),
+# so with no password the console also asks for this code. run() makes a new
+# one at every start and writes it to SETUP_CODE_FILE; setting the first
+# password removes it.
+
+_SETUP_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O or 1/I to misread
+_SETUP_LOCK = threading.Lock()
+_setup_code = ""
+
+
+def _normalize_code(code: Any) -> str:
+    return "".join(ch for ch in str(code or "").upper() if ch.isalnum())
+
+
+def prepare_setup_code() -> tuple[str, bool]:
+    """Create this boot's setup code and write it to SETUP_CODE_FILE. Returns
+    (code, written); when the file cannot be written the caller prints it."""
+    global _setup_code
+    raw = "".join(secrets.choice(_SETUP_ALPHABET) for _ in range(12))
+    with _SETUP_LOCK:
+        _setup_code = raw
+    code = "-".join(raw[i:i + 4] for i in range(0, len(raw), 4))
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        SETUP_CODE_FILE.write_text(code + "\n", encoding="ascii")
+    except OSError as exc:
+        LOG.warning(f"could not write {SETUP_CODE_FILE.name}: {exc}", extra={"event": "auth"})
+        return code, False
+    return code, True
+
+
+def setup_code_ok(code: Any) -> bool:
+    with _SETUP_LOCK:
+        expected = _setup_code
+    given = _normalize_code(code)
+    return bool(expected and given) and hmac.compare_digest(given, expected)
+
+
+def clear_setup_code() -> None:
+    global _setup_code
+    with _SETUP_LOCK:
+        _setup_code = ""
+    try:
+        SETUP_CODE_FILE.unlink(missing_ok=True)
+    except OSError as exc:
+        LOG.warning(f"could not remove {SETUP_CODE_FILE.name}: {exc}", extra={"event": "auth"})
+
+
+def setup_code_problem(code: Any, client_ip: str) -> tuple[int, str]:
+    """(0, "") when `code` is this boot's setup code, else the status and error
+    to answer with. A wrong code counts toward the sign-in lockout."""
+    if _login_rate_limited(client_ip):
+        return HTTPStatus.TOO_MANY_REQUESTS, "Too many wrong codes. Wait five minutes and try again."
+    if setup_code_ok(code):
+        return 0, ""
+    if _normalize_code(code):  # only a typed code is a guess
+        _record_login_failure(client_ip)
+        return HTTPStatus.FORBIDDEN, "That setup code is not right."
+    return HTTPStatus.FORBIDDEN, f"Enter the setup code from {SETUP_CODE_FILE.name} in the dashboard's data folder on the server."
 
 
 def unlock(sid: str, password: str, client_ip: str) -> tuple[int, dict[str, Any]]:
@@ -529,18 +620,24 @@ def password_problem(password: str) -> str:
     return ""
 
 
-def first_password(password: str, client_ip: str) -> tuple[int, dict[str, Any]]:
-    """Set the first gateway password from the server itself. Sign-in is on for
-    every viewer from now on; the caller issues this browser its cookie."""
+def first_password(password: str, client_ip: str, headers: Any = None, setup_code: Any = "") -> tuple[int, dict[str, Any]]:
+    """Set the first gateway password from the server itself, proved by the
+    setup code. Sign-in is on for every viewer from now on; the caller issues
+    this browser its cookie."""
     if _cfg.AUTH_ENABLED:
         return HTTPStatus.CONFLICT, {"ok": False, "error": "A password is already set."}
-    if not is_loopback_client(client_ip):
+    if not is_local_request(client_ip, headers):
         return HTTPStatus.FORBIDDEN, {"ok": False, "error": "Set the first password from the server itself."}
+    status, problem = setup_code_problem(setup_code, client_ip)
+    if status:
+        return status, {"ok": False, "code": "setup_code_required", "error": problem}
     problem = password_problem(password)
     if problem:
         return HTTPStatus.BAD_REQUEST, {"ok": False, "error": problem}
     set_auth_password(password)
     _cfg.AUTH_ENABLED = True
+    clear_setup_code()
+    _clear_login_failures(client_ip)
     audit("Password set", ip=client_ip, item="gateway password", field="sign-in", old="off", new="on")
     LOG.info("gateway password set from the admin console; sign-in is now required", extra={"event": "auth"})
     return HTTPStatus.OK, {"ok": True}

@@ -59,8 +59,10 @@ and rollback is clean.
   DEDB's: Health with a self-test, Sessions, Audit, Logs, Connections, Email,
   Schedules, Snapshots, Share links, Appearance, Security and TLS. It asks
   for the dashboard password again before admin changes after 15 minutes
-  idle. With no password set it opens only on the server itself, and offers
-  to set one.
+  idle; the Logs tab's auto-refresh does not count as activity. With no
+  password set it opens only on the server itself, never through a reverse
+  proxy, and asks for the one-time setup code the service writes to
+  `data\setup-code.txt` at start, then offers to set a password.
 - **Audit log**: sign-ins, failed sign-ins and changes (from the console and
   from the dashboard) with old and new values, in `data\audit.jsonl`.
   Passwords are never recorded.

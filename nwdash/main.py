@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as _cfg
-from .admin import load_console_allowlist
+from .admin import load_console_allowlist, prepare_setup_code
 from .auth import _is_loopback_bind, auth_password_configured, set_auth_password
 from .certs import ensure_certificate
 from .config import (
@@ -27,6 +27,7 @@ from .config import (
     DEFAULT_PORT,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     LOG,
+    SETUP_CODE_FILE,
     configure_logging,
 )
 from .emailer import automation_scheduler_loop, cancel_alert_automation, restore_automations_from_disk
@@ -239,6 +240,15 @@ def run(argv: list[str] | None = None) -> int:
     else:
         print("Dashboard authentication is disabled (local loopback bind).")
         LOG.info("authentication disabled (loopback bind)", extra={"event": "auth"})
+    if not _cfg.AUTH_ENABLED:
+        # With no password, the admin console asks for this code: a loopback
+        # address alone cannot tell a browser on this server from one behind a
+        # reverse proxy here. Only the path is printed, so it stays out of logs.
+        code, written = prepare_setup_code()
+        if written:
+            print(f"To set a password, open /admin on this server and enter the setup code in {SETUP_CODE_FILE}.")
+        else:
+            print(f"To set a password, open /admin on this server and enter setup code {code}.")
 
     def _handle_term(_signum: int, _frame: Any) -> None:
         raise KeyboardInterrupt

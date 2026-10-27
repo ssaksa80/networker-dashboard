@@ -116,6 +116,9 @@ AUTH_SESSIONS_FILE = DATA_DIR / "auth_sessions.json"
 AUDIT_FILE = DATA_DIR / "audit.jsonl"
 AUDIT_MAX_BYTES = 2 * 1024 * 1024  # then rotated once to audit.jsonl.1
 CONSOLE_ALLOWLIST_FILE = DATA_DIR / "allowed_hosts.json"
+# Written at start-up while no password is set: proof of access to the server's
+# files, which the admin console asks for before it opens without a password.
+SETUP_CODE_FILE = DATA_DIR / "setup-code.txt"
 ADMIN_UNLOCK_SECONDS = 15 * 60  # admin changes ask for the password again after this long idle
 UI_DESIGNS = ("daylight", "aurora", "command", "dedb")
 UI_MOTION_LEVELS = ("full", "subtle", "off")

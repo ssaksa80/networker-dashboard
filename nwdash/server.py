@@ -355,23 +355,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _audit(self, action: str, **fields: Any) -> None:
         _admin.audit(action, ip=self.client_address[0], sid=self._sid(), **fields)
 
-    def _admin_gate(self) -> bool:
-        """The admin console's checks on top of the dashboard's sign-in: from the
-        server itself when there is no password, and the admin window open. On
-        failure the error has been sent (and the body drained)."""
-        access = _admin.console_access(self.client_address[0], self._authenticated())
-        if access not in ("ok", "open"):
-            self._drain_request_body()
-            self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "code": access,
-                                                   "error": "The admin console is not available from this address."})
+    def _setup_code(self) -> str:
+        """The setup code the console sends while no password is set."""
+        return str(self.headers.get("X-NWDash-Setup-Code") or "")
+
+    def _console_reachable(self) -> bool:
+        """Signed in, or (no password) a browser on the server itself and not
+        through a proxy. On failure the 403 has been sent and the body drained."""
+        access = _admin.console_access(self.client_address[0], self._authenticated(), self.headers)
+        if access in ("ok", "open"):
+            return True
+        self._drain_request_body()
+        self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "code": access,
+                                               "error": "The admin console is not available from this address."})
+        return False
+
+    def _admin_gate(self, activity: bool) -> bool:
+        """The admin console's checks on top of the dashboard's sign-in: the
+        console reachable, then the admin window open (the setup code when no
+        password is set). Only `activity` (a change, or a read the person asked
+        for) extends the window; background refreshes do not, so an unattended
+        console still locks. On failure the error has been sent (body drained)."""
+        if not self._console_reachable():
             return False
+        if not _cfg.AUTH_ENABLED:
+            status, problem = _admin.setup_code_problem(self._setup_code(), self.client_address[0])
+            if status:
+                self._drain_request_body()
+                self._send_json(status, {"ok": False, "code": "setup_code_required", "error": problem})
+                return False
+            return True
         sid = self._sid()
         if not _admin.admin_window_open(sid):
             self._drain_request_body()
             self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "code": "unlock_required",
                                                    "error": "Type the password again to make admin changes."})
             return False
-        _admin.touch_admin_window(sid)
+        if activity:
+            _admin.touch_admin_window(sid)
         return True
 
     def _listener_probe(self) -> tuple[bool, str]:
@@ -384,7 +405,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return self_test_dashboard_listener(url, timeout_seconds=3.0, cert_path=cert)
 
     def _handle_admin_get(self, path: str, query: dict[str, str]) -> None:
-        if not self._admin_gate():
+        # The console marks reads a person asked for; its timed refreshes don't.
+        if not self._admin_gate(activity=self.headers.get("X-NWDash-Activity") == "1"):
             return
         sid = self._sid()
         route = path[len("/api/admin/"):]
@@ -429,10 +451,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         route = path[len("/api/admin/"):]
         ip = self.client_address[0]
         if route in ("unlock", "lock"):
-            access = _admin.console_access(ip, self._authenticated())
-            if access not in ("ok", "open"):
-                self._drain_request_body()
-                self._send_error_json(HTTPStatus.FORBIDDEN, "The admin console is not available from this address.")
+            if not self._console_reachable():
                 return
             payload = self._read_json_body()
             if route == "lock":
@@ -441,7 +460,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             status, body = _admin.unlock(self._sid(), str(payload.get("password") or ""), ip)
             self._send_json(status, body)
             return
-        if not self._admin_gate():
+        if not self._admin_gate(activity=True):
             return
         sid = self._sid()
         payload = self._read_json_body()
@@ -488,7 +507,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._drain_request_body()
             self._send_error_json(HTTPStatus.BAD_REQUEST, "Invalid request.")
             return
-        status, body = _admin.first_password(str(payload.get("password") or ""), ip)
+        status, body = _admin.first_password(str(payload.get("password") or ""), ip, self.headers,
+                                             str(payload.get("setupCode") or ""))
         if status != HTTPStatus.OK:
             self._send_json(status, body)
             return
@@ -593,7 +613,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/state":
                 authenticated = self._authenticated()
                 sid = self._sid() if authenticated else ""
-                self._send_json(HTTPStatus.OK, _admin.console_state(sid, self.client_address[0], authenticated))
+                self._send_json(HTTPStatus.OK, _admin.console_state(sid, self.client_address[0], authenticated,
+                                                                    self.headers, self._setup_code()))
                 return
 
             # --- TV wall-display mode: auth-gated exactly like / ---
