@@ -1,4 +1,4 @@
-"""Unit tests for client-side logic in nwdash/assets/app.js.
+"""Unit tests for client-side logic in nwdash/assets/app.js and admin.js.
 
 Functions under test are extracted from the asset source by regex and
 evaluated in a Node.js subprocess with minimal stubs — no browser needed.
@@ -11,15 +11,18 @@ import subprocess
 import unittest
 from pathlib import Path
 
-APP_JS = (Path(__file__).resolve().parent.parent / "nwdash" / "assets" / "app.js").read_text(encoding="utf-8")
+ASSETS = Path(__file__).resolve().parent.parent / "nwdash" / "assets"
+APP_JS = (ASSETS / "app.js").read_text(encoding="utf-8")
+ADMIN_JS = (ASSETS / "admin.js").read_text(encoding="utf-8")
 
 NODE = shutil.which("node")
 
 
-def _extract(pattern: str) -> str:
-    match = re.search(pattern, APP_JS, re.DOTALL)
+def _extract(pattern: str, source: str = APP_JS) -> str:
+    match = re.search(pattern, source, re.DOTALL)
     if not match:
-        raise AssertionError(f"pattern not found in app.js: {pattern!r}")
+        name = "admin.js" if source is ADMIN_JS else "app.js"
+        raise AssertionError(f"pattern not found in {name}: {pattern!r}")
     return match.group(0)
 
 
@@ -221,6 +224,92 @@ const window = globalThis;
 
     def test_non_api_401_does_not_reload(self):
         self.assertEqual(self.result["notApi"], {"status": 401, "reloads": 0})
+
+
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping admin.js logic tests")
+class TestAdminConsoleSignsOutOnlyForGatewayLogin(unittest.TestCase):
+    """The admin console's api() helper took every 401 for a lost sign-in.
+
+    POST /api/admin/password answers 401 "The current password is wrong.", so a
+    mistyped current password threw the admin back to the sign-in card and the
+    error never showed. The unlock card had the opposite fault: it went back to
+    sign-in only on a 401 without an error, and the gateway's 401 always has
+    one. Only the gateway's 401 carries X-NWDash-Login (review F2). The real
+    api() and unlock card run here against a fake fetch.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        api = _extract(r"      // ── Talking to the server ─+\n.*?\n      function fail\(e\) \{[^\n]*\n", ADMIN_JS)
+        stepup = _extract(r"        stepup: \(\) => \(\{\n.*?\n        \}\),\n", ADMIN_JS)
+        script = r"""
+let boots = 0;
+const shown = [];
+async function boot() { boots++; }
+function showGate(kind) { shown.push(kind); }
+function showConsole() { shown.push("console"); }
+function toast() {}
+const $ = () => ({value: "typed"});
+let csrf = "t";
+let state = {access: "ok", passwordSet: true, unlocked: true, unlockedUntil: 0, unlockSeconds: 900};
+let setupCode = "";
+let continuedWithoutPassword = false;
+let expiredNotice = "";
+let reply = null;
+globalThis.fetch = async (url) => String(url) === "/api/csrf"
+  ? new Response('{"csrfToken":"t"}', {status: 200})
+  : reply();
+""" + api + "const GATES = {\n" + stepup + "};\n" + r"""
+const answer = (status, body, headers) => { reply = () => new Response(JSON.stringify(body), {status, headers}); };
+const SIGNED_OUT = [401, {ok: false, code: "login_required", error: "Authentication required."}, {"X-NWDash-Login": "required"}];
+const out = {};
+const run = async (name, call) => {
+  const before = boots;
+  expiredNotice = "";
+  let result;
+  try { await call(); result = {ok: true}; } catch (e) { result = {gate: e instanceof GateError, error: e.message}; }
+  out[name] = {...result, boots: boots - before, notice: expiredNotice};
+};
+(async () => {
+  answer(401, {ok: false, error: "The current password is wrong."}, {});
+  await run("wrongCurrentPassword", () => post("/api/admin/password", {current: "x", new: "y"}));
+  answer(...SIGNED_OUT);
+  await run("signedOutPost", () => post("/api/admin/password", {current: "x", new: "y"}));
+  await run("signedOutGet", () => get("/api/admin/overview"));
+  answer(401, {ok: false, error: "Wrong password."}, {});
+  await run("unlockWrongPassword", () => GATES.stepup().submit({}));
+  answer(...SIGNED_OUT);
+  await run("unlockSignedOut", () => GATES.stepup().submit({}));
+  state.unlocked = false;
+  answer(200, {ok: true, unlockedUntil: 123}, {});
+  await run("unlockOk", () => GATES.stepup().submit({}));
+  out.unlocked = state.unlocked;
+  out.shown = shown;
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+        cls.result = _run_node(script)
+
+    def test_wrong_current_password_shows_its_error(self):
+        self.assertEqual(self.result["wrongCurrentPassword"],
+                         {"gate": False, "error": "The current password is wrong.", "boots": 0, "notice": ""})
+
+    def test_gateway_401_goes_back_to_sign_in(self):
+        signed_out = {"gate": True, "error": "signed out", "boots": 1, "notice": "Your session has expired. Please sign in again."}
+        self.assertEqual(self.result["signedOutPost"], signed_out)
+        self.assertEqual(self.result["signedOutGet"], signed_out)
+
+    def test_unlock_with_a_wrong_password_shows_its_error(self):
+        self.assertEqual(self.result["unlockWrongPassword"], {"gate": False, "error": "Wrong password.", "boots": 0, "notice": ""})
+
+    def test_unlock_when_signed_out_goes_back_to_sign_in(self):
+        self.assertEqual(self.result["unlockSignedOut"],
+                         {"ok": True, "boots": 1, "notice": "Your session has expired. Please sign in again."})
+
+    def test_unlock_with_the_password_opens_the_console(self):
+        self.assertEqual(self.result["unlockOk"], {"ok": True, "boots": 0, "notice": ""})
+        self.assertTrue(self.result["unlocked"])
+        self.assertEqual(self.result["shown"], ["console"])
 
 
 class TestSessionIdSourceGuards(unittest.TestCase):

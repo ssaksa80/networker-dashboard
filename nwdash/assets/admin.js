@@ -1,7 +1,8 @@
     // Admin console (/admin), after DEDB's: boot asks the server which screen to
     // show (sign in, first run, type the password again, or refused), then a tab
     // strip of sections. Every /api/admin call needs the admin window open; a
-    // 403 "unlock_required" brings back the password card, a 401 the sign-in.
+    // 403 "unlock_required" brings back the password card, the gateway's 401
+    // (X-NWDash-Login: required) the sign-in.
     (function () {
       "use strict";
       const $ = (sel, root) => (root || document).querySelector(sel);
@@ -44,6 +45,16 @@
           if (r.ok) csrf = (await r.json()).csrfToken || "";
         } catch (_e) { /* signed out */ }
       }
+      // Only the gateway's "not signed in" 401 carries X-NWDash-Login (review F2),
+      // and only that one goes back to the sign-in. Any other 401 is a password
+      // typed here being wrong (the current password on Security, the unlock
+      // card), so the caller shows its error.
+      async function rebootIfSignedOut(r) {
+        if (r.status !== 401 || r.headers.get("X-NWDash-Login") !== "required") return false;
+        expiredNotice = "Your session has expired. Please sign in again.";
+        await boot();
+        return true;
+      }
       // `background` marks timed refreshes: only reads a person asked for (and
       // every change) keep the admin window open, so an unattended console locks.
       async function api(method, path, payload, retried, background) {
@@ -59,11 +70,7 @@
         const r = await fetch(path, opts);
         let data = {};
         try { data = await r.json(); } catch (_e) { data = {}; }
-        if (r.status === 401) {
-          expiredNotice = "Your session has expired. Please sign in again.";
-          await boot();
-          throw new GateError("signed out");
-        }
+        if (await rebootIfSignedOut(r)) throw new GateError("signed out");
         if (r.status === 403 && data.code === "unlock_required") {
           state.unlocked = false;
           showGate("stepup");
@@ -309,7 +316,7 @@
           submit: async (form) => {
             const r = await fetch("/api/admin/unlock", {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": csrf}, body: JSON.stringify({password: $("#gPw", form).value})});
             const data = await r.json().catch(() => ({}));
-            if (r.status === 401 && !data.error) { await boot(); return; }
+            if (await rebootIfSignedOut(r)) return;
             if (!r.ok) throw new Error(data.error || "Unlock failed.");
             state.unlocked = true;
             state.unlockedUntil = data.unlockedUntil || Math.floor(Date.now() / 1000) + state.unlockSeconds;
