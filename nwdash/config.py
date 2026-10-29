@@ -94,6 +94,9 @@ BRAND_CARD_SOLID = "#103a47"
 BRAND_CARD_INK = "#ffffff"
 CUSTOM_REPORT_RANGE = "custom"
 DEFAULT_REPORT_RANGE = "24h"
+# What a scheduled daily report covers unless its schedule names another
+# rolling range. Never the range the dashboard was last viewed with.
+DAILY_REPORT_RANGE = "24h"
 SESSION_TTL_SECONDS = 365 * 24 * 60 * 60  # 1 year — sessions persist until server restart or explicit clear
 SHARED_REFRESH_SECONDS = 60
 ALERT_AUTOMATION_MIN_INTERVAL_MINUTES = 1

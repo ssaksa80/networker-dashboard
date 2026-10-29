@@ -134,6 +134,13 @@ for a matching session. If the encryption key was regenerated (DPAPI),
 the schedule stays armed but inert, with one loud log warning, until
 re-saved.
 
+A daily report covers the rolling range stored on its schedule
+(`report_range`, `24h` unless set) and is sent once per local date and
+range. It never uses, or writes back, the range the dashboard was last
+viewed with: `build_dashboard_from_session(..., remember_range=False)`.
+Interactive range changes are still remembered on the session, because
+the shared view refreshes on the session's range.
+
 ## Operational gotchas
 
 - `data/.session_key` and `data/.auth_key` are DPAPI-protected per

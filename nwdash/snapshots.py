@@ -17,6 +17,7 @@ from .config import (
     ALERT_AUTOMATION_MAX_INTERVAL_MINUTES,
     ALERT_AUTOMATION_MIN_INTERVAL_MINUTES,
     AUTO_SNAPSHOT_FILE,
+    DAILY_REPORT_RANGE,
     DASHBOARD_SNAPSHOT_FILE,
     DATA_DIR,
     DEFAULT_REPORT_RANGE,
@@ -24,6 +25,7 @@ from .config import (
     EMAIL_PROFILES_FILE,
     HOST_PATTERN,
     LOG,
+    REPORT_RANGES,
     THEME_PALETTES,
     TIME_HHMM_PATTERN,
     UI_DESIGNS,
@@ -392,6 +394,19 @@ def parse_report_time(value: Any) -> str:
     return f"{int(match.group(1)):02d}:{match.group(2)}"
 
 
+def parse_report_range(value: Any) -> str:
+    """The rolling window a scheduled report covers; the daily window when
+    unset. A custom date range is refused: it would repeat the same dates in
+    every report."""
+    report_range = str(value or DAILY_REPORT_RANGE).strip().lower()
+    if report_range not in REPORT_RANGES:
+        raise BadRequest(
+            f"Scheduled report range must be one of {', '.join(REPORT_RANGES)}; "
+            "a custom date range would repeat the same dates in every report."
+        )
+    return report_range
+
+
 def parse_theme(value: Any) -> str:
     theme = str(value or "default").strip().lower()
     return theme if theme in THEME_PALETTES else "default"
@@ -439,6 +454,7 @@ def parse_smtp_settings(payload: dict[str, Any]) -> dict[str, Any]:
         "trigger": trigger,
         "schedule_type": schedule_type,
         "report_time": parse_report_time(payload.get("reportTime")),
+        "report_range": parse_report_range(payload.get("reportRange")),
         "theme": parse_theme(payload.get("theme")),
         "quiet_start": quiet_start,
         "quiet_end": quiet_end,
@@ -496,6 +512,7 @@ def email_config_public() -> dict[str, Any]:
         "dailyReport": {
             "recipients": "; ".join(daily.get("recipients") or []),
             "reportTime": str(daily.get("report_time") or "08:00"),
+            "reportRange": str(daily.get("report_range") or DAILY_REPORT_RANGE),
             "theme": str(daily.get("theme") or "default"),
         },
     }
@@ -672,6 +689,7 @@ def save_email_profile(name: str, payload: dict[str, Any]) -> dict[str, Any]:
             "trigger": settings["trigger"],
             "scheduleType": settings["schedule_type"],
             "reportTime": settings["report_time"],
+            "reportRange": settings["report_range"],
             "theme": settings["theme"],
             "quietStart": settings["quiet_start"],
             "quietEnd": settings["quiet_end"],
@@ -785,6 +803,7 @@ def save_email_config_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             types["daily_report"] = {
                 "recipients": settings["recipients"],
                 "report_time": settings["report_time"],
+                "report_range": settings["report_range"],
                 "theme": settings["theme"],
             }
         else:

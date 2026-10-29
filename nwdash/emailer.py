@@ -16,7 +16,17 @@ from email.message import EmailMessage
 from http import HTTPStatus
 from typing import Any
 
-from .config import APP_NAME, AUTOMATIONS_FILE, DATA_DIR, DEFAULT_API_PORT, LOG, debug_log, safe_log_text
+from .config import (
+    APP_NAME,
+    AUTOMATIONS_FILE,
+    DAILY_REPORT_RANGE,
+    DATA_DIR,
+    DEFAULT_API_PORT,
+    LOG,
+    REPORT_RANGES,
+    debug_log,
+    safe_log_text,
+)
 from .models import (
     SHARED_REFRESH_STOP,
     AlertAutomation,
@@ -328,6 +338,7 @@ def _profile_form_payload(profile: dict[str, Any]) -> dict[str, Any]:
         "trigger": profile.get("trigger"),
         "scheduleType": profile.get("scheduleType"),
         "reportTime": profile.get("reportTime"),
+        "reportRange": profile.get("reportRange"),
         "theme": profile.get("theme"),
         "quietStart": profile.get("quietStart"),
         "quietEnd": profile.get("quietEnd"),
@@ -423,6 +434,7 @@ def _arm_profile_automation(name: str, profile: dict[str, Any], session_id: str)
         trigger=settings["trigger"],
         schedule_type=settings["schedule_type"],
         report_time=settings["report_time"],
+        report_range=settings["report_range"],
         created_at=time.time(),
         theme=settings["theme"],
         quiet_start=settings["quiet_start"],
@@ -551,6 +563,7 @@ def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
         "trigger": automation.trigger,
         "schedule_type": automation.schedule_type,
         "report_time": automation.report_time,
+        "report_range": automation.report_range,
         "created_at": automation.created_at,
         "theme": automation.theme,
         "last_signature": automation.last_signature,
@@ -614,6 +627,7 @@ def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[st
         "trigger": _entry("trigger", automation.trigger),
         "scheduleType": automation.schedule_type,
         "reportTime": _entry("report_time", automation.report_time),
+        "reportRange": _entry("report_range", automation.report_range),
         "theme": _entry("theme", automation.theme),
         "quietStart": _entry("quiet_start", automation.quiet_start),
         "quietEnd": _entry("quiet_end", automation.quiet_end),
@@ -633,7 +647,7 @@ def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[st
     changed = False
     for attr in (
         "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from",
-        "recipients", "interval_minutes", "trigger", "report_time", "theme",
+        "recipients", "interval_minutes", "trigger", "report_time", "report_range", "theme",
         "quiet_start", "quiet_end", "digest",
     ):
         if getattr(automation, attr) != settings[attr]:
@@ -717,6 +731,7 @@ def restore_automations_from_disk() -> int:
                 dropped += 1
                 continue
             connection = rec.get("connection")
+            report_range = str(rec.get("report_range") or "")
             automation = AlertAutomation(
                 automation_id=str(rec.get("automation_id") or aid),
                 session_id=session_id,
@@ -732,6 +747,7 @@ def restore_automations_from_disk() -> int:
                 trigger=str(rec.get("trigger") or "critical"),
                 schedule_type=str(rec.get("schedule_type") or "alert"),
                 report_time=str(rec.get("report_time") or "08:00"),
+                report_range=report_range if report_range in REPORT_RANGES else DAILY_REPORT_RANGE,
                 created_at=float(rec.get("created_at") or time.time()),
                 theme=str(rec.get("theme") or "default"),
                 last_signature=str(rec.get("last_signature") or ""),
@@ -891,7 +907,12 @@ def run_alert_automation(automation_id: str) -> None:
             return
         if not _ensure_automation_session(automation):
             return  # run skipped; finally-block reschedules the next attempt
-        status, dashboard = build_dashboard_from_session(automation.session_id)
+        # A daily report always covers its own range, never whatever range the
+        # dashboard was last viewed with, and building it leaves that view alone.
+        report_range = automation.report_range if automation.schedule_type == "daily_report" else None
+        status, dashboard = build_dashboard_from_session(
+            automation.session_id, report_range, remember_range=False
+        )
         debug_log(f"run_alert_automation build status={status} id={automation_id}")
         if status != HTTPStatus.OK:
             raise RuntimeError(dashboard.get("error") or f"Dashboard session refresh failed (HTTP {status}).")
@@ -1115,6 +1136,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 "recipients": ", ".join(automation.recipients or []),
                 "intervalMinutes": automation.interval_minutes,
                 "reportTime": automation.report_time,
+                "reportRange": automation.report_range,
                 "trigger": automation.trigger,
                 "theme": automation.theme,
                 "smtpHost": automation.smtp_host,
@@ -1271,6 +1293,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         trigger=settings["trigger"],
         schedule_type=settings["schedule_type"],
         report_time=settings["report_time"],
+        report_range=settings["report_range"],
         created_at=time.time(),
         theme=settings["theme"],
         quiet_start=settings["quiet_start"],
@@ -1290,7 +1313,9 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 plain_body, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
                 subject = "NetWorker daily backup status and SLA report - test"
             else:
-                status, dashboard = build_dashboard_from_session(session_id)
+                status, dashboard = build_dashboard_from_session(
+                    session_id, automation.report_range, remember_range=False
+                )
                 if status == HTTPStatus.OK:
                     dashboard["theme"] = automation.theme
                     dashboard["scheduledReport"] = True
