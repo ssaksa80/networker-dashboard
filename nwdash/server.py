@@ -130,6 +130,28 @@ _AUDITED_AUTOMATION_ACTIONS = {
     "toggle-profile": "Email profile switched",
 }
 
+# Sent only with the gateway's own "not signed in" 401. The dashboard reloads to
+# its sign-in page on a 401 that carries it, and on no other (review F2).
+LOGIN_REQUIRED_HEADER = "X-NWDash-Login"
+
+
+def upstream_auth_failure(status: int, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Answer a NetWorker server's 401 or 403 as 502 with a code.
+
+    The collectors pass on the NetWorker server's own 401 or 403 when it refuses
+    the credentials. Sent unchanged, it looked like this gateway's login
+    expiring: the dashboard reloaded instead of showing the error (review F2).
+    """
+    if status not in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+        return status, body
+    detail = str(body.get("error") or "").strip() or "Check the user name, password and account access."
+    return HTTPStatus.BAD_GATEWAY, {
+        **body,
+        "code": "networker_auth_failed",
+        "upstreamStatus": int(status),
+        "error": f"The NetWorker server refused the credentials (HTTP {int(status)}). {detail}",
+    }
+
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = f"NetWorkerDashboard/{APP_VERSION}"
@@ -208,12 +230,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 extra={"request_id": getattr(self, "request_id", "-"), "client": self.client_address[0]},
             )
 
-    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+    def _send_json(self, status: int, payload: dict[str, Any], extra_headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-        self._send_bytes(status, body, "application/json; charset=utf-8")
+        self._send_bytes(status, body, "application/json; charset=utf-8", extra_headers)
 
     def _send_error_json(self, status: int, message: str) -> None:
         self._send_json(status, {"ok": False, "error": message})
+
+    def _send_login_required(self) -> None:
+        """The gateway's 401: this request has no valid login."""
+        self._send_json(
+            HTTPStatus.UNAUTHORIZED,
+            {"ok": False, "code": "login_required", "error": "Authentication required."},
+            {LOGIN_REQUIRED_HEADER: "required"},
+        )
 
     def _read_json_body(self) -> dict[str, Any]:
         try:
@@ -642,7 +672,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             # --- Everything below requires authentication ---
             if _cfg.AUTH_ENABLED and not self._authenticated():
-                self._send_error_json(HTTPStatus.UNAUTHORIZED, "Authentication required.")
+                self._send_login_required()
                 return
 
             if path == "/api/csrf":
@@ -797,7 +827,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Auth gate for all other POST routes
         if _cfg.AUTH_ENABLED and not self._authenticated():
             self._drain_request_body()
-            self._send_error_json(HTTPStatus.UNAUTHORIZED, "Authentication required.")
+            self._send_login_required()
             return
         # CSRF gate: every state-changing route requires the per-session token.
         # Only meaningful when cookie auth is on (no session cookie, no CSRF).
@@ -1003,6 +1033,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     payload = _resolve_profile_password(payload)
                     config = validate_payload(payload)
                     status, body = build_dashboard(config)
+            status, body = upstream_auth_failure(status, body)
 
             if path == "/api/export":
                 if status >= 400:

@@ -38,8 +38,12 @@
             resp = await _fetch.apply(this, withCsrf(args));
           }
         }
+        // Reload to the sign-in page only when this gateway's login has gone:
+        // the server marks that 401. An expired dashboard session (409) or a
+        // NetWorker server refusing its credentials (502) is the caller's to show.
         try {
-          if (resp.status === 401 && url.indexOf("/api/") !== -1) { location.reload(); }
+          if (resp.status === 401 && url.indexOf("/api/") !== -1
+              && resp.headers.get("X-NWDash-Login") === "required") { location.reload(); }
         } catch (_e) {}
         return resp;
       };
@@ -915,12 +919,11 @@
       renderTablePage(rows, def);
     }
 
+    // Never takes data.sessionId: a page's session comes only from its own
+    // /api/dashboard or /api/current-dashboard answer (see isOwnPush).
     function renderDashboard(data) {
       diffAndNotify(latestDashboard, data);
       latestDashboard = data;
-      if (data.sessionId) {
-        sessionId = data.sessionId;
-      }
       updateMetrics(data.summary || {});
       renderManagement(data);
       renderServerHealth(data);
@@ -1794,11 +1797,13 @@
         });
         const data = await response.json();
         if (!response.ok) {
-          // 401 from server means session expired server-side.
-          // If silent refresh, keep showing last good data and note reconnect happening.
-          if (response.status === 401 && options.silent && latestDashboard) {
-            setStatus("Reconnecting…", "warn");
-            notice.textContent = "Session refreshing automatically — no action needed.";
+          // The dashboard session expired (409) or NetWorker refused the
+          // stored credentials (502). On a silent refresh keep the last good
+          // data on screen and say why.
+          const reconnectNeeded = data.code === "session_expired" || data.code === "networker_auth_failed";
+          if (reconnectNeeded && options.silent && latestDashboard) {
+            setStatus("Reconnect needed", "warn");
+            notice.textContent = `${data.error || "Reconnect with the password."} Showing the last data received.`;
             notice.classList.add("show");
             // Retry with password if available in form, else wait for next cycle
             const retryPayload = getPayload();
@@ -1812,6 +1817,7 @@
               });
               if (retryResp.ok) {
                 const retryData = await retryResp.json();
+                if (retryData.sessionId) sessionId = retryData.sessionId;
                 renderDashboard(retryData);
                 return;
               }
@@ -1822,6 +1828,7 @@
           renderFailure(data, data.error || data.message || `HTTP ${response.status}`);
           return;
         }
+        if (data.sessionId) sessionId = data.sessionId;
         renderDashboard(data);
       } catch (error) {
         if (options.silent && latestDashboard) {
@@ -2760,6 +2767,14 @@
     });
 
     // ── SSE live push ─────────────────────────────────────────────────────────
+    // Every open page gets every push: each /api/dashboard answer is broadcast,
+    // so another page's connection to another NetWorker server arrives here too.
+    // Apply only pushes for this page's own session. Export, Share and email act
+    // on sessionId, and diffAndNotify on latestDashboard, so a foreign push must
+    // touch neither.
+    function isOwnPush(data, ownSessionId) {
+      return !!(data && data.ok && ownSessionId && data.sessionId === ownSessionId);
+    }
     let sseSource = null;
     function startSSE() {
       if (sseSource) return;
@@ -2768,10 +2783,8 @@
       sseSource.addEventListener("dashboard", (e) => {
         try {
           const data = JSON.parse(e.data);
-          if (data && data.ok && latestDashboard) {
-            diffAndNotify(latestDashboard, data);
-            renderDashboard(data);
-          }
+          // renderDashboard runs diffAndNotify itself.
+          if (latestDashboard && isOwnPush(data, sessionId)) renderDashboard(data);
         } catch (_) {}
       });
       sseSource.addEventListener("error", () => {

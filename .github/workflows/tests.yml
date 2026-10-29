@@ -5,19 +5,56 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  test:
-    runs-on: windows-latest
+  lint:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - name: Install optional crypto dependency
-        run: python -m pip install cryptography
+      # Pinned: an unpinned ruff kept CI red for months when its default rules
+      # widened. Bump it deliberately, with the fixes in the same PR.
+      - name: Install ruff
+        run: python -m pip install --disable-pip-version-check ruff==0.17.2
       - name: Lint
-        run: |
-          python -m pip install ruff
-          ruff check .
-      - name: Smoke tests
+        run: ruff check .
+
+  test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12.10 is the embedded runtime the bundle ships (the pin in
+        # deploy/build-bundle.ps1); 3.14 is the newest CPython, so a future
+        # runtime move is no surprise. Change the first entry with that pin.
+        python-version: ["3.12.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # The version deploy/build-bundle.ps1 installs into the bundle's runtime.
+      - name: Install optional crypto dependency
+        run: python -m pip install --disable-pip-version-check cryptography==50.0.2
+      - name: Unit tests
         run: python -m unittest discover -s tests -v
+
+  deploy-scripts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Windows PowerShell 5.1, the shell install.ps1 runs under on servers.
+      - name: Installer tests
+        shell: powershell
+        run: |
+          $failed = @()
+          foreach ($t in Get-ChildItem deploy\test\*.test.ps1) {
+            Write-Host "== $($t.Name)"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $t.FullName
+            if ($LASTEXITCODE) { $failed += $t.Name }
+          }
+          if ($failed) { throw "failed: $($failed -join ', ')" }
