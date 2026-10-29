@@ -93,13 +93,22 @@ extraction (SHA-256 against the prior revision).
 ## Verification
 
 ```
-python -m unittest discover -s tests -v   # 27 tests, must pass
+python -m unittest discover -s tests -v   # the whole suite must pass
 ruff check .                              # must be clean
 ```
 
-CI (`.github/workflows/tests.yml`) runs both on windows-latest /
-Python 3.14 for every push and PR. Run the suite locally before any
-release claim — `py_compile` or a clean boot is not evidence.
+CI (`.github/workflows/tests.yml`) runs for every push to `main` and
+every PR:
+
+- ruff, pinned in the workflow (bump it on purpose, with its fixes);
+- the unit suite on windows-latest under Python 3.12.10, the embedded
+  runtime the bundle ships, and 3.14;
+- the installer tests in `deploy/test/` under Windows PowerShell 5.1.
+
+Tests are `unittest.TestCase` classes: `discover` does not collect bare
+pytest-style functions, so a test written that way never runs. Run the
+suite locally before any release claim — `py_compile` or a clean boot is
+not evidence.
 
 ## Persistence guarantees
 
