@@ -102,6 +102,141 @@ process.stdout.write(JSON.stringify(out));
         self.assertEqual(self.result["badMonth"], "NaN")
 
 
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping app.js logic tests")
+class TestLivePushKeepsItsSession(unittest.TestCase):
+    """Review F1: /api/stream broadcasts every page's dashboard to every page.
+
+    The old handler rendered any push, so a page connected to one NetWorker
+    server showed another page's server and took over its sessionId (Export,
+    Share and email then acted on that server), and diffAndNotify ran twice.
+    The real handler runs here against a fake EventSource.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        source = _extract(r"    // ── SSE live push ─+\n.*?\n    function stopSSE\(\) \{.*?\n    \}")
+        script = r"""
+let sessionId = "page-a";
+let latestDashboard = {ok: true, sessionId: "page-a", summary: {failedJobs: 0}};
+const rendered = [];
+let directDiffs = 0;
+function renderDashboard(data) { rendered.push(data.sessionId || null); latestDashboard = data; }
+function diffAndNotify() { directDiffs++; }
+const listeners = {};
+globalThis.EventSource = class {
+  constructor(url) { this.url = url; }
+  addEventListener(name, fn) { listeners[name] = fn; }
+  close() {}
+};
+const window = globalThis;
+""" + source + r"""
+startSSE();
+const push = (data) => listeners.dashboard({data: JSON.stringify(data)});
+const out = {};
+push({ok: true, sessionId: "page-b", summary: {failedJobs: 9}});
+out.afterForeign = {rendered: rendered.length, sessionId, latest: latestDashboard.sessionId};
+push({ok: true, summary: {failedJobs: 9}});
+out.afterUnnamed = rendered.length;
+push({ok: false, sessionId: "page-a"});
+out.afterFailed = rendered.length;
+push({ok: true, sessionId: "page-a", summary: {failedJobs: 1}});
+out.afterOwn = rendered.slice();
+out.directDiffs = directDiffs;
+sessionId = null;
+push({ok: true, sessionId: "page-a"});
+out.afterDisconnect = rendered.length;
+process.stdout.write(JSON.stringify(out));
+"""
+        cls.result = _run_node(script)
+
+    def test_push_for_another_session_is_ignored(self):
+        self.assertEqual(self.result["afterForeign"], {"rendered": 0, "sessionId": "page-a", "latest": "page-a"})
+
+    def test_push_without_a_session_or_ok_is_ignored(self):
+        self.assertEqual(self.result["afterUnnamed"], 0)
+        self.assertEqual(self.result["afterFailed"], 0)
+
+    def test_push_for_own_session_renders_once(self):
+        self.assertEqual(self.result["afterOwn"], ["page-a"])
+
+    def test_handler_leaves_diff_and_notify_to_render_dashboard(self):
+        self.assertEqual(self.result["directDiffs"], 0)
+        self.assertIn("diffAndNotify(latestDashboard, data)", _extract(r"function renderDashboard\(data\) \{.*?\n    \}"))
+
+    def test_page_without_a_session_applies_no_push(self):
+        self.assertEqual(self.result["afterDisconnect"], 1)
+
+
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping app.js logic tests")
+class TestFetchWrapperReloadsOnlyForGatewayLogin(unittest.TestCase):
+    """Review F2: the fetch wrapper reloaded the page on any /api 401.
+
+    NetWorker refusing its credentials and an expired dashboard session also
+    answered 401, so their errors never showed and pages could reload in a loop.
+    Only the gateway's 401 carries X-NWDash-Login (tests/test_login_required.py
+    checks the server side). The real wrapper runs here against a fake fetch.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        wrapper = _extract(r"    \(function\(\)\{\n      const _fetch = window\.fetch;.*?\n    \}\)\(\);")
+        script = r"""
+let reloads = 0;
+globalThis.location = {reload() { reloads++; }};
+let reply = null;
+globalThis.fetch = async (url) => String(url) === "/api/csrf"
+  ? new Response('{"csrfToken":"t"}', {status: 200})
+  : reply();
+const window = globalThis;
+""" + wrapper + r"""
+(async () => {
+  const out = {};
+  const call = async (name, url, method, status, headers) => {
+    reply = () => new Response("{}", {status, headers});
+    const before = reloads;
+    const r = await fetch(url, {method, headers: {"Content-Type": "application/json"}});
+    out[name] = {status: r.status, reloads: reloads - before};
+  };
+  await call("unmarked401", "/api/dashboard", "POST", 401, {});
+  await call("sessionExpired", "/api/dashboard", "POST", 409, {});
+  await call("networkerRefused", "/api/dashboard", "POST", 502, {});
+  await call("loginGonePost", "/api/dashboard", "POST", 401, {"X-NWDash-Login": "required"});
+  await call("loginGoneGet", "/api/status", "GET", 401, {"X-NWDash-Login": "required"});
+  await call("notApi", "/tv", "GET", 401, {"X-NWDash-Login": "required"});
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+        cls.result = _run_node(script)
+
+    def test_unmarked_401_is_left_to_the_caller(self):
+        self.assertEqual(self.result["unmarked401"], {"status": 401, "reloads": 0})
+
+    def test_upstream_failures_do_not_reload(self):
+        self.assertEqual(self.result["sessionExpired"], {"status": 409, "reloads": 0})
+        self.assertEqual(self.result["networkerRefused"], {"status": 502, "reloads": 0})
+
+    def test_gateway_401_reloads_to_the_sign_in_page(self):
+        self.assertEqual(self.result["loginGonePost"], {"status": 401, "reloads": 1})
+        self.assertEqual(self.result["loginGoneGet"], {"status": 401, "reloads": 1})
+
+    def test_non_api_401_does_not_reload(self):
+        self.assertEqual(self.result["notApi"], {"status": 401, "reloads": 0})
+
+
+class TestSessionIdSourceGuards(unittest.TestCase):
+    """Review F1: the page's sessionId comes only from its own answers."""
+
+    def test_render_dashboard_never_takes_a_session_id(self):
+        # renderDashboard also renders pushes, so it must not assign sessionId.
+        render = _extract(r"function renderDashboard\(data\) \{.*?\n    \}")
+        self.assertNotRegex(render, r"\bsessionId\s*=[^=]")
+
+    def test_load_dashboard_takes_the_session_from_its_own_answer(self):
+        load = _extract(r"async function loadDashboard\(options = \{\}\) \{.*?\n    \}")
+        self.assertIn("if (data.sessionId) sessionId = data.sessionId;", load)
+        self.assertIn("if (retryData.sessionId) sessionId = retryData.sessionId;", load)
+
+
 class TestPaginationSourceGuards(unittest.TestCase):
     """Source-level regression guards for the pagination reset bug."""
 

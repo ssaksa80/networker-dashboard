@@ -392,8 +392,11 @@ def build_dashboard_from_session(
     cleanup_dashboard_sessions()
     session = _get_session(session_id)
     if not session:
-        return 401, {
+        # 409, not 401: the browser reloads to the sign-in page on a gateway
+        # 401, which would hide this message (review F2).
+        return HTTPStatus.CONFLICT, {
             "ok": False,
+            "code": "session_expired",
             "error": "Dashboard session expired. Reconnect with the password.",
             "summary": {"health": "critical"},
             "serverHealth": unavailable_server_health("Dashboard session expired before server health could be checked."),
@@ -468,8 +471,9 @@ def build_server_health_from_session(session_id: str) -> tuple[int, dict[str, An
     cleanup_dashboard_sessions()
     session = _get_session(session_id)
     if not session:
-        return HTTPStatus.UNAUTHORIZED, {
+        return HTTPStatus.CONFLICT, {
             "ok": False,
+            "code": "session_expired",
             "error": "Dashboard session expired. Reconnect with the password.",
             "generatedAt": generated_at(),
             "serverHealth": unavailable_server_health("Dashboard session expired before server health could be refreshed."),
