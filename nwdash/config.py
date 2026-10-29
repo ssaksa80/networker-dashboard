@@ -203,4 +203,5 @@ ALLOWLIST_SOURCE = "none"
 # boot: a password changed in the admin console is then replaced at restart.
 AUTH_PASSWORD_FROM_STARTUP = False
 TLS_CERT_FILE = ""  # the serving certificate, set by run()
+TLS_KEY_FILE = ""  # its private key, set by run(); the admin console replaces both
 TLS_CERT_AUTO = False  # True when run() generated/used the self-signed one

@@ -79,7 +79,11 @@
           await refreshCsrf();
           return api(method, path, payload, true, background);
         }
-        if (!r.ok || data.ok === false) throw new Error(data.error || data.message || ("Request failed (HTTP " + r.status + ")."));
+        if (!r.ok || data.ok === false) {
+          const err = new Error(data.error || data.message || ("Request failed (HTTP " + r.status + ")."));
+          err.data = data;
+          throw err;
+        }
         if (!background && path.indexOf("/api/admin/") === 0 && state.passwordSet && state.unlocked) {
           state.unlockedUntil = Math.floor(Date.now() / 1000) + state.unlockSeconds;
         }
@@ -152,6 +156,12 @@
         const d = typeof value === "number" ? new Date(value * 1000) : new Date(value);
         if (Number.isNaN(d.getTime())) return String(value);
         return d.toLocaleString([], {day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"});
+      }
+      // Certificate dates are years apart: the year, not the time of day.
+      function day(value) {
+        if (!value) return "—";
+        const d = new Date(value);
+        return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleDateString([], {day: "2-digit", month: "short", year: "numeric"});
       }
       function duration(seconds) {
         const s = Math.max(0, Math.floor(seconds));
@@ -955,27 +965,92 @@
       });
 
       // ── TLS ─────────────────────────────────────────────────────────────
-      async function loadTls() {
-        try {
-          const t = await get("/api/admin/tls");
-          const banner = $("#tlsBanner");
-          if (!t.ok) { banner.hidden = false; banner.dataset.k = "bad"; banner.textContent = t.error || "The certificate could not be read."; $("#tlsRows").innerHTML = ""; return; }
-          const days = t.daysLeft;
-          const warn = t.selfSigned || (typeof days === "number" && days < 30);
-          banner.hidden = !warn;
-          banner.dataset.k = typeof days === "number" && days < 7 ? "bad" : "warn";
-          banner.textContent = t.selfSigned ? "Self-signed certificate: browsers warn until you install one from your CA." : "The certificate expires in " + days + " days.";
-          $("#tlsRows").innerHTML = [
-            ["Subject", '<span class="mono">' + esc(t.subject || "—") + "</span>"],
-            ["Also valid for", '<span class="mono">' + esc((t.altNames || []).join(", ") || "—") + "</span>"],
-            ["Issuer", esc(t.selfSigned ? "Self-signed" : (t.issuer || "—"))],
-            ["Valid", esc(when(t.validFrom) + " – " + when(t.validTo))],
-            ["Days left", typeof days === "number" ? pill(days, days < 30 ? "warn" : "ok") : "—"],
-            ["SHA-256", '<span class="mono small">' + esc(t.sha256 || "—") + "</span>"],
-            ["File", '<span class="mono">' + esc(t.file || "—") + "</span>"],
-          ].map((r) => "<div><span>" + r[0] + "</span><span>" + r[1] + "</span></div>").join("");
-        } catch (e) { fail(e); }
+      const tlsForm = $("#tlsForm");
+      let tlsPrevious = null;
+      function rowsHtml(rows) {
+        return rows.map((r) => "<div><span>" + r[0] + "</span><span>" + r[1] + "</span></div>").join("");
       }
+      function renderTls(t) {
+        const banner = $("#tlsBanner");
+        if (!t.ok) { banner.hidden = false; banner.dataset.k = "bad"; banner.textContent = t.error || "The certificate could not be read."; $("#tlsRows").innerHTML = ""; $("#tlsPrev").hidden = true; return; }
+        const days = t.daysLeft;
+        const warn = t.selfSigned || (typeof days === "number" && days < 30);
+        banner.hidden = !warn;
+        banner.dataset.k = typeof days === "number" && days < 7 ? "bad" : "warn";
+        banner.textContent = t.auto ? "The built-in development certificate is in use: browsers warn until you replace it with one from your CA."
+          : t.selfSigned ? "Self-signed certificate: browsers warn until you install one from your CA." : "The certificate expires in " + days + " days.";
+        $("#tlsRows").innerHTML = rowsHtml([
+          ["Subject", '<span class="mono">' + esc(t.subject || "—") + "</span>"],
+          ["Also valid for", '<span class="mono">' + esc((t.altNames || []).join(", ") || "—") + "</span>"],
+          ["Issuer", esc(t.selfSigned ? "Self-signed" : (t.issuer || "—"))],
+          ["Valid", esc(day(t.validFrom) + " – " + day(t.validTo))],
+          ["Days left", typeof days === "number" ? pill(days, days < 30 ? "warn" : "ok") : "—"],
+          ["SHA-256", '<span class="mono small">' + esc(t.sha256 || "—") + "</span>"],
+          ["Files", '<span class="mono">' + esc([t.file, t.keyFile].filter(Boolean).join(", ") || "—") + "</span>"],
+        ]);
+        tlsPrevious = t.previous || null;
+        $("#tlsPrev").hidden = !tlsPrevious;
+        if (tlsPrevious) {
+          $("#tlsPrevRows").innerHTML = rowsHtml([
+            ["Subject", '<span class="mono">' + esc(tlsPrevious.subject || "—") + "</span>"],
+            ["Issuer", esc(tlsPrevious.selfSigned ? "Self-signed" : (tlsPrevious.issuer || "—"))],
+            ["Valid until", esc(day(tlsPrevious.validTo))],
+            ["SHA-256", '<span class="mono small">' + esc(tlsPrevious.sha256 || "—") + "</span>"],
+          ]);
+        }
+        tlsForm.hidden = t.canReplace === false;
+      }
+      async function loadTls() {
+        if (!dirty.tls) { $("#tlsCert").value = ""; $("#tlsKey").value = ""; $("#tlsMsg").textContent = ""; }
+        try { renderTls(await get("/api/admin/tls")); } catch (e) { fail(e); }
+      }
+      // Files are read here and sent as text in the JSON body, like every other change.
+      $$("[data-pick]", tlsForm).forEach((b) => b.addEventListener("click", () => $("#" + b.dataset.pick).click()));
+      [["#tlsCertFile", "#tlsCert"], ["#tlsKeyFile", "#tlsKey"]].forEach(([input, area]) => {
+        $(input).addEventListener("change", async () => {
+          const file = $(input).files[0];
+          $(input).value = "";
+          if (!file) return;
+          if (/\.(pfx|p12)$/i.test(file.name)) { toast("A .pfx file needs converting to PEM first: see the commands under the form.", "bad"); return; }
+          if (file.size > 64 * 1024) { toast(file.name + " is too large for a certificate or key.", "bad"); return; }
+          $(area).value = await file.text();
+          dirty.tls = true; renderTabs();
+        });
+      });
+      async function sendTls(confirmName) {
+        const btn = $("#tlsSave");
+        btn.disabled = true;
+        $("#tlsMsg").textContent = "Checking…";
+        try {
+          const r = await post("/api/admin/tls", {certificate: $("#tlsCert").value, key: $("#tlsKey").value, confirmName});
+          $("#tlsCert").value = "";
+          $("#tlsKey").value = "";
+          clean("tls");
+          $("#tlsMsg").textContent = "";
+          toast("Certificate replaced: new connections use it now. Reload to see it in this browser." + (r.warning ? " " + r.warning : ""), r.warning ? "warn" : "ok");
+          renderTls(r.tls);
+        } catch (e) {
+          $("#tlsMsg").textContent = "";
+          if (!confirmName && e.data && e.data.code === "name_not_covered") {
+            if (await confirmBox("Use a certificate for other names?", e.message, "Use it anyway", true)) await sendTls(true);
+            return;
+          }
+          fail(e);
+        } finally { btn.disabled = false; }
+      }
+      tlsForm.addEventListener("submit", (e) => { e.preventDefault(); sendTls(false); });
+      $("#tlsRestore").addEventListener("click", async () => {
+        if (!tlsPrevious) return;
+        const ok = await confirmBox("Put back the previous certificate?", "New connections get " + (tlsPrevious.subject || "the previous certificate") +
+          " again. The current one is kept as the previous, so you can swap back.", "Put it back");
+        if (!ok) return;
+        try {
+          const r = await post("/api/admin/tls/restore", {});
+          toast("Previous certificate put back: new connections use it now.", r.warning ? "warn" : "ok");
+          renderTls(r.tls);
+        } catch (e) { fail(e); }
+      });
+      trackDirty(tlsForm, "tls");
 
       const LOADERS = {
         health: loadHealth, sessions: loadSessions, audit: loadAudit, logs: loadLogs, connections: loadConnections, email: loadEmail,

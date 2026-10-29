@@ -18,6 +18,7 @@ import ipaddress
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import socket
@@ -41,6 +42,7 @@ from .auth import (
     set_auth_password,
     verify_auth_password,
 )
+from .certs import is_embedded_dev_certificate, server_tls_context
 from .config import (
     ADMIN_UNLOCK_SECONDS,
     APP_VERSION,
@@ -531,6 +533,17 @@ def read_log(level: str = "INFO", query: str = "", lines: int = 300) -> dict[str
 
 # ── TLS ─────────────────────────────────────────────────────────────────────
 
+TLS_UPLOAD_MAX_CHARS = 64 * 1024
+TLS_CHAIN_MAX = 10
+_TLS_LOCK = threading.Lock()
+_PEM_BLOCK = re.compile(r"-----BEGIN ([A-Z0-9 ]+)-----(.*?)-----END \1-----", re.DOTALL)
+_CERT_BEGIN = "-----BEGIN CERTIFICATE-----"
+_CERT_END = "-----END CERTIFICATE-----"
+_PFX_HINT = ("A .pfx or .p12 file has to be converted to PEM first, for example: "
+             "openssl pkcs12 -in site.pfx -nokeys -out site.crt, then "
+             "openssl pkcs12 -in site.pfx -nocerts -nodes -out site.key.")
+
+
 def _name_text(name: Any) -> str:
     try:
         return ", ".join(f"{k}={v}" for rdn in name for k, v in rdn)
@@ -538,30 +551,48 @@ def _name_text(name: Any) -> str:
         return ""
 
 
-def tls_info() -> dict[str, Any]:
-    """What the serving certificate says. Read with the standard library:
-    ssl's certificate decoder (private, so guarded) plus the PEM bytes for the
-    fingerprint. Private keys are never read here."""
-    path = Path(_cfg.TLS_CERT_FILE) if _cfg.TLS_CERT_FILE else None
-    if not path or not path.exists():
-        return {"ok": False, "error": "The certificate file is not available."}
-    info: dict[str, Any] = {"ok": True, "file": path.name, "auto": bool(_cfg.TLS_CERT_AUTO)}
-    try:
-        pem = path.read_text(encoding="ascii", errors="replace")
-        begin = pem.index("-----BEGIN CERTIFICATE-----")
-        end = pem.index("-----END CERTIFICATE-----", begin) + len("-----END CERTIFICATE-----")
-        der = ssl.PEM_cert_to_DER_cert(pem[begin:end])
-        digest = hashlib.sha256(der).hexdigest().upper()
-        info["sha256"] = ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
-    except (OSError, ValueError) as exc:
-        return {"ok": False, "error": f"The certificate could not be read: {exc}"}
+def _tls_files() -> tuple[Path | None, Path | None]:
+    """The certificate and key files the listener was started with."""
+    return (Path(_cfg.TLS_CERT_FILE) if _cfg.TLS_CERT_FILE else None,
+            Path(_cfg.TLS_KEY_FILE) if _cfg.TLS_KEY_FILE else None)
+
+
+def _previous(path: Path) -> Path:
+    """Where the pair an upload replaced is kept (one generation)."""
+    return path.with_name(path.name + ".previous")
+
+
+def _read_leaf(path: Path) -> tuple[bytes, dict[str, Any] | None, str]:
+    """The first certificate in a PEM file: its DER bytes, what ssl's decoder
+    makes of it (None when that private API is missing or fails) and the
+    decoder's error. Raises OSError/ValueError when there is no certificate."""
+    pem = path.read_text(encoding="ascii", errors="replace")
+    begin = pem.index(_CERT_BEGIN)
+    end = pem.index(_CERT_END, begin) + len(_CERT_END)
+    der = ssl.PEM_cert_to_DER_cert(pem[begin:end])
     decoder = getattr(getattr(ssl, "_ssl", None), "_test_decode_cert", None)
     if decoder is None:
-        return info
+        return der, None, ""
     try:
-        decoded = decoder(str(path))
+        return der, decoder(str(path)), ""
     except (OSError, ssl.SSLError, ValueError) as exc:
-        info["detailError"] = str(exc)
+        return der, None, str(exc)
+
+
+def _describe_certificate(path: Path, now: float | None = None) -> dict[str, Any]:
+    """What a certificate file says, for the TLS screen. Read with the standard
+    library: ssl's certificate decoder (private, so guarded) plus the PEM
+    bytes for the fingerprint. Private keys are never read here."""
+    try:
+        der, decoded, detail_error = _read_leaf(path)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": f"The certificate could not be read: {exc}"}
+    digest = hashlib.sha256(der).hexdigest().upper()
+    info: dict[str, Any] = {"ok": True, "sha256": ":".join(digest[i:i + 2] for i in range(0, len(digest), 2)),
+                            "builtIn": is_embedded_dev_certificate(der)}
+    if decoded is None:
+        if detail_error:
+            info["detailError"] = detail_error
         return info
     subject = decoded.get("subject") or ()
     issuer = decoded.get("issuer") or ()
@@ -577,15 +608,251 @@ def tls_info() -> dict[str, Any]:
                 info[out] = decoded[key]
     if decoded.get("notAfter"):
         try:
-            info["daysLeft"] = int((ssl.cert_time_to_seconds(decoded["notAfter"]) - time.time()) // 86400)
+            info["daysLeft"] = int((ssl.cert_time_to_seconds(decoded["notAfter"]) - (time.time() if now is None else now)) // 86400)
         except ValueError:
             pass
+    return info
+
+
+def tls_info() -> dict[str, Any]:
+    """The serving certificate, and the one an upload replaced if it is kept."""
+    cert_file, key_file = _tls_files()
+    if not cert_file or not cert_file.exists():
+        return {"ok": False, "error": "The certificate file is not available."}
+    info = _describe_certificate(cert_file)
+    if not info["ok"]:
+        return info
+    info["auto"] = bool(_cfg.TLS_CERT_AUTO) or info.pop("builtIn")
+    info["file"] = cert_file.name
+    info["keyFile"] = key_file.name if key_file else ""
+    info["canReplace"] = bool(key_file)
+    if key_file and _previous(cert_file).exists() and _previous(key_file).exists():
+        previous = _describe_certificate(_previous(cert_file))
+        if previous["ok"]:
+            info["previous"] = {key: previous.get(key) for key in ("subject", "issuer", "selfSigned", "validTo", "daysLeft", "sha256")}
     return info
 
 
 def tls_summary() -> dict[str, Any]:
     info = tls_info()
     return {key: info.get(key) for key in ("ok", "subject", "selfSigned", "daysLeft", "auto")}
+
+
+def _pem_blocks(text: str) -> list[tuple[str, str]]:
+    """(label, PEM) for each block, in order, re-wrapped cleanly. Text around
+    the blocks (openssl's "Bag Attributes", comments) is dropped."""
+    blocks = []
+    for match in _PEM_BLOCK.finditer(text):
+        label = match.group(1)
+        body = "\n".join(line.strip() for line in match.group(2).splitlines() if line.strip())
+        blocks.append((label, f"-----BEGIN {label}-----\n{body}\n-----END {label}-----\n"))
+    return blocks
+
+
+def parse_certificate_upload(cert_text: Any, key_text: Any) -> tuple[list[str], str]:
+    """The certificate chain (server certificate first, as pasted) and the
+    private key, as PEM. The key may also be pasted into the certificate box.
+    Raises ValueError with a message for the person uploading."""
+    cert_text = cert_text if isinstance(cert_text, str) else ""
+    key_text = key_text if isinstance(key_text, str) else ""
+    if len(cert_text) > TLS_UPLOAD_MAX_CHARS or len(key_text) > TLS_UPLOAD_MAX_CHARS:
+        raise ValueError("That is too large for a certificate and key.")
+    cert_blocks = _pem_blocks(cert_text)
+    chain = [pem for label, pem in cert_blocks if label == "CERTIFICATE"]
+    keys = [pem for label, pem in (_pem_blocks(key_text) or cert_blocks) if label.endswith("PRIVATE KEY")]
+    if not chain:
+        raise ValueError("No certificate found: paste the PEM text that starts with " + _CERT_BEGIN + ". " + _PFX_HINT)
+    if len(chain) > TLS_CHAIN_MAX:
+        raise ValueError(f"Paste the server certificate and its intermediates only (at most {TLS_CHAIN_MAX}).")
+    if not keys:
+        raise ValueError("No private key found: paste the PEM text that starts with -----BEGIN PRIVATE KEY-----. " + _PFX_HINT)
+    if len(keys) > 1:
+        raise ValueError("Paste one private key.")
+    key = keys[0]
+    if key.startswith("-----BEGIN ENCRYPTED") or "Proc-Type: 4,ENCRYPTED" in key:
+        raise ValueError("The private key is protected by a passphrase. The service reads it unattended, so save "
+                         "a copy without one first, for example: openssl pkey -in site.key -out site-open.key.")
+    if not all(pem.isascii() for pem in [*chain, key]):
+        raise ValueError("The PEM text contains characters that cannot be in a certificate or key.")
+    return chain, key
+
+
+def request_host(header: Any) -> str:
+    """The host name of a Host header, without the port."""
+    text = str(header or "").strip()
+    if text.startswith("["):
+        return text[1:text.index("]")] if "]" in text else ""
+    return text.rsplit(":", 1)[0] if text.count(":") == 1 else text
+
+
+def certificate_covers(alt_names: Any, host: str) -> bool:
+    """Whether a certificate's subjectAltName entries cover `host`, the way
+    browsers match: exact names, a wildcard for one left-most label, and IP
+    entries for addresses. The subject's CN is ignored, as browsers do."""
+    host = host.strip().rstrip(".").lower()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    for kind, value in alt_names or ():
+        value = str(value).strip().rstrip(".").lower()
+        if address is not None:
+            if kind == "IP Address":
+                try:
+                    if ipaddress.ip_address(value) == address:
+                        return True
+                except ValueError:
+                    continue
+        elif kind == "DNS":
+            if value == host:
+                return True
+            if value.startswith("*.") and host.partition(".")[2] == value[2:] and host.partition(".")[0]:
+                return True
+    return False
+
+
+def _ssl_problem(exc: ssl.SSLError) -> str:
+    reason = str(getattr(exc, "reason", "") or "")
+    known = {
+        "KEY_VALUES_MISMATCH": "The private key does not belong to this certificate.",
+        "EE_KEY_TOO_SMALL": "The certificate's key is too short: use an RSA key of 2048 bits or more, or an EC key.",
+        "CA_MD_TOO_WEAK": "The certificate is signed with a weak hash (MD5 or SHA-1): ask your CA for a SHA-256 one.",
+    }
+    return known.get(reason) or f"The certificate and key could not be loaded together ({reason or exc})."
+
+
+def _staged(path: Path) -> Path:
+    return path.with_name(path.name + ".new")
+
+
+def _local_minute(seconds: float) -> str:
+    return datetime.fromtimestamp(seconds).astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _write_private(path: Path, text: str) -> None:
+    path.write_text(text, encoding="ascii")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _stage_and_load(cert_file: Path, key_file: Path, chain: list[str], key: str) -> tuple[ssl.SSLContext, dict[Path, Path]]:
+    """Write the pair next to the live files as *.new and load it, which is
+    also the check that the key belongs to the certificate. A chain pasted
+    with the server certificate further down is tried in that order too.
+    Returns the context and {staged file: live file}; raises ssl.SSLError."""
+    staged_cert, staged_key = _staged(cert_file), _staged(key_file)
+
+    def load(order: list[str]) -> tuple[ssl.SSLContext, dict[Path, Path]]:
+        if cert_file == key_file:  # one file holding both, as --cert x.pem --key x.pem
+            _write_private(staged_cert, "".join(order) + key)
+            return server_tls_context(staged_cert, staged_cert), {staged_cert: cert_file}
+        _write_private(staged_cert, "".join(order))
+        _write_private(staged_key, key)
+        return server_tls_context(staged_cert, staged_key), {staged_cert: cert_file, staged_key: key_file}
+
+    # As pasted first, then each other certificate as the server's own.
+    orders = [[chain[i], *chain[:i], *chain[i + 1:]] for i in range(len(chain))]
+    for order in orders[:-1]:
+        try:
+            return load(order)
+        except ssl.SSLError as exc:
+            if getattr(exc, "reason", "") != "KEY_VALUES_MISMATCH":
+                raise
+    return load(orders[-1])
+
+
+def _fingerprint_note(info: dict[str, Any]) -> str:
+    if not info.get("ok"):
+        return "(unreadable)"
+    return f"{info.get('subject') or 'certificate'}, SHA-256 {str(info.get('sha256') or '')[:23]}"
+
+
+def install_certificate(cert_text: Any, key_text: Any, *, host: str = "", confirm_name: bool = False,
+                        sid: str = "", client_ip: str = "", apply: Callable[[ssl.SSLContext], bool],
+                        now: float | None = None, action: str = "TLS certificate replaced") -> tuple[int, dict[str, Any]]:
+    """Replace the serving certificate and key. Checked before anything is
+    replaced: PEM only, no passphrase, the key belongs to the certificate, the
+    certificate is valid now, and (unless `confirm_name`) it covers `host`, the
+    name this console was opened with. The replaced pair is kept as
+    *.previous. `apply` gives the new context to the listener, so new
+    connections use it at once; the files make it survive a restart."""
+    cert_file, key_file = _tls_files()
+    if not cert_file or not key_file:
+        return HTTPStatus.CONFLICT, {"ok": False, "error": "This service is not serving a certificate from files."}
+    try:
+        chain, key = parse_certificate_upload(cert_text, key_text)
+    except ValueError as exc:
+        return HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
+    now = time.time() if now is None else now
+    with _TLS_LOCK:
+        try:
+            try:
+                context, moves = _stage_and_load(cert_file, key_file, chain, key)
+            except ssl.SSLError as exc:
+                return HTTPStatus.BAD_REQUEST, {"ok": False, "error": _ssl_problem(exc)}
+            staged_cert = _staged(cert_file)
+            _der, decoded, _err = _read_leaf(staged_cert)
+            if decoded is not None:
+                try:
+                    not_before = ssl.cert_time_to_seconds(decoded["notBefore"])
+                    not_after = ssl.cert_time_to_seconds(decoded["notAfter"])
+                except (KeyError, ValueError):
+                    not_before, not_after = now, now + 1
+                if not_after <= now:
+                    return HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"This certificate expired on {_local_minute(not_after)}."}
+                if not_before > now:
+                    return HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"This certificate is not valid until {_local_minute(not_before)}."}
+                alt_names = decoded.get("subjectAltName") or ()
+                if host and not confirm_name and not certificate_covers(alt_names, host):
+                    names = [str(value) for _kind, value in alt_names]
+                    return HTTPStatus.CONFLICT, {
+                        "ok": False, "code": "name_not_covered", "host": host, "names": names,
+                        "error": (f"This certificate is for {', '.join(names) or 'no host names'}, not {host}, the name "
+                                  f"this console was opened with. Browsers that use {host} will refuse it."),
+                    }
+            new_info = _describe_certificate(staged_cert, now)
+            old_info = _describe_certificate(cert_file, now) if cert_file.exists() else {"ok": False}
+            for live in dict.fromkeys(moves.values()):
+                if live.exists():
+                    shutil.copyfile(live, _previous(live))
+            for staged, live in moves.items():
+                os.replace(staged, live)
+        except OSError as exc:
+            LOG.warning(f"certificate upload failed: {exc}", extra={"event": "tls"})
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"The certificate files could not be written: {exc}"}
+        finally:
+            for staged in (_staged(cert_file), _staged(key_file)):
+                try:
+                    staged.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        applied = apply(context)
+        _cfg.TLS_CERT_AUTO = False
+    audit(action, ip=client_ip, sid=sid, item=cert_file.name, field="certificate",
+          old=_fingerprint_note(old_info), new=_fingerprint_note(new_info))
+    body: dict[str, Any] = {"ok": True, "applied": applied, "tls": tls_info()}
+    days = new_info.get("daysLeft")
+    if isinstance(days, int) and days < 30:
+        body["warning"] = f"It expires in {days} days."
+    return HTTPStatus.OK, body
+
+
+def restore_previous_certificate(*, sid: str = "", client_ip: str = "", apply: Callable[[ssl.SSLContext], bool],
+                                 now: float | None = None) -> tuple[int, dict[str, Any]]:
+    """Swap back the pair the last upload replaced (the current one is kept as
+    *.previous in turn, so this can be undone the same way)."""
+    cert_file, key_file = _tls_files()
+    if not cert_file or not key_file or not _previous(cert_file).exists() or not _previous(key_file).exists():
+        return HTTPStatus.NOT_FOUND, {"ok": False, "error": "No previous certificate is kept."}
+    try:
+        cert_text = _previous(cert_file).read_text(encoding="ascii", errors="replace")
+        key_text = _previous(key_file).read_text(encoding="ascii", errors="replace")
+    except OSError as exc:
+        return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"The previous certificate could not be read: {exc}"}
+    return install_certificate(cert_text, key_text, confirm_name=True, sid=sid, client_ip=client_ip, apply=apply,
+                               now=now, action="TLS certificate put back")
 
 
 # ── Security: password and allow-list ───────────────────────────────────────

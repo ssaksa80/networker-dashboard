@@ -89,6 +89,19 @@ extraction (SHA-256 against the prior revision).
   (connections, email, schedules, snapshots) call the same routes the
   dashboard uses, which stay as open to a signed-in user as before; those
   routes now write audit entries too.
+- **Certificate upload** (TLS tab, `POST /api/admin/tls`): PEM certificate
+  (chain allowed, server certificate first, or found by trying each) and an
+  unencrypted key. Before anything is replaced the pair is loaded into a new
+  `SSLContext` (the key-matches-certificate check), the dates are checked,
+  and a certificate whose subjectAltNames don't cover the Host the console
+  was opened with needs an explicit confirm (HSTS is on, so a browser that
+  trusted the old certificate gets no click-through). The files the service
+  started with (`--cert`/`--key`) are overwritten, the replaced pair kept as
+  `*.previous` (`POST /api/admin/tls/restore` swaps them back), and the new
+  context goes on `server.ssl_context`, which `get_request` reads per
+  connection: new connections get it at once, no restart. PFX is not
+  accepted (the standard library cannot read PKCS#12); the form shows the
+  `openssl` conversion.
 
 ## Verification
 
@@ -141,7 +154,8 @@ re-saved.
   the app warns at startup and regenerates, which invalidates saved
   sessions and profile passwords (re-enter once).
 - The dev TLS certificate in `.certs/` is self-signed; browsers warn
-  once. Provide `--cert`/`--key` for production.
+  once. Upload your CA's certificate on the admin console's TLS tab, or
+  provide `--cert`/`--key`, for production.
 - Headless-browser screenshot rendering (email reports) needs a local
   Chrome or Edge; on some managed hosts Edge silently refuses
   `--screenshot` while Chrome works.

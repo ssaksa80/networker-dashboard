@@ -211,18 +211,26 @@
       </section>
 
       <section class="adm-panel" data-tab="tls" role="tabpanel" hidden>
-        <p class="intro">The certificate the dashboard serves. The service reads it only when it starts.</p>
+        <p class="intro">The certificate the dashboard serves. A replacement is checked first, then used for new connections straight away and kept for restarts.</p>
         <div id="tlsBanner" class="banner" hidden></div>
         <div class="split">
-          <div class="card rows" id="tlsRows"></div>
-          <div class="card stack">
-            <h3>Install your own certificate</h3>
-            <ol class="steps-list">
-              <li>Get a certificate and key in PEM format from your CA, issued to the name people type to reach the dashboard.</li>
-              <li>Start the service with <span class="mono">--cert</span> and <span class="mono">--key</span> pointing at them, and <span class="mono">--no-auto-cert</span>. With the installer, re-run <span class="mono">Setup-NWDash.cmd</span> with its certificate options.</li>
-              <li>Restart the service, then check this page: the issuer should be your CA.</li>
-            </ol>
+          <div class="stack">
+            <div class="card rows" id="tlsRows"></div>
+            <div class="card stack" id="tlsPrev" hidden>
+              <div class="card-head"><h3>Previous certificate</h3><button id="tlsRestore" class="btn ghost sm" type="button">Put it back</button></div>
+              <div class="rows" id="tlsPrevRows"></div>
+            </div>
           </div>
+          <form class="card stack" id="tlsForm" autocomplete="off">
+            <h3>Replace the certificate</h3>
+            <p class="muted small">PEM files from your CA, issued to the name people type to reach the dashboard. The server certificate goes first, any intermediates after it.</p>
+            <label class="f">Certificate<textarea id="tlsCert" name="Certificate" rows="6" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label>
+            <div class="row-actions"><button class="btn ghost sm" type="button" data-pick="tlsCertFile">Load a file…</button><input id="tlsCertFile" type="file" accept=".crt,.cer,.pem,.txt" hidden></div>
+            <label class="f">Private key <small>without a passphrase</small><textarea id="tlsKey" name="Private key" rows="5" spellcheck="false" placeholder="-----BEGIN PRIVATE KEY-----"></textarea></label>
+            <div class="row-actions"><button class="btn ghost sm" type="button" data-pick="tlsKeyFile">Load a file…</button><input id="tlsKeyFile" type="file" accept=".key,.pem,.txt" hidden></div>
+            <p class="muted small">A .pfx needs converting first: <span class="mono">openssl pkcs12 -in site.pfx -nokeys -out site.crt</span> and <span class="mono">openssl pkcs12 -in site.pfx -nocerts -nodes -out site.key</span></p>
+            <div class="row-actions"><button id="tlsSave" class="btn" type="submit">Check and use</button><span id="tlsMsg" class="muted small" role="status"></span></div>
+          </form>
         </div>
       </section>
 

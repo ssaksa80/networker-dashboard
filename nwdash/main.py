@@ -9,7 +9,6 @@ import logging
 import logging.handlers
 import os
 import signal
-import ssl
 import sys
 import threading
 from pathlib import Path
@@ -18,7 +17,7 @@ from typing import Any
 from . import config as _cfg
 from .admin import load_console_allowlist, prepare_setup_code
 from .auth import _is_loopback_bind, auth_password_configured, set_auth_password
-from .certs import ensure_certificate
+from .certs import ensure_certificate, server_tls_context
 from .config import (
     APP_NAME,
     APP_VERSION,
@@ -188,6 +187,7 @@ def run(argv: list[str] | None = None) -> int:
     else:
         used_embedded_cert = ensure_certificate(cert_path, key_path)
     _cfg.TLS_CERT_FILE = str(cert_path)
+    _cfg.TLS_KEY_FILE = str(key_path)
     _cfg.TLS_CERT_AUTO = used_embedded_cert
 
     if not 0 <= int(args.port) <= 65535:
@@ -197,11 +197,8 @@ def run(argv: list[str] | None = None) -> int:
     server, selected_port, used_random_port = bind_dashboard_server(
         args.bind, int(args.port), max_connections=_cfg.MAX_CONNECTIONS
     )
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
     # Per connection, never the listening socket: see ExclusiveThreadingHTTPServer.
-    server.ssl_context = context
+    server.ssl_context = server_tls_context(cert_path, key_path)
     access_urls = service_access_urls(args.bind, selected_port)
     launch_url = preferred_launch_url(access_urls)
 
