@@ -50,6 +50,12 @@ extraction (SHA-256 against the prior revision).
   fetch wrapper in `app.js` injects `X-CSRF-Token` on every non-GET
   `/api` call and re-bootstraps once on 403. `do_POST` enforces it for
   all state-changing routes; `/api/login` and `/api/logout` are exempt.
+- Only the gateway's "not signed in" answer is a 401 with
+  `X-NWDash-Login: required`, and the fetch wrapper reloads to the sign-in
+  page on that header alone. An expired dashboard session answers 409
+  `session_expired`; a NetWorker server refusing the credentials (its own
+  401/403) answers 502 `networker_auth_failed`. Keep it that way, or the
+  page hides those errors behind a reload (review F2).
 - Outbound TLS to NetWorker servers verifies certificates by default,
   controlled per connection profile; restored sessions missing the
   flag default to verify (fail closed). The startup self-test pins the

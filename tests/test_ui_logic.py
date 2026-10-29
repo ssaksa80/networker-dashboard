@@ -167,6 +167,62 @@ process.stdout.write(JSON.stringify(out));
         self.assertEqual(self.result["afterDisconnect"], 1)
 
 
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping app.js logic tests")
+class TestFetchWrapperReloadsOnlyForGatewayLogin(unittest.TestCase):
+    """Review F2: the fetch wrapper reloaded the page on any /api 401.
+
+    NetWorker refusing its credentials and an expired dashboard session also
+    answered 401, so their errors never showed and pages could reload in a loop.
+    Only the gateway's 401 carries X-NWDash-Login (tests/test_login_required.py
+    checks the server side). The real wrapper runs here against a fake fetch.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        wrapper = _extract(r"    \(function\(\)\{\n      const _fetch = window\.fetch;.*?\n    \}\)\(\);")
+        script = r"""
+let reloads = 0;
+globalThis.location = {reload() { reloads++; }};
+let reply = null;
+globalThis.fetch = async (url) => String(url) === "/api/csrf"
+  ? new Response('{"csrfToken":"t"}', {status: 200})
+  : reply();
+const window = globalThis;
+""" + wrapper + r"""
+(async () => {
+  const out = {};
+  const call = async (name, url, method, status, headers) => {
+    reply = () => new Response("{}", {status, headers});
+    const before = reloads;
+    const r = await fetch(url, {method, headers: {"Content-Type": "application/json"}});
+    out[name] = {status: r.status, reloads: reloads - before};
+  };
+  await call("unmarked401", "/api/dashboard", "POST", 401, {});
+  await call("sessionExpired", "/api/dashboard", "POST", 409, {});
+  await call("networkerRefused", "/api/dashboard", "POST", 502, {});
+  await call("loginGonePost", "/api/dashboard", "POST", 401, {"X-NWDash-Login": "required"});
+  await call("loginGoneGet", "/api/status", "GET", 401, {"X-NWDash-Login": "required"});
+  await call("notApi", "/tv", "GET", 401, {"X-NWDash-Login": "required"});
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+        cls.result = _run_node(script)
+
+    def test_unmarked_401_is_left_to_the_caller(self):
+        self.assertEqual(self.result["unmarked401"], {"status": 401, "reloads": 0})
+
+    def test_upstream_failures_do_not_reload(self):
+        self.assertEqual(self.result["sessionExpired"], {"status": 409, "reloads": 0})
+        self.assertEqual(self.result["networkerRefused"], {"status": 502, "reloads": 0})
+
+    def test_gateway_401_reloads_to_the_sign_in_page(self):
+        self.assertEqual(self.result["loginGonePost"], {"status": 401, "reloads": 1})
+        self.assertEqual(self.result["loginGoneGet"], {"status": 401, "reloads": 1})
+
+    def test_non_api_401_does_not_reload(self):
+        self.assertEqual(self.result["notApi"], {"status": 401, "reloads": 0})
+
+
 class TestSessionIdSourceGuards(unittest.TestCase):
     """Review F1: the page's sessionId comes only from its own answers."""
 

@@ -38,8 +38,12 @@
             resp = await _fetch.apply(this, withCsrf(args));
           }
         }
+        // Reload to the sign-in page only when this gateway's login has gone:
+        // the server marks that 401. An expired dashboard session (409) or a
+        // NetWorker server refusing its credentials (502) is the caller's to show.
         try {
-          if (resp.status === 401 && url.indexOf("/api/") !== -1) { location.reload(); }
+          if (resp.status === 401 && url.indexOf("/api/") !== -1
+              && resp.headers.get("X-NWDash-Login") === "required") { location.reload(); }
         } catch (_e) {}
         return resp;
       };
@@ -1793,11 +1797,13 @@
         });
         const data = await response.json();
         if (!response.ok) {
-          // 401 from server means session expired server-side.
-          // If silent refresh, keep showing last good data and note reconnect happening.
-          if (response.status === 401 && options.silent && latestDashboard) {
-            setStatus("Reconnecting…", "warn");
-            notice.textContent = "Session refreshing automatically — no action needed.";
+          // The dashboard session expired (409) or NetWorker refused the
+          // stored credentials (502). On a silent refresh keep the last good
+          // data on screen and say why.
+          const reconnectNeeded = data.code === "session_expired" || data.code === "networker_auth_failed";
+          if (reconnectNeeded && options.silent && latestDashboard) {
+            setStatus("Reconnect needed", "warn");
+            notice.textContent = `${data.error || "Reconnect with the password."} Showing the last data received.`;
             notice.classList.add("show");
             // Retry with password if available in form, else wait for next cycle
             const retryPayload = getPayload();
