@@ -102,6 +102,85 @@ process.stdout.write(JSON.stringify(out));
         self.assertEqual(self.result["badMonth"], "NaN")
 
 
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping app.js logic tests")
+class TestLivePushKeepsItsSession(unittest.TestCase):
+    """Review F1: /api/stream broadcasts every page's dashboard to every page.
+
+    The old handler rendered any push, so a page connected to one NetWorker
+    server showed another page's server and took over its sessionId (Export,
+    Share and email then acted on that server), and diffAndNotify ran twice.
+    The real handler runs here against a fake EventSource.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        source = _extract(r"    // ── SSE live push ─+\n.*?\n    function stopSSE\(\) \{.*?\n    \}")
+        script = r"""
+let sessionId = "page-a";
+let latestDashboard = {ok: true, sessionId: "page-a", summary: {failedJobs: 0}};
+const rendered = [];
+let directDiffs = 0;
+function renderDashboard(data) { rendered.push(data.sessionId || null); latestDashboard = data; }
+function diffAndNotify() { directDiffs++; }
+const listeners = {};
+globalThis.EventSource = class {
+  constructor(url) { this.url = url; }
+  addEventListener(name, fn) { listeners[name] = fn; }
+  close() {}
+};
+const window = globalThis;
+""" + source + r"""
+startSSE();
+const push = (data) => listeners.dashboard({data: JSON.stringify(data)});
+const out = {};
+push({ok: true, sessionId: "page-b", summary: {failedJobs: 9}});
+out.afterForeign = {rendered: rendered.length, sessionId, latest: latestDashboard.sessionId};
+push({ok: true, summary: {failedJobs: 9}});
+out.afterUnnamed = rendered.length;
+push({ok: false, sessionId: "page-a"});
+out.afterFailed = rendered.length;
+push({ok: true, sessionId: "page-a", summary: {failedJobs: 1}});
+out.afterOwn = rendered.slice();
+out.directDiffs = directDiffs;
+sessionId = null;
+push({ok: true, sessionId: "page-a"});
+out.afterDisconnect = rendered.length;
+process.stdout.write(JSON.stringify(out));
+"""
+        cls.result = _run_node(script)
+
+    def test_push_for_another_session_is_ignored(self):
+        self.assertEqual(self.result["afterForeign"], {"rendered": 0, "sessionId": "page-a", "latest": "page-a"})
+
+    def test_push_without_a_session_or_ok_is_ignored(self):
+        self.assertEqual(self.result["afterUnnamed"], 0)
+        self.assertEqual(self.result["afterFailed"], 0)
+
+    def test_push_for_own_session_renders_once(self):
+        self.assertEqual(self.result["afterOwn"], ["page-a"])
+
+    def test_handler_leaves_diff_and_notify_to_render_dashboard(self):
+        self.assertEqual(self.result["directDiffs"], 0)
+        self.assertIn("diffAndNotify(latestDashboard, data)", _extract(r"function renderDashboard\(data\) \{.*?\n    \}"))
+
+    def test_page_without_a_session_applies_no_push(self):
+        self.assertEqual(self.result["afterDisconnect"], 1)
+
+
+class TestSessionIdSourceGuards(unittest.TestCase):
+    """Review F1: the page's sessionId comes only from its own answers."""
+
+    def test_render_dashboard_never_takes_a_session_id(self):
+        # renderDashboard also renders pushes, so it must not assign sessionId.
+        render = _extract(r"function renderDashboard\(data\) \{.*?\n    \}")
+        self.assertNotRegex(render, r"\bsessionId\s*=[^=]")
+
+    def test_load_dashboard_takes_the_session_from_its_own_answer(self):
+        load = _extract(r"async function loadDashboard\(options = \{\}\) \{.*?\n    \}")
+        self.assertIn("if (data.sessionId) sessionId = data.sessionId;", load)
+        self.assertIn("if (retryData.sessionId) sessionId = retryData.sessionId;", load)
+
+
 class TestPaginationSourceGuards(unittest.TestCase):
     """Source-level regression guards for the pagination reset bug."""
 

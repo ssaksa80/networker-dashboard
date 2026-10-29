@@ -915,12 +915,11 @@
       renderTablePage(rows, def);
     }
 
+    // Never takes data.sessionId: a page's session comes only from its own
+    // /api/dashboard or /api/current-dashboard answer (see isOwnPush).
     function renderDashboard(data) {
       diffAndNotify(latestDashboard, data);
       latestDashboard = data;
-      if (data.sessionId) {
-        sessionId = data.sessionId;
-      }
       updateMetrics(data.summary || {});
       renderManagement(data);
       renderServerHealth(data);
@@ -1812,6 +1811,7 @@
               });
               if (retryResp.ok) {
                 const retryData = await retryResp.json();
+                if (retryData.sessionId) sessionId = retryData.sessionId;
                 renderDashboard(retryData);
                 return;
               }
@@ -1822,6 +1822,7 @@
           renderFailure(data, data.error || data.message || `HTTP ${response.status}`);
           return;
         }
+        if (data.sessionId) sessionId = data.sessionId;
         renderDashboard(data);
       } catch (error) {
         if (options.silent && latestDashboard) {
@@ -2760,6 +2761,14 @@
     });
 
     // ── SSE live push ─────────────────────────────────────────────────────────
+    // Every open page gets every push: each /api/dashboard answer is broadcast,
+    // so another page's connection to another NetWorker server arrives here too.
+    // Apply only pushes for this page's own session. Export, Share and email act
+    // on sessionId, and diffAndNotify on latestDashboard, so a foreign push must
+    // touch neither.
+    function isOwnPush(data, ownSessionId) {
+      return !!(data && data.ok && ownSessionId && data.sessionId === ownSessionId);
+    }
     let sseSource = null;
     function startSSE() {
       if (sseSource) return;
@@ -2768,10 +2777,8 @@
       sseSource.addEventListener("dashboard", (e) => {
         try {
           const data = JSON.parse(e.data);
-          if (data && data.ok && latestDashboard) {
-            diffAndNotify(latestDashboard, data);
-            renderDashboard(data);
-          }
+          // renderDashboard runs diffAndNotify itself.
+          if (latestDashboard && isOwnPush(data, sessionId)) renderDashboard(data);
         } catch (_) {}
       });
       sseSource.addEventListener("error", () => {
