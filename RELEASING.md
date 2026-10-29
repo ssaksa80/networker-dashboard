@@ -50,12 +50,14 @@ behaviour was the previously documented one.
    python -m unittest discover -s tests
    ```
 
-   > **GitHub Actions is currently billing-blocked for this account**, so the
-   > CI workflow (`.github/workflows/tests.yml`: ruff + the full unittest
-   > suite on windows-latest / Python 3.14) does not run on push. Run the
-   > same gates **locally** per the local-CI fallback policy and record the
-   > result in the release notes ("gates run locally: both green"). A release
-   > with unrun gates is not a release.
+   GitHub Actions (`.github/workflows/tests.yml`) runs them on every PR and
+   every push to `main`: ruff at its pinned version, the unit suite on
+   windows-latest under Python 3.12.10 (the bundle's embedded runtime) and
+   3.14, and the installer tests in `deploy\test\` under Windows PowerShell
+   5.1. Its result on the release commit is the gate; say so in the release
+   notes. If Actions cannot run, run the same gates **locally** and record
+   that instead ("gates run locally: both green"). A release with unrun gates
+   is not a release.
 
 2. **Bump the version in BOTH files, in sync** — they must always agree:
    - `nwdash/config.py` → `APP_VERSION = "X.Y.Z"` (the build reads this; a

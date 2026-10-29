@@ -1,7 +1,9 @@
 # Scheduled Report Groups
 
 **Date:** 2026-07-21
-**Status:** Approved (design)
+**Status:** Superseded. Shipped in v2.11.0 and removed in v2.13.0, which
+restored the v2.8.3 email engine (see `deploy/RELEASE-NOTES.md`). Kept for
+history; it does not describe the current code.
 **Supersedes:** the `ReportJob` (digest/alert) model from 2.9.0 and `/api/report-jobs`.
 
 ## Problem / goal

@@ -71,10 +71,12 @@ data/                    runtime state (never commit)
 python -m unittest discover -s tests -v
 ```
 
-27 tests: module imports, auth/CSRF primitives (incl. tamper cases),
-TLS fail-closed defaults, served-page wiring, and a subprocess
-end-to-end HTTPS test that drives the real entry script through the
-login/CSRF flow.
+Covers module imports, auth/CSRF primitives (incl. tamper cases),
+TLS fail-closed defaults, served-page wiring, the admin console, email
+schedule persistence, and subprocess end-to-end HTTPS tests that drive
+the real entry script. CI runs the suite on Python 3.12.10 (the
+embedded runtime the bundle ships) and 3.14, plus ruff and the
+installer tests in `deploy/test/`.
 
 ## Notes
 
