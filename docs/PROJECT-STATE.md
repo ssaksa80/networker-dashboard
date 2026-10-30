@@ -52,7 +52,10 @@ extraction (SHA-256 against the prior revision).
   all state-changing routes; `/api/login` and `/api/logout` are exempt.
 - Only the gateway's "not signed in" answer is a 401 with
   `X-NWDash-Login: required`, and the fetch wrapper reloads to the sign-in
-  page on that header alone. An expired dashboard session answers 409
+  page on that header alone; the admin console (`admin.js`) goes back to its
+  sign-in card on it too. A wrong password typed into the console (Security's
+  current password, the unlock card) is an unmarked 401 whose error is shown.
+  An expired dashboard session answers 409
   `session_expired`; a NetWorker server refusing the credentials (its own
   401/403) answers 502 `networker_auth_failed`. Keep it that way, or the
   page hides those errors behind a reload (review F2).
