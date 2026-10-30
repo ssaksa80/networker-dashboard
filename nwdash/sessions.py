@@ -388,7 +388,12 @@ def build_dashboard_from_session(
     report_range: str | None = None,
     custom_start_date: str = "",
     custom_end_date: str = "",
+    remember_range: bool = True,
 ) -> tuple[int, dict[str, Any]]:
+    """Build the session's dashboard, for report_range when given. An
+    interactive range change is remembered on the session, so later builds
+    without a range (the shared view) follow it; a scheduled report passes
+    remember_range=False to build its own window and leave the session alone."""
     cleanup_dashboard_sessions()
     session = _get_session(session_id)
     if not session:
@@ -423,7 +428,8 @@ def build_dashboard_from_session(
                 custom_start_date="",
                 custom_end_date="",
             )
-        session.config = sanitize_session_config(config)
+        if remember_range:
+            session.config = sanitize_session_config(config)
     status, body = build_dashboard_nwui(
         config,
         cookie_jar=session.cookie_jar,
@@ -463,7 +469,8 @@ def build_dashboard_from_session(
     if status == 200:
         body["sessionId"] = session_id
         persist_sessions()
-    session.config = sanitize_session_config(config)
+    if remember_range:
+        session.config = sanitize_session_config(config)
     return status, body
 
 
