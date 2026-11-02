@@ -175,12 +175,22 @@ class TestFolderLock(unittest.TestCase):
         for path in (DEPLOY / "install.ps1", DEPLOY / "lib" / "common.ps1", DEPLOY / "test" / "folder-acl.test.ps1"):
             self.assertTrue(path.read_bytes().isascii(), f"{path.name} must stay ASCII for Windows PowerShell 5.1")
 
+    def test_the_lock_does_not_use_set_acl(self):
+        """Set-Acl wipes audit rules on an item that is already protected, and its
+        module does not load in Windows PowerShell started through another process
+        from pwsh 7, as Setup-NWDash.cmd is from a pwsh prompt."""
+        code = "\n".join(line for line in self.common.splitlines() if not line.lstrip().startswith("#"))
+        self.assertNotIn("Set-Acl", code)
+
     @unittest.skipUnless(shutil.which("powershell"), "Windows PowerShell not available")
     def test_folder_acl_powershell_tests_pass(self):
+        # Without the PSModulePath pwsh 7 (CI's default shell) passes down: Windows
+        # PowerShell cannot load Get-Acl with it, and this test file reads with it.
+        env = {name: value for name, value in os.environ.items() if name.upper() != "PSMODULEPATH"}
         result = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
              str(DEPLOY / "test" / "folder-acl.test.ps1")],
-            capture_output=True, text=True, timeout=300, check=False,
+            capture_output=True, text=True, timeout=300, check=False, env=env,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
