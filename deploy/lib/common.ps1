@@ -338,6 +338,19 @@ function Invoke-NwdashFileOp {
   }
 }
 
+# Move a file or directory in one step: it either moved or it did not. Move-Item
+# is not that for a directory. Under Windows PowerShell 5.1, when the rename is
+# refused (any open handle below the folder refuses it) it falls back to moving
+# file by file, so one locked file leaves the folder split between source and
+# destination, a retry nests the rest inside the destination, and no restore can
+# put that back together. Source and destination must be on one volume, which
+# holds for everything under InstallDir.
+function Move-NwdashItem {
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Destination)
+  if (Test-Path -LiteralPath $Path -PathType Container) { [IO.Directory]::Move($Path, $Destination) }
+  else { [IO.File]::Move($Path, $Destination) }
+}
+
 # Installed app version, read from nwdash\config.py at the InstallDir root
 # (same source of truth the build uses). '0.0.0' when unreadable.
 function Get-NwdashInstalledVersion {
@@ -377,17 +390,20 @@ function Backup-NwdashApp {
   New-Item -ItemType Directory -Force $bakApp | Out-Null
   foreach ($item in $script:NwdashAppItems) {
     $src = Join-Path $InstallDir $item
-    if (Test-Path $src) { Invoke-NwdashFileOp { Move-Item $src (Join-Path $bakApp $item) } }
+    if (Test-Path $src) { Invoke-NwdashFileOp { Move-NwdashItem $src (Join-Path $bakApp $item) } }
   }
   $py = Join-Path $InstallDir 'runtime\python'
   if (Test-Path $py) {
     New-Item -ItemType Directory -Force $bakRt | Out-Null
-    Invoke-NwdashFileOp { Move-Item $py (Join-Path $bakRt 'python') }
+    Invoke-NwdashFileOp { Move-NwdashItem $py (Join-Path $bakRt 'python') }
   }
 }
 
-# Restore app payload + runtime\python from backups\<Name> (removing whatever
-# is currently in place first). Each destructive op is retried through locks.
+# Restore app payload + runtime\python from backups\<Name>, replacing what is in
+# place. Only what the backup holds is replaced: after a swap that failed partway
+# an item with no backup is the live one, never moved, and restoring from an
+# emptied backup must not delete the app. Each destructive op is retried through
+# locks.
 function Restore-NwdashApp {
   param([Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$Name)
   $bakApp = Join-Path $InstallDir "backups\$Name\app"
@@ -396,14 +412,16 @@ function Restore-NwdashApp {
     foreach ($item in $script:NwdashAppItems) {
       $cur = Join-Path $InstallDir $item
       $bak = Join-Path $bakApp $item
-      if (Test-Path $cur) { Invoke-NwdashFileOp { Remove-Item -Recurse -Force $cur } }
-      if (Test-Path $bak) { Invoke-NwdashFileOp { Move-Item $bak $cur } }
+      if (Test-Path $bak) {
+        if (Test-Path $cur) { Invoke-NwdashFileOp { Remove-Item -Recurse -Force $cur } }
+        Invoke-NwdashFileOp { Move-NwdashItem $bak $cur }
+      }
     }
   }
   if (Test-Path $bakRt) {
     $py = Join-Path $InstallDir 'runtime\python'
     if (Test-Path $py) { Invoke-NwdashFileOp { Remove-Item -Recurse -Force $py } }
-    Invoke-NwdashFileOp { Move-Item $bakRt $py }
+    Invoke-NwdashFileOp { Move-NwdashItem $bakRt $py }
   }
 }
 
@@ -564,6 +582,42 @@ function Start-NwdashServiceVerified {
     & $log "service $Name not Running after attempt $attempt (status: $cur)"
   }
   return $false
+}
+
+# Put the pre-deploy version back and start it, as the last step of a swap that
+# failed partway or a health gate that failed. $Name is the backup this run moved
+# the live app into ('' = nothing moved yet); $ReturnTo, on -Rollback once the
+# live app is out, is the backup whose files are in place by now: they go back
+# there, because the restore would delete them. The caller names both from what
+# it did, never from Get-NwdashBackups, whose newest entry can be an emptied
+# folder (review O3). A half-restored app must not run against data\, so when the
+# files cannot be put back the service stays stopped. Never throws: returns the
+# outcome for the caller's final error message.
+function Undo-NwdashDeploy {
+  param(
+    [Parameter(Mandatory)][string]$InstallDir,
+    [Parameter(Mandatory)]$Nssm,
+    [string]$Name = '',
+    [string]$ReturnTo = '',
+    [int]$Port = 0,
+    [string]$HostName = '127.0.0.1'
+  )
+  try {
+    if ($ReturnTo) { Backup-NwdashApp -InstallDir $InstallDir -Name $ReturnTo }
+    if ($Name) { Restore-NwdashApp -InstallDir $InstallDir -Name $Name }
+  } catch {
+    return "could not put the previous version back ($($_.Exception.Message)). The service is left STOPPED. " +
+      "Once nothing holds the files, move what is left in $InstallDir\backups\$Name back over the install folder " +
+      "(app\* to its root, runtime\python to runtime\python), then run: Start-Service $script:NwdashServiceName"
+  }
+  if (-not (Wait-NwdashPortFree -Port $Port -TimeoutSec 20 -HostName $HostName)) {
+    Write-NwdashWarn "port $Port still held after stop - starting anyway (app bind-retry will absorb it)"
+  }
+  Set-NwdashNssmAutoRestart -Nssm $Nssm -Enabled:$true
+  if (-not (Start-NwdashServiceVerified -Nssm $Nssm)) {
+    return "the previous version is back but the service did not start - run: Start-Service $script:NwdashServiceName"
+  }
+  return 'rolled back to the pre-deploy state'
 }
 
 # ---- dashboard password gate ----

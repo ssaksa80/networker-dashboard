@@ -184,6 +184,14 @@ the shared view refreshes on the session's range.
 - Headless-browser screenshot rendering (email reports) needs a local
   Chrome or Edge; on some managed hosts Edge silently refuses
   `--screenshot` while Chrome works.
+- The installer moves app files with `Move-NwdashItem`, never `Move-Item`.
+  Under Windows PowerShell 5.1 `Move-Item` handles a folder with any open
+  handle inside by moving file by file, so one locked file splits the folder
+  and the next retry nests it; nothing can restore that. Keep the `catch` in
+  `-Upgrade`/`-Rollback` around the swap alone: `Stop-Nwdash` throws under
+  `$ErrorActionPreference='Stop'`, so a wider one also catches the refusals
+  and the final failure, and undoes a deploy twice (review O1,
+  `deploy/test/swap-recovery.test.ps1`).
 
 ## Deferred work (in priority order)
 
