@@ -85,11 +85,17 @@ Rollback below.
 - **Other daily report ranges are API-only for now, and easy to lose.** To set
   7 or 30 days, call `POST /api/alert-automation` with `action` `start`,
   `scheduleType` `daily_report`, `reportRange` `7d` or `30d`, a dashboard
-  `sessionId` and the SMTP fields. Neither the email dialog nor the admin Email
-  tab has a control yet, so these put the range back to 24 hours:
-  - any **Save** on the admin Email tab, even an SMTP change;
-  - **Schedule selected report** or **Save configuration** in the email dialog
-    with the daily report type selected;
+  `sessionId`, the SMTP fields and the schedule's other settings: `reportTime`,
+  `theme`, `quietStart`, `quietEnd` and `digest`. Anything left out goes back
+  to its default, so a report sent at 06:30 moves to 08:00. `action` `list`
+  shows the current values. Neither the email dialog nor the admin Email tab
+  has a control yet, so these put the range back to 24 hours:
+  - **Schedule selected report** in the email dialog with the daily report type
+    selected, straight away;
+  - any **Save** on the admin Email tab, even an SMTP change, and **Save
+    configuration** in the email dialog with the daily report type selected.
+    These take effect at the next service restart, so reports keep their range
+    until then and the change is easy to miss;
   - an email profile saved from the dialog, which always stores 24 hours.
 - If live data isn't available when a daily report runs, it can still fall
   back to a cached dashboard of another range.
@@ -121,7 +127,9 @@ release fixes:
 
 - All-green sites stop getting daily reports again after at most one more
   email.
-- A range set through the API is dropped from the schedule.
+- Daily reports go back to the dashboard's last range and ignore a range set
+  through the API. Upgrading again brings that range back, unless the email
+  settings were saved on v3.0.1 in between.
 - The false self-test failure comes back.
 
 An uploaded certificate stays in place, because rollback doesn't touch
