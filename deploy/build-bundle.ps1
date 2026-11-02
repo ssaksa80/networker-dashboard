@@ -164,14 +164,43 @@ try {
     if ($LASTEXITCODE) { Stop-Nwdash "pip install --target cryptography failed (exit $LASTEXITCODE) - use -NoCrypto to ship without it" }
   }
 
-  # Prove the staged runtime actually works BEFORE shipping it: stdlib modules
-  # the app needs, plus cryptography when included ("it didn't crash" is not
-  # "it worked" - import under the real embedded interpreter).
+  # Prove the staged runtime actually runs THIS app BEFORE shipping it: stdlib
+  # modules the app needs, cryptography when included, then every nwdash
+  # module ("it didn't crash" is not "it worked" - import under the real
+  # embedded interpreter, so syntax or APIs newer than 3.12 fail the build
+  # here, not on the target).
+  # The probe runs in a throwaway copy laid out like an install (the app at
+  # InstallDir, the runtime at InstallDir\runtime\python), which also proves
+  # the ..\.. entry in python312._pth. Never in $Stage: importing nwdash.secrets
+  # creates data\.session_key and data\.auth_key next to the package, and those
+  # must not ship. The probe is a file, not -c: Windows PowerShell 5.1 drops the
+  # double quotes inside a native command's argument.
   Write-NwdashLog 'validating the embedded runtime'
-  $probe = 'import ssl, sqlite3, ctypes, json, socket; print("stdlib-ok")'
-  if (-not $NoCrypto) { $probe = 'import ssl, sqlite3, ctypes, json, socket; import cryptography; from cryptography.fernet import Fernet; print("stdlib-ok crypto-ok " + cryptography.__version__)' }
-  $proof = & "$Stage\runtime\python\python.exe" -c $probe
-  if ($LASTEXITCODE -or -not "$proof".StartsWith('stdlib-ok')) { Stop-Nwdash "embedded runtime validation failed: $proof" }
+  $Probe = Join-Path $env:TEMP ("nwdash-probe-" + [guid]::NewGuid().ToString('N'))
+  try {
+    New-Item -ItemType Directory -Force -Path "$Probe\runtime" | Out-Null
+    Copy-Item -Recurse -Path "$Stage\runtime\python" -Destination "$Probe\runtime\python"
+    Copy-Item -Recurse -Path "$Stage\app\*" -Destination $Probe
+    @'
+import ctypes, importlib, json, pkgutil, socket, sqlite3, ssl, sys
+proof = ['stdlib-ok']
+if sys.argv[1] == 'crypto':
+    import cryptography
+    from cryptography.fernet import Fernet
+    proof.append('crypto-ok ' + cryptography.__version__)
+import nwdash
+modules = [m.name for m in pkgutil.iter_modules(nwdash.__path__, 'nwdash.')]
+for name in modules:
+    importlib.import_module(name)
+proof.append('app-ok %s (%d modules, Python %s)' % (nwdash.APP_VERSION, len(modules), sys.version.split()[0]))
+print(' '.join(proof))
+'@ | Set-Content -Path "$Probe\probe.py" -Encoding ascii
+    $cryptoArg = if ($NoCrypto) { 'nocrypto' } else { 'crypto' }
+    $proof = & "$Probe\runtime\python\python.exe" "$Probe\probe.py" $cryptoArg
+    if ($LASTEXITCODE -or -not "$proof".StartsWith('stdlib-ok')) { Stop-Nwdash "embedded runtime validation failed: $proof" }
+  } finally {
+    Remove-Item -Recurse -Force $Probe -ErrorAction SilentlyContinue
+  }
   Write-NwdashLog "embedded runtime OK: $proof"
 
   # ---- nssm ----

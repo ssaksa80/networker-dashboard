@@ -157,8 +157,12 @@ every PR:
 
 - ruff, pinned in the workflow (bump it on purpose, with its fixes);
 - the unit suite on windows-latest under Python 3.12.10, the embedded
-  runtime the bundle ships, and 3.14;
+  runtime the bundle ships, and 3.14 (`test_deploy.py` fails if the
+  matrix stops including the build's runtime);
 - the installer tests in `deploy/test/` under Windows PowerShell 5.1.
+
+The bundle build also imports every `nwdash` module under its staged
+runtime before packing, in a throwaway copy laid out like an install.
 
 Tests are `unittest.TestCase` classes: `discover` does not collect bare
 pytest-style functions, so a test written that way never runs. Run the
@@ -200,11 +204,38 @@ for a matching session. If the encryption key was deleted and replaced
 with one loud log warning, until re-saved.
 
 A daily report covers the rolling range stored on its schedule
-(`report_range`, `24h` unless set) and is sent once per local date and
-range. It never uses, or writes back, the range the dashboard was last
-viewed with: `build_dashboard_from_session(..., remember_range=False)`.
-Interactive range changes are still remembered on the session, because
-the shared view refreshes on the session's range.
+(`report_range`, `24h` unless set, chosen in the dashboard's Email window
+or on the admin Email tab) and is sent once per local date and range. It
+never uses, or writes back, the range the dashboard was last viewed with:
+`build_dashboard_from_session(..., remember_range=False)`. Interactive
+range changes are still remembered on the session, because the shared
+view refreshes on the session's range.
+
+When live backup job data is missing, a report only accepts a cached
+dashboard of its own range (`summary.range`, checked by
+`models.dashboard_covers_range` in `stale_dashboard_from_cache` and in the
+emailer's own `shared_reliable_dashboard_for_session` fallback). With none,
+no email goes out and the schedule's last result says why. The shared
+view, interactive builds and alert schedules pass no range, so they still
+take any last good dashboard. A test email ignores the dashboard the page
+sends if that is another range and builds its own.
+
+Saving email settings (the admin Email tab, the dialog's Save
+configuration) writes `email_config.json`, then runs
+`_reconcile_config_driven_automations`, the same pass as a restart, so
+armed config-driven schedules follow it at once. That covers both types
+because the SMTP server is shared; scheduling from the form runs it too,
+for the other type's schedule. A save never starts sending: it arms
+nothing, a paused schedule stays paused, the last-sent signature is kept,
+and a schedule armed from a profile follows its profile. The next run only
+moves if the time or interval changed.
+
+A schedule re-aimed at another server drops its own password
+(`snapshots.smtp_target`) and takes the config's, which also replaces its
+password after a rotation on the same server. With none saved for the
+server, the save's response warns that schedules cannot log in. Sends work
+from a copy taken with the password (`_smtp_send_view`), so a save during a
+send cannot pair the old password with the new server.
 
 ## Operational gotchas
 
@@ -227,6 +258,14 @@ the shared view refreshes on the session's range.
 - Headless-browser screenshot rendering (email reports) needs a local
   Chrome or Edge; on some managed hosts Edge silently refuses
   `--screenshot` while Chrome works.
+- The installer moves app files with `Move-NwdashItem`, never `Move-Item`.
+  Under Windows PowerShell 5.1 `Move-Item` handles a folder with any open
+  handle inside by moving file by file, so one locked file splits the folder
+  and the next retry nests it; nothing can restore that. Keep the `catch` in
+  `-Upgrade`/`-Rollback` around the swap alone: `Stop-Nwdash` throws under
+  `$ErrorActionPreference='Stop'`, so a wider one also catches the refusals
+  and the final failure, and undoes a deploy twice (review O1,
+  `deploy/test/swap-recovery.test.ps1`).
 
 ## Deferred work (in priority order)
 

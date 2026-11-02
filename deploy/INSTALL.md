@@ -362,14 +362,19 @@ What `-Upgrade` does, in order:
    `backups\<version>-<timestamp>\` before touching anything.
 5. Swaps in the new app + embedded runtime. **What is in `data\`, `.certs\`,
    `logs\` and `backups\` is never touched** — sessions, profiles, schedules,
-   keys, snapshots, and certificates all survive.
+   keys, snapshots, and certificates all survive. If the swap itself fails (a
+   file stays locked past the ~60 s retry window, the disk fills), everything
+   already moved goes back, the old version is restarted, and the installer
+   exits non-zero with the cause.
 6. Restarts and runs the **health gate**: several consecutive healthy probes
    of `/api/health` required (a flapping bind cannot pass), ~150 s budget.
 7. **Healthy** → prunes backups to the newest 3 and reports OK.
    **Unhealthy** → prints exactly the service-log lines written **by this
    deploy** (not stale history), **auto-rolls-back** to the pre-deploy
-   backup, restarts the old version, and exits non-zero. The service is never
-   left down.
+   backup, restarts the old version, and exits non-zero. The service is left
+   down only if the old files cannot be put back either (a lock that outlasts
+   the retries): a half-restored app must not run, so it stays stopped and the
+   error names the backup folder to finish from by hand.
 
 After upgrading, users should **hard-refresh the browser once (Ctrl+F5)** —
 several past releases looked broken purely because of a cached page.
@@ -385,7 +390,9 @@ current (bad) state aside as an `undone-*` backup — which is **excluded**
 from future rollback candidates, so a second `-Rollback` can never restore
 the build you just rolled away from. Config and data are untouched. The
 restored files take the current folder permissions, so rolling back to a build
-from before the lock does not reopen the install.
+from before the lock does not reopen the install. A rollback that fails is
+undone the same way as an upgrade: the version you were running goes back, and
+the backup it was restoring gets its files back.
 
 ---
 

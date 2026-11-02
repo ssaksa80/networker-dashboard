@@ -11,6 +11,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from nwdash.config import REPORT_RANGES
+
 ASSETS = Path(__file__).resolve().parent.parent / "nwdash" / "assets"
 APP_JS = (ASSETS / "app.js").read_text(encoding="utf-8")
 ADMIN_JS = (ASSETS / "admin.js").read_text(encoding="utf-8")
@@ -31,6 +33,7 @@ def _run_node(script: str) -> dict:
         [NODE, "-e", script],
         capture_output=True,
         text=True,
+        encoding="utf-8",  # node writes UTF-8 whatever the Windows code page is
         timeout=30,
         check=False,
     )
@@ -310,6 +313,206 @@ const run = async (name, call) => {
         self.assertEqual(self.result["unlockOk"], {"ok": True, "boots": 0, "notice": ""})
         self.assertTrue(self.result["unlocked"])
         self.assertEqual(self.result["shown"], ["console"])
+
+
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping app.js logic tests")
+class TestEmailDialogReportRange(unittest.TestCase):
+    """The dialog's real field functions, over a fake document."""
+
+    @classmethod
+    def setUpClass(cls):
+        source = "\n".join(
+            _extract(rf"function {name}\(.*?\n    \}}\n")
+            for name in ("rangeLabelFromValue", "syncEmailTypeFields", "applyEmailTypeBlock", "editEmailRow",
+                         "emailProfileSummary", "applyEmailProfileToForm", "alertAutomationPayload")
+        )
+        script = r"""
+const fields = {};
+const document = {getElementById: (id) => fields[id] || (fields[id] = {
+  text: "", get value() { return this.text; }, set value(next) { this.text = String(next); },  // as a DOM input
+  checked: false, disabled: false,
+  closest: () => ({classList: {toggle() {}}}),
+})};
+const field = document.getElementById;
+const emailScheduleType = field("emailScheduleType");
+const [smtpPort, smtpSecurity, smtpUsername, smtpPassword, alertAutomationStatus, themeSelect, emailProfileNameInput] =
+  ["smtpPort", "smtpSecurity", "smtpUsername", "smtpPassword", "status", "themeSelect", "emailProfileName"].map(field);
+const syncSmtpSecurityFields = () => {};
+const text = (value) => String(value);
+const EMAIL_PROFILE_PW_SAVED = "(saved)";
+let sessionId = "s", currentEmailAutomationId = "", loadedEmailProfileName = "", latestDashboard = null;
+let emailConfigCache = {
+  alert: {recipients: "ops@example.test", trigger: "critical", intervalMinutes: 60},
+  dailyReport: {recipients: "config@example.test", reportTime: "06:00", reportRange: "30d"},
+};
+""" + source + r"""
+const out = {};
+const range = field("dailyReportRange");
+
+emailScheduleType.value = "daily_report";
+applyEmailTypeBlock();
+out.config = {range: range.value, disabled: range.disabled};
+
+editEmailRow("a", [{automationId: "a", scheduleType: "daily_report", recipients: "own@example.test",
+                    reportTime: "09:30", reportRange: "7d"}]);
+out.edited = {range: range.value, recipients: field("smtpTo").value, time: field("dailyReportTime").value};
+out.payload = alertAutomationPayload("start").reportRange;
+
+editEmailRow("b", [{automationId: "b", scheduleType: "daily_report", reportTime: "09:30"}]);
+out.legacy = range.value;
+
+applyEmailProfileToForm("weekly", {scheduleType: "daily_report", reportRange: "30d", smtpTo: "a@example.test"});
+out.profile = range.value;
+out.summary = emailProfileSummary({scheduleType: "daily_report", smtpTo: "a@example.test", reportTime: "08:00", reportRange: "7d"});
+
+emailScheduleType.value = "alert";
+applyEmailTypeBlock();
+out.alert = {disabled: range.disabled, time: field("dailyReportTime").disabled};
+process.stdout.write(JSON.stringify(out));
+"""
+        cls.result = _run_node(script)
+
+    def test_a_new_form_shows_the_saved_config_range(self):
+        self.assertEqual(self.result["config"], {"range": "30d", "disabled": False})
+
+    def test_editing_shows_the_schedules_own_values_not_the_configs(self):
+        self.assertEqual(self.result["edited"],
+                         {"range": "7d", "recipients": "own@example.test", "time": "09:30"})
+
+    def test_the_chosen_range_is_sent(self):
+        self.assertEqual(self.result["payload"], "7d")
+
+    def test_a_schedule_saved_before_the_range_shows_the_daily_window(self):
+        self.assertEqual(self.result["legacy"], "24h")
+
+    def test_loading_a_profile_shows_its_range(self):
+        self.assertEqual(self.result["profile"], "30d")
+        self.assertIn("at 08:00 · Last Week", self.result["summary"])
+
+    def test_the_control_is_off_for_an_alert_check(self):
+        self.assertEqual(self.result["alert"], {"disabled": True, "time": True})
+
+
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping admin.js logic tests")
+class TestAdminEmailTabReportRange(unittest.TestCase):
+    """The admin Email tab's real load and save, against a fake server. It used
+    to send no range, so every save reset the stored one to 24h."""
+
+    @classmethod
+    def setUpClass(cls):
+        email = _extract(r"      // ── Email ─+\n.*?(?=      // ── Schedules ─)", ADMIN_JS)
+        script = r"""
+const nodes = {};
+const $ = (selector) => nodes[selector] || (nodes[selector] = {
+  text: "", get value() { return this.text; }, set value(next) { this.text = String(next); },  // as a DOM input
+  placeholder: "", innerHTML: "", listeners: {},
+  addEventListener(type, handler) { this.listeners[type] = handler; },
+});
+const dirty = {};
+const posts = [];
+const trackDirty = () => {}, clean = () => {}, busy = () => {}, toast = () => {};
+const fail = (e) => { throw e; };
+const esc = (value) => String(value);
+const get = async (path) => path === "/api/email-config" ? {
+  smtp: {host: "smtp.example.test", port: 25, security: "none", username: "", from: "a@example.test", passwordSaved: false},
+  alert: {recipients: "ops@example.test", trigger: "critical", intervalMinutes: 60},
+  dailyReport: {recipients: "r@example.test", reportTime: "08:00", reportRange: "30d", theme: "default"},
+} : {};
+const post = async (_path, body) => {
+  if (body.action === "list-profiles") {
+    return {profiles: {weekly: {scheduleType: "daily_report", reportRange: "7d"}, ops: {scheduleType: "alert"}}};
+  }
+  posts.push(body);
+  return {ok: true};
+};
+""" + email + r"""
+(async () => {
+  await loadEmail();
+  const out = {shown: $("#emRange").value, profiles: $("#epTable tbody").innerHTML};
+  await $("#emForm").listeners.submit({preventDefault() {}});
+  out.posts = posts.map((p) => ({type: p.scheduleType, range: p.reportRange === undefined ? null : p.reportRange}));
+  $("#emRange").value = "7d";
+  posts.length = 0;
+  await $("#emForm").listeners.submit({preventDefault() {}});
+  out.changed = posts.find((p) => p.scheduleType === "daily_report").reportRange;
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+        cls.result = _run_node(script)
+
+    def test_the_stored_range_is_shown(self):
+        self.assertEqual(self.result["shown"], "30d")
+
+    def test_saving_sends_the_stored_range_back(self):
+        self.assertEqual(self.result["posts"],
+                         [{"type": "alert", "range": None}, {"type": "daily_report", "range": "30d"}])
+
+    def test_a_new_choice_is_saved(self):
+        self.assertEqual(self.result["changed"], "7d")
+
+    def test_profiles_show_their_range(self):
+        self.assertIn("Daily report · Last week", self.result["profiles"])
+
+
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping admin.js logic tests")
+class TestAdminEmailTabSaveToast(unittest.TestCase):
+    """What the Email tab says after a save, for each answer the server can give."""
+
+    @classmethod
+    def setUpClass(cls):
+        email = _extract(r"      // ── Email ─+\n.*?(?=      // ── Schedules ─)", ADMIN_JS)
+        script = r"""
+const nodes = {};
+const $ = (selector) => nodes[selector] || (nodes[selector] = {
+  value: "", placeholder: "", innerHTML: "", listeners: {},
+  addEventListener(type, handler) { this.listeners[type] = handler; },
+});
+const dirty = {email: true};
+const trackDirty = () => {}, clean = () => {}, busy = () => {};
+const fail = (e) => { throw e; };
+const esc = (value) => String(value);
+const get = async () => ({});
+let toasts = [], answers = [];
+const toast = (message, kind) => toasts.push([message, kind || "ok"]);
+const post = async (_path, body) => body.action === "list-profiles" ? {profiles: {}} : answers.shift();
+""" + email + r"""
+const saved = async (...replies) => {
+  toasts = [];
+  answers = replies;
+  await $("#emForm").listeners.submit({preventDefault() {}});
+  return toasts;
+};
+(async () => {
+  process.stdout.write(JSON.stringify({
+    nothing: await saved({schedulesUpdated: 0, warning: ""}, {schedulesUpdated: 0, warning: ""}),
+    firstOnly: await saved({schedulesUpdated: 1, warning: ""}, {schedulesUpdated: 0, warning: ""}),
+    secondOnly: await saved({schedulesUpdated: 0, warning: ""}, {schedulesUpdated: 2, warning: ""}),
+    warned: await saved({schedulesUpdated: 1, warning: "w"}, {schedulesUpdated: 0, warning: "Type the password."}),
+  }));
+})();
+"""
+        cls.result = _run_node(script)
+
+    def test_with_nothing_updated_it_says_only_that_it_saved(self):
+        self.assertEqual(self.result["nothing"], [["Email settings saved. Nothing new is scheduled.", "ok"]])
+
+    def test_either_save_updating_a_schedule_says_so(self):
+        for case in ("firstOnly", "secondOnly"):
+            with self.subTest(case=case):
+                self.assertEqual(len(self.result[case]), 1)
+                self.assertIn("Schedules that follow them are updated", self.result[case][0][0])
+
+    def test_a_missing_password_is_a_warning_of_its_own(self):
+        self.assertEqual(self.result["warned"][1:], [["Type the password.", "warn"]])
+
+
+class TestReportRangeControls(unittest.TestCase):
+    def test_both_controls_offer_only_the_rolling_ranges(self):
+        for page, select in (("dashboard.html", "dailyReportRange"), ("admin.html", "emRange")):
+            html = (ASSETS / page).read_text(encoding="utf-8")
+            options = re.search(rf'<select id="{select}".*?</select>', html, re.DOTALL).group(0)
+            with self.subTest(page=page):
+                self.assertEqual(re.findall(r'<option value="([^"]+)"', options), list(REPORT_RANGES))
 
 
 class TestSessionIdSourceGuards(unittest.TestCase):

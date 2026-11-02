@@ -265,42 +265,60 @@ if ($Upgrade -or $Rollback) {
   # Wait-NwdashCleanStop force-kills mid-swap). The finally below GUARANTEES it
   # is restored on every exit path.
   Set-NwdashNssmAutoRestart -Nssm $nssm -Enabled:$false
+  # What a failure has to undo (Undo-NwdashDeploy): the backup this run moved the
+  # live app into and, on -Rollback, the backup whose files have started to
+  # replace it. Each is set as soon as its move can have begun.
+  $restoreOnFail = ''; $returnOnFail = ''
   try {
+    # Refusals first: nothing is stopped or moved yet, so there is nothing to undo.
     if ($Rollback) {
       $names = @(Get-NwdashBackups -InstallDir $InstallDir)
       if (-not $names.Count) { Stop-Nwdash 'no backup under backups\ to roll back to' }
       $target = $names[0]
-      Write-NwdashLog "rolling back to backups\$target"
-      # nssm stop can emit STOP_PENDING to stderr on a slow drain; under PS 5.1
-      # EAP=Stop that becomes a TERMINATING error even with 2>$null (DEDB PR
-      # #144) - so every nssm stop is try/catch-wrapped. Wait-NwdashCleanStop +
-      # Wait-NwdashServiceState are the real arbiters that the SCM settled.
-      if ((Get-Service $SvcName -EA SilentlyContinue).Status -ne 'Stopped') { try { & $nssm stop $SvcName 2>$null | Out-Null } catch { } }
-      [void](Wait-NwdashCleanStop -InstallDir $InstallDir -Port $livePort -BindAddr $liveBind)
-      [void](Wait-NwdashServiceState -State 'Stopped' -TimeoutSec 30)
-      # Move the current (bad) state aside so the rollback itself is restorable.
-      # 'undone-' prefixed backups are EXCLUDED from Get-NwdashBackups so a
-      # second -Rollback can never restore the build we just rolled away from.
-      Backup-NwdashApp -InstallDir $InstallDir -Name "undone-$oldVer-$ts"
-      Restore-NwdashApp -InstallDir $InstallDir -Name $target
-      $restoreOnFail = "undone-$oldVer-$ts"
-      $toVer = Get-NwdashInstalledVersion -InstallDir $InstallDir
-      Write-NwdashLog "restored $toVer (was $oldVer)"
-    } else {
-      if (-not (Test-Path "$InstallDir\networker_dashboard.py")) { Stop-Nwdash "no existing app at $InstallDir - run a normal install first" }
-      Write-NwdashLog "upgrading NetWorker Dashboard $oldVer -> $BundleVersion (config + data preserved)"
-      if ((Get-Service $SvcName -EA SilentlyContinue).Status -ne 'Stopped') { try { & $nssm stop $SvcName 2>$null | Out-Null } catch { } }
-      [void](Wait-NwdashCleanStop -InstallDir $InstallDir -Port $livePort -BindAddr $liveBind)
-      # Confirm the SCM actually settled to Stopped (not STOP_PENDING) before
-      # the file swap, so a stale STOP_PENDING cannot strand the later start.
-      [void](Wait-NwdashServiceState -State 'Stopped' -TimeoutSec 30)
-      Backup-NwdashApp -InstallDir $InstallDir -Name "$oldVer-$ts"
-      $restoreOnFail = "$oldVer-$ts"
-      foreach ($item in (Get-ChildItem $AppSrc)) {
-        Invoke-NwdashFileOp { Copy-Item -Recurse -Force $item.FullName (Join-Path $InstallDir $item.Name) }
+    } elseif (-not (Test-Path "$InstallDir\networker_dashboard.py")) {
+      Stop-Nwdash "no existing app at $InstallDir - run a normal install first"
+    }
+    try {
+      if ($Rollback) {
+        Write-NwdashLog "rolling back to backups\$target"
+        # nssm stop can emit STOP_PENDING to stderr on a slow drain; under PS 5.1
+        # EAP=Stop that becomes a TERMINATING error even with 2>$null (DEDB PR
+        # #144) - so every nssm stop is try/catch-wrapped. Wait-NwdashCleanStop +
+        # Wait-NwdashServiceState are the real arbiters that the SCM settled.
+        if ((Get-Service $SvcName -EA SilentlyContinue).Status -ne 'Stopped') { try { & $nssm stop $SvcName 2>$null | Out-Null } catch { } }
+        [void](Wait-NwdashCleanStop -InstallDir $InstallDir -Port $livePort -BindAddr $liveBind)
+        [void](Wait-NwdashServiceState -State 'Stopped' -TimeoutSec 30)
+        # Move the current (bad) state aside so the rollback itself is restorable.
+        # 'undone-' prefixed backups are EXCLUDED from Get-NwdashBackups so a
+        # second -Rollback can never restore the build we just rolled away from.
+        $restoreOnFail = "undone-$oldVer-$ts"
+        Backup-NwdashApp -InstallDir $InstallDir -Name $restoreOnFail
+        $returnOnFail = $target
+        Restore-NwdashApp -InstallDir $InstallDir -Name $target
+        $toVer = Get-NwdashInstalledVersion -InstallDir $InstallDir
+        Write-NwdashLog "restored $toVer (was $oldVer)"
+      } else {
+        Write-NwdashLog "upgrading NetWorker Dashboard $oldVer -> $BundleVersion (config + data preserved)"
+        if ((Get-Service $SvcName -EA SilentlyContinue).Status -ne 'Stopped') { try { & $nssm stop $SvcName 2>$null | Out-Null } catch { } }
+        [void](Wait-NwdashCleanStop -InstallDir $InstallDir -Port $livePort -BindAddr $liveBind)
+        # Confirm the SCM actually settled to Stopped (not STOP_PENDING) before
+        # the file swap, so a stale STOP_PENDING cannot strand the later start.
+        [void](Wait-NwdashServiceState -State 'Stopped' -TimeoutSec 30)
+        $restoreOnFail = "$oldVer-$ts"
+        Backup-NwdashApp -InstallDir $InstallDir -Name $restoreOnFail
+        foreach ($item in (Get-ChildItem $AppSrc)) {
+          Copy-NwdashItem $item.FullName (Join-Path $InstallDir $item.Name)
+        }
+        New-Item -ItemType Directory -Force "$InstallDir\runtime" | Out-Null
+        Copy-NwdashItem $PySrc "$InstallDir\runtime\python"
       }
-      New-Item -ItemType Directory -Force "$InstallDir\runtime" | Out-Null
-      Invoke-NwdashFileOp { Copy-Item -Recurse -Force $PySrc "$InstallDir\runtime\python" }
+    } catch {
+      # This catch wraps the swap and nothing else. Stop-Nwdash throws under
+      # EAP=Stop (it never reaches its exit), so a wider one would also catch the
+      # refusals above and the final failure below, and undo a deploy twice.
+      $why = "$($_.Exception.Message)"
+      Write-NwdashWarn "file swap failed - restoring the pre-deploy state: $why"
+      Stop-Nwdash "deploy failed: $why - $(Undo-NwdashDeploy -InstallDir $InstallDir -Nssm $nssm -Name $restoreOnFail -ReturnTo $returnOnFail -Port $livePort -HostName $probeHost)"
     }
 
     # Even after the clean stop, the OS can hold the listening socket a beat.
@@ -343,15 +361,7 @@ if ($Upgrade -or $Rollback) {
     if ((Get-Service $SvcName -EA SilentlyContinue).Status -ne 'Stopped') { try { & $nssm stop $SvcName 2>$null | Out-Null } catch { } }
     [void](Wait-NwdashCleanStop -InstallDir $InstallDir -Port $livePort -BindAddr $liveBind)
     [void](Wait-NwdashServiceState -State 'Stopped' -TimeoutSec 30)
-    Restore-NwdashApp -InstallDir $InstallDir -Name $restoreOnFail
-    if (-not (Wait-NwdashPortFree -Port $livePort -TimeoutSec 20 -HostName $probeHost)) {
-      Write-NwdashWarn "port $livePort still held after stop - starting anyway (app bind-retry will absorb it)"
-    }
-    Set-NwdashNssmAutoRestart -Nssm $nssm -Enabled:$true
-    if (-not (Start-NwdashServiceVerified -Nssm $nssm)) {
-      Write-NwdashWarn "ROLLBACK: service did not auto-start - run: Start-Service $SvcName"
-    }
-    Stop-Nwdash 'deploy failed - rolled back to the pre-deploy state'
+    Stop-Nwdash "deploy failed - $(Undo-NwdashDeploy -InstallDir $InstallDir -Nssm $nssm -Name $restoreOnFail -ReturnTo $returnOnFail -Port $livePort -HostName $probeHost)"
   } finally {
     # Guarantee nssm auto-restart is back ON for EVERY exit path so we never
     # strand the service with self-healing disabled.

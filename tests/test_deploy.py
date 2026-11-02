@@ -54,6 +54,16 @@ class TestDeployTree(unittest.TestCase):
         config = (PROJECT / "nwdash" / "config.py").read_text(encoding="utf-8")
         self.assertRegex(config, r'(?m)^APP_VERSION\s*=\s*"\d+\.\d+\.\d+"', "APP_VERSION missing")
 
+    def test_ci_tests_the_shipped_runtime(self):
+        # Production runs the bundle's embedded CPython, so a runtime bump in
+        # the build must bump the CI matrix too.
+        build = (DEPLOY / "build-bundle.ps1").read_text(encoding="utf-8")
+        shipped = re.search(r"python-(\d+\.\d+\.\d+)-embed-amd64\.zip", build).group(1)
+        workflow = (PROJECT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        matrix = re.search(r"python-version:\s*\[([^\]]*)\]", workflow)
+        self.assertIsNotNone(matrix, "tests.yml has no python-version matrix")
+        self.assertIn(f'"{shipped}"', matrix.group(1), f"CI does not test the shipped runtime {shipped}")
+
 
 class TestSetupBootstrap(unittest.TestCase):
     def test_references_new_bundle_pattern(self):

@@ -211,7 +211,9 @@ is available).</li>
 restarts, and health-gates (<code>/api/health</code>, consecutive-probe rule, ~150&nbsp;s
 budget). <strong>Healthy</strong> &rarr; backups pruned to newest 3.
 <strong>Unhealthy</strong> &rarr; prints the log lines written by this deploy and
-<strong>auto-rolls-back</strong>; the service is never left down.</li>
+<strong>auto-rolls-back</strong>. A swap that fails partway is undone the same way.
+The service stays down only if the old files cannot be put back; the error then
+names the backup folder to finish from.</li>
 <li>Tell users to hard-refresh once (Ctrl+F5).</li>
 </ol>
 <h3>Rollback (manual, e.g. a healthy-but-wrong release)</h3>

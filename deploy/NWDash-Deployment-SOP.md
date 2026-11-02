@@ -127,8 +127,10 @@ guarantees it is re-enabled on every exit path.
 4. It backs up app+runtime to `backups\<ver>-<timestamp>\`, swaps, restarts,
    and health-gates (`/api/health`, consecutive-probe rule, ~150 s budget).
    **Healthy** → backups pruned to newest 3. **Unhealthy** → prints the log
-   lines written by this deploy and **auto-rolls-back**; the service is never
-   left down.
+   lines written by this deploy and **auto-rolls-back**. A swap that fails
+   partway is undone the same way. The service stays down only if the old
+   files cannot be put back; the error then names the backup folder to finish
+   from.
 5. Tell users to hard-refresh once (Ctrl+F5).
 
 **Rollback** (manual, e.g. a healthy-but-wrong release):

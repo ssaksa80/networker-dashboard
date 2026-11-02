@@ -463,7 +463,11 @@ def build_dashboard_from_session(
                 create_session=False,
             )
         if status == 200 and body.get("ok") and not dashboard_backup_source_available(body):
-            stale_body = stale_dashboard_from_cache(session_id, body)
+            # A scheduled report only takes a cached dashboard of its own range;
+            # the shared view and interactive builds keep any last good one.
+            stale_body = stale_dashboard_from_cache(
+                session_id, body, report_range=None if remember_range else report_range
+            )
             if stale_body:
                 body = stale_body
     if status == 200:
