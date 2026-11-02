@@ -351,6 +351,18 @@ function Move-NwdashItem {
   else { [IO.File]::Move($Path, $Destination) }
 }
 
+# Copy a file or folder so $Destination ends up holding exactly that, retried
+# like any file op. Each try starts clean: Copy-Item -Recurse into the folder an
+# earlier try left behind nests the copy inside it, and that tree can still pass
+# the health gate.
+function Copy-NwdashItem {
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Destination)
+  Invoke-NwdashFileOp {
+    if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Recurse -Force }
+    Copy-Item -Recurse -Force $Path $Destination
+  }
+}
+
 # Installed app version, read from nwdash\config.py at the InstallDir root
 # (same source of truth the build uses). '0.0.0' when unreadable.
 function Get-NwdashInstalledVersion {
@@ -609,6 +621,12 @@ function Undo-NwdashDeploy {
     return "could not put the previous version back ($($_.Exception.Message)). The service is left STOPPED. " +
       "Once nothing holds the files, move what is left in $InstallDir\backups\$Name back over the install folder " +
       "(app\* to its root, runtime\python to runtime\python), then run: Start-Service $script:NwdashServiceName"
+  }
+  # This run made that folder and the restore emptied it. Left behind it would
+  # pass for the newest backup and stop the next -Rollback reaching a real one.
+  $spent = Join-Path $InstallDir "backups\$Name"
+  if ($Name -and -not @(Get-ChildItem -LiteralPath $spent -Recurse -File -Force -ErrorAction SilentlyContinue).Count) {
+    Remove-Item -LiteralPath $spent -Recurse -Force -ErrorAction SilentlyContinue
   }
   if (-not (Wait-NwdashPortFree -Port $Port -TimeoutSec 20 -HostName $HostName)) {
     Write-NwdashWarn "port $Port still held after stop - starting anyway (app bind-retry will absorb it)"

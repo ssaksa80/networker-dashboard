@@ -267,10 +267,10 @@ if ($Upgrade -or $Rollback) {
         $restoreOnFail = "$oldVer-$ts"
         Backup-NwdashApp -InstallDir $InstallDir -Name $restoreOnFail
         foreach ($item in (Get-ChildItem $AppSrc)) {
-          Invoke-NwdashFileOp { Copy-Item -Recurse -Force $item.FullName (Join-Path $InstallDir $item.Name) }
+          Copy-NwdashItem $item.FullName (Join-Path $InstallDir $item.Name)
         }
         New-Item -ItemType Directory -Force "$InstallDir\runtime" | Out-Null
-        Invoke-NwdashFileOp { Copy-Item -Recurse -Force $PySrc "$InstallDir\runtime\python" }
+        Copy-NwdashItem $PySrc "$InstallDir\runtime\python"
       }
     } catch {
       # This catch wraps the swap and nothing else. Stop-Nwdash throws under

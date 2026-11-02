@@ -50,13 +50,19 @@ if ($RunIn) {
     }
     return ($Inject -notlike 'health-fails*')
   }
-  if ($Inject -eq 'disk-full') {
+  # Both leave a partial copy behind, as a real failed copy does.
+  if ($Inject -in @('disk-full', 'copy-locked-once')) {
+    $script:copyFailed = $false
     function Copy-Item {
       param([switch]$Recurse, [switch]$Force, [Parameter(Position = 0)][string]$Path, [Parameter(Position = 1)][string]$Destination)
-      if ($Path -ne $PySrc) { Microsoft.PowerShell.Management\Copy-Item -Recurse -Force $Path $Destination; return }
+      $full = ($Inject -eq 'disk-full' -and $Path -eq $PySrc)
+      $locked = ($Inject -eq 'copy-locked-once' -and $Path -like '*\bundle\app\nwdash' -and -not $script:copyFailed)
+      if (-not ($full -or $locked)) { Microsoft.PowerShell.Management\Copy-Item -Recurse -Force $Path $Destination; return }
+      $script:copyFailed = $true
       New-Item -ItemType Directory -Force $Destination | Out-Null
-      Set-Content "$Destination\python.exe" 'half written'
-      throw 'There is not enough space on the disk.'
+      Set-Content "$Destination\half-written.tmp" 'half written'
+      if ($full) { throw 'There is not enough space on the disk.' }
+      throw 'The process cannot access the file because it is being used by another process.'
     }
   }
   if ($Inject -eq 'lock-clears') { $script:held = [IO.File]::Open("$InstallDir\nwdash\sessions.py", 'Open', 'Read', 'None') }
@@ -142,6 +148,7 @@ function Assert-Recovered($Run, [string]$Dir, [string]$Before, [string]$Case) {
   Assert ($Run.Code -notin @(0, 99)) "$Case : exits non-zero"
   Assert ($Run.Flat -match 'deployfailed') "$Case : says the deploy failed"
   Assert ((Get-Tree "$Dir\install") -ceq $Before) "$Case : the previous app and runtime are back, unchanged"
+  Assert ((Get-NewestBackup $Dir) -eq $script:Target) "$Case : -Rollback still reaches the real backup, no emptied folder in front of it"
   Assert ((Get-ServiceState $Dir) -eq 'Running') "$Case : the service is running again"
   Assert ((Get-NssmLog $Dir | Where-Object { $_ -match 'AppExit' } | Select-Object -Last 1) -match 'Restart$') "$Case : nssm auto-restart is back on"
 }
@@ -172,6 +179,13 @@ try {
   $run = Invoke-Deploy $d 'Upgrade' 'lock-clears'
   Assert ($run.Code -eq 0) "$case : exits 0"
   Assert-WholeBackup $d $case
+
+  # ---- a copy retried after a lock starts clean, or it nests ----
+  $case = 'upgrade, the copy hits a lock once'
+  $d = New-Fixture
+  $run = Invoke-Deploy $d 'Upgrade' 'copy-locked-once'
+  Assert ($run.Code -eq 0) "$case : exits 0"
+  Assert ((Get-Tree "$d\install\nwdash") -ceq (Get-Tree "$d\bundle\app\nwdash")) "$case : nwdash is exactly the new version, nothing nested or left over"
 
   # ---- the swap fails while the old version is being moved out ----
   $case = 'upgrade, a file stays locked'
@@ -234,6 +248,7 @@ try {
   Assert ($run.Code -notin @(0, 99)) "$case : exits non-zero"
   Assert ((Get-Tree "$d\install") -ceq $old) "$case : the previous app and runtime are back, unchanged"
   Assert ($run.Flat -match 'Start-Service') "$case : tells the operator to start it"
+  Assert ($run.Flat -notmatch 'rolledbacktothepre-deploystate') "$case : does not claim the rollback worked"
 
   # ---- the restore itself fails: never claim success, never lose the backup ----
   $case = 'upgrade, the restore after a failed health gate is locked out'
