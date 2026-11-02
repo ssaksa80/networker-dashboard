@@ -183,9 +183,21 @@ take any last good dashboard. A test email ignores the dashboard the page
 sends if that is another range and builds its own.
 
 Saving email settings (the admin Email tab, the dialog's Save
-configuration) only writes `email_config.json`. An armed config-driven
-schedule keeps its range, time and recipients until the next restart
-(`_reconcile_config_driven_automations`) or until it is scheduled again.
+configuration) writes `email_config.json`, then runs
+`_reconcile_config_driven_automations`, the same pass as a restart, so
+armed config-driven schedules follow it at once. That covers both types
+because the SMTP server is shared; scheduling from the form runs it too,
+for the other type's schedule. A save never starts sending: it arms
+nothing, a paused schedule stays paused, the last-sent signature is kept,
+and a schedule armed from a profile follows its profile. The next run only
+moves if the time or interval changed.
+
+A schedule re-aimed at another server drops its own password
+(`snapshots.smtp_target`) and takes the config's, which also replaces its
+password after a rotation on the same server. With none saved for the
+server, the save's response warns that schedules cannot log in. Sends work
+from a copy taken with the password (`_smtp_send_view`), so a save during a
+send cannot pair the old password with the new server.
 
 ## Operational gotchas
 
