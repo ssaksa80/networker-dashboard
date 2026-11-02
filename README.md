@@ -82,8 +82,10 @@ installer tests in `deploy/test/`.
 
 - `data/`, `logs/`, `.certs/` hold runtime state and secrets — they are
   gitignored and must never be committed or copied between machines
-  blindly: the key files under `data/` are DPAPI-protected per Windows
-  account, so copies are unreadable elsewhere (the app then regenerates
-  keys and previously saved sessions must be re-entered once).
+  blindly: the key files under `data/` are DPAPI-protected per machine,
+  so copies are unreadable elsewhere (the app then refuses to start
+  rather than replace them). On this machine any account that can read
+  them can unwrap them, so the installer restricts these folders to
+  SYSTEM, Administrators and the service account.
 - Outbound TLS verification to NetWorker servers is on by default and
   controlled per connection profile ("Verify REST API TLS certificate").

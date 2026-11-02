@@ -70,6 +70,7 @@ $shipFiles = @(
   'nwdash\certs.py',
   'nwdash\config.py',
   'nwdash\emailer.py',
+  'nwdash\fsacl.py',
   'nwdash\main.py',
   'nwdash\models.py',
   'nwdash\nwui.py',

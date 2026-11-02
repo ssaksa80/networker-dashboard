@@ -63,6 +63,37 @@ extraction (SHA-256 against the prior revision).
   controlled per connection profile; restored sessions missing the
   flag default to verify (fail closed). The startup self-test pins the
   server's own certificate instead of disabling verification.
+- **Keys and the folder lock (review S5).** `data/.session_key` and
+  `data/.auth_key` are DPAPI **machine-scope** (`secrets.py`): any account on
+  the host can unwrap a key file it can read, and no other machine can. The
+  protection is therefore the folder, not the wrapping. `Set-NwdashInstallAcl`
+  (`deploy/lib/common.ps1`) runs on every install, and on `-Upgrade` and
+  `-Rollback` before the service is stopped, so a failure leaves it running.
+  `data\`, `.certs\`, `logs\` and anything unknown go to SYSTEM, Administrators
+  and the service account (Modify); `backups\` to SYSTEM and Administrators. The
+  app itself is read-only for everyone else, the service account included.
+  `Restore-NwdashApp` resets what it moves back, because `Move-Item` keeps a
+  backup's old open permissions.
+  **Machine scope is a decision, not an oversight.** User-scope keys would also
+  protect a copy of `data\` left elsewhere on the host, but only the account that
+  wrapped a key can read it, so a change of service account needs the old account
+  to re-wrap first, and an admin password reset on a local service account loses
+  the keys for good. Under "fail closed, never regenerate" either one is a service
+  that will not start. The remaining gap is that copy of `data\`, which
+  `NWDash-Deployment-SOP.md` §6 covers. A virtual service account is the review's
+  other suggestion and is not done: it changes what the service can reach (WMI,
+  the headless browser) and needs a real host to prove.
+- The lock also tightens the first-password path: on an installed host only an
+  administrator can read `data/setup-code.txt`.
+- The self-test's **Folder permissions** step (`admin.folder_permissions`, reading
+  access lists through `nwdash/fsacl.py`) shows the lock going away. Only the
+  installer sets it, so a restored `data\` or a hand-started copy would otherwise
+  be open with no sign. It also reads the TLS key and its `*.previous` copy, which
+  an upload writes beside the live key: they take that folder's permissions, so
+  the lock covers them only while the key is in `.certs\`. A key the account is
+  denied raises `KeyMaterialError`
+  without the "delete it" advice a dead key gets: access denied says nothing about
+  the key, and that advice would cost every secret.
 
 ## Designs, sidebar and admin console
 
@@ -142,8 +173,9 @@ not evidence.
 
 Every config/state store lives under `data/`, which the installer
 (`scripts/Setup-NWDash.cmd`) preserves on upgrade (only non-`data\`,
-non-`logs\`, non-`.certs\` files are replaced). What each file holds and
-how it comes back after a restart/update/crash:
+non-`logs\`, non-`.certs\` files are replaced; of those three, only the
+folder permissions change). What each file holds and how it comes back after
+a restart/update/crash:
 
 | File | Contents | Restore path |
 |---|---|---|
@@ -159,7 +191,7 @@ how it comes back after a restart/update/crash:
 | `data/allowed_hosts.json` | NetWorker host allow-list saved from the admin console | Read at boot only when neither `--allowed-hosts` nor `DASHBOARD_ALLOWED_HOSTS` is set (those win, and make the list read-only in the console) |
 | `data/networker_snapshots.json`, `data/auto_snapshot_config.json` | Local snapshots + auto-save flag | Read on demand |
 | `data/last_good_dashboard.json` | Last successful dashboard (stale fallback) | Read on demand |
-| `data/.session_key`, `data/.auth_key` | DPAPI-wrapped encryption/HMAC keys | Loaded at import in `secrets.py` |
+| `data/.session_key`, `data/.auth_key` | DPAPI-wrapped (machine scope) encryption/HMAC keys | Loaded at import in `secrets.py`. An unusable key stops the start; it is never replaced |
 
 Email automations are deliberately **decoupled from dashboard sessions**
 (v2.5.x fix for "schedules vanish after restart"): a missing session
@@ -167,9 +199,9 @@ never cancels a schedule. At fire time the automation reuses the live
 session or recreates one from its stored connection snapshot; on failure
 the run is skipped and retried — never auto-cancelled. Legacy
 `automations.json` records without a snapshot stay scheduled and wait
-for a matching session. If the encryption key was regenerated (DPAPI),
-the schedule stays armed but inert, with one loud log warning, until
-re-saved.
+for a matching session. If the encryption key was deleted and replaced
+(the app itself never replaces one), the schedule stays armed but inert,
+with one loud log warning, until re-saved.
 
 A daily report covers the rolling range stored on its schedule
 (`report_range`, `24h` unless set, chosen in the dashboard's Email window
@@ -208,9 +240,18 @@ send cannot pair the old password with the new server.
 ## Operational gotchas
 
 - `data/.session_key` and `data/.auth_key` are DPAPI-protected per
-  Windows account. Copies to another machine/account are unreadable;
-  the app warns at startup and regenerates, which invalidates saved
-  sessions and profile passwords (re-enter once).
+  machine, not per account: a change of service account needs nothing,
+  and a copy on another machine is unreadable. The app then refuses to
+  start (`KeyMaterialError`, pinned by `TestKeyMaterialFailsLoud`) rather
+  than regenerate, because a new key orphans every saved secret. An
+  operator can restore `data/` or delete the key files deliberately.
+- On an installed host `data\`, `.certs\` and `logs\` need an elevated
+  prompt. `icacls /C` exits 0 even when every file failed, `icacls /T` on a
+  file searches subfolders for that name, and `Set-Acl` on an already
+  protected item also writes the audit list: `Set-NwdashItemAcl` and
+  `Invoke-NwdashIcacls` exist because of those three. `Test-Path` on a locked
+  file is fatal under `$ErrorActionPreference = 'Stop'`, so anything that
+  runs before elevation uses `Get-NwdashPathState`.
 - The dev TLS certificate in `.certs/` is self-signed; browsers warn
   once. Upload your CA's certificate on the admin console's TLS tab, or
   provide `--cert`/`--key`, for production.

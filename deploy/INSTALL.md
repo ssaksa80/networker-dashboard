@@ -173,12 +173,61 @@ C:\apps\networker-dashboard\        (default -InstallDir)
   networker_dashboard.py  nwdash\   application (replaced on upgrade)
   runtime\python\                   embedded CPython (replaced on upgrade)
   nssm.exe                          service manager (pinned, reused if locked)
-  data\  .certs\  logs\  backups\   NEVER touched by upgrade/rollback
+  data\  .certs\  logs\  backups\   contents NEVER touched by upgrade/rollback
 ```
 
 The service's working directory is the install dir, so `data\`, `.certs\`
 and `logs\` resolve beside the launcher — exactly like the legacy
 scheduled-task install, which is why migration preserves everything.
+
+### Folder permissions
+
+The install folder does **not** inherit from `C:\`, because there every user
+can read and, on client editions, change what is underneath. Anyone who can
+read `data\.session_key` or `data\.auth_key` on this host can unwrap them, so
+every install, reinstall, `-Upgrade` and `-Rollback` sets:
+
+| Folder | SYSTEM, Administrators | Service account | Other users |
+|---|---|---|---|
+| `data\`, `.certs\`, `logs\` | Full control | Modify | None |
+| `backups\` | Full control | None | None |
+| The app: `nwdash\`, `runtime\`, `nssm.exe`, the launcher | Full control | Read | Read |
+
+Anything else found in the install folder gets the `data\` row, so the service
+keeps its access and nobody else has any. Administrators become the owner of
+everything, because an owner can always rewrite an access list. The lock
+replaces each list outright: entries left by an earlier service account or
+added by hand are removed.
+
+What this means day to day:
+
+- **Open `logs\`, `data\` and `.certs\` from an elevated prompt.** If Explorer
+  offers *"You don't currently have permission… Continue"*, choose **Cancel**:
+  **Continue** permanently adds your account to the folder's access list. The
+  next `-Upgrade` removes that entry.
+- **Starting the app by hand** needs an elevated prompt too. Otherwise it stops
+  with `data\.session_key could not be read by this account` and changes nothing.
+- **`-Check` from a normal prompt** cannot read `data\`, so it reports the
+  password state as *not known*. Run it elevated to see it. A real run decides
+  after the UAC prompt.
+- **Keep `--cert` and `--key` in `.certs\` or in a folder of their own.** The TLS
+  tab writes the new pair and the `*.previous` copies beside them, and those take
+  that folder's permissions, so a key in the root of the install folder would end
+  up readable by users. A folder outside the install keeps whatever permissions
+  you gave it: restrict it yourself, and let the service account write there.
+- **Changing the service account** is safe: re-run the install with
+  `-ServiceAccount <account>` (and `-ServicePassword`). The keys are bound to
+  this machine, not to an account, and the new account gets the row above.
+- **`-InstallDir`** must be a folder of its own: a drive root, or a system folder
+  such as `C:\Windows`, is refused before anything changes. An existing install
+  in such a place keeps working, and `-Upgrade` warns that it is not locked.
+- **Installers from before this change** read `data\` before they ask for
+  elevation, so run an older bundle's installer from an elevated prompt.
+
+The admin console's **Health → self-test** has a **Folder permissions** step that
+fails if other local users can read the keys, the TLS key, `data\` or `logs\`, or
+can change the app, for example after restoring from a backup.
+`Setup-NWDash.cmd -Upgrade` puts the lock back.
 
 ### `-Check` dry-run
 
@@ -186,8 +235,8 @@ scheduled-task install, which is why migration preserves everything.
 resolved plan: bundle version, detected mode (fresh install / reinstall /
 legacy-task migration / upgrade / rollback / uninstall), install dir, service
 account, exact service command line, port/bind, health-probe URL, firewall
-plan, and any existing backups. Run it before every first install on a new
-host — it tells you what the real run would do.
+plan, folder permissions, and any existing backups. Run it before every first
+install on a new host — it tells you what the real run would do.
 
 ### First install — set the dashboard password
 
@@ -303,19 +352,23 @@ What `-Upgrade` does, in order:
 
 1. Reads port/bind from the **existing service's own command line** (the
    upgraded service reuses the same config — flags you pass are ignored here).
-2. Suppresses nssm auto-restart for the swap window, stops the service, and
+2. Applies the [folder permissions](#folder-permissions) for the account the
+   service runs as, with the service still running. An install from before
+   this lock gets it here, with its keys unchanged and no re-entry of any
+   password. If this fails the upgrade stops here, with the service still up.
+3. Suppresses nssm auto-restart for the swap window, stops the service, and
    waits for a **clean stop** (SCM settled, port released).
-3. **Backs up** the current app + runtime to
+4. **Backs up** the current app + runtime to
    `backups\<version>-<timestamp>\` before touching anything.
-4. Swaps in the new app + embedded runtime. **`data\`, `.certs\`, `logs\`,
-   `backups\` are never touched** — sessions, profiles, schedules, keys,
-   snapshots, and certificates all survive. If the swap itself fails (a file
-   stays locked past the ~60 s retry window, the disk fills), everything
+5. Swaps in the new app + embedded runtime. **What is in `data\`, `.certs\`,
+   `logs\` and `backups\` is never touched** — sessions, profiles, schedules,
+   keys, snapshots, and certificates all survive. If the swap itself fails (a
+   file stays locked past the ~60 s retry window, the disk fills), everything
    already moved goes back, the old version is restarted, and the installer
    exits non-zero with the cause.
-5. Restarts and runs the **health gate**: several consecutive healthy probes
+6. Restarts and runs the **health gate**: several consecutive healthy probes
    of `/api/health` required (a flapping bind cannot pass), ~150 s budget.
-6. **Healthy** → prunes backups to the newest 3 and reports OK.
+7. **Healthy** → prunes backups to the newest 3 and reports OK.
    **Unhealthy** → prints exactly the service-log lines written **by this
    deploy** (not stale history), **auto-rolls-back** to the pre-deploy
    backup, restarts the old version, and exits non-zero. The service is left
@@ -335,9 +388,11 @@ Setup-NWDash.cmd -Rollback
 Restores the newest backup under `backups\`. The rollback first moves the
 current (bad) state aside as an `undone-*` backup — which is **excluded**
 from future rollback candidates, so a second `-Rollback` can never restore
-the build you just rolled away from. Config and data are untouched. A rollback
-that fails is undone the same way as an upgrade: the version you were running
-goes back, and the backup it was restoring gets its files back.
+the build you just rolled away from. Config and data are untouched. The
+restored files take the current folder permissions, so rolling back to a build
+from before the lock does not reopen the install. A rollback that fails is
+undone the same way as an upgrade: the version you were running goes back, and
+the backup it was restoring gets its files back.
 
 ---
 
@@ -380,7 +435,11 @@ The dashboard has a purpose-built wall-display mode at **`/tv`**:
 | Symptom | Action |
 |---|---|
 | Service not starting / health gate failed | Read `logs\service.err.log` (and `.out.log`) in the install dir. The installer already printed the lines written during the failed deploy — the cause is almost always there (port in use, cert path wrong, traceback on boot). |
-| `DPAPI key regeneration` warning at startup after copying to a new machine/account | Expected. `data\.session_key` / `data\.auth_key` are **DPAPI-protected per Windows account** — copies are unreadable elsewhere, so the app warns loudly and regenerates. Saved sessions and stored profile/schedule passwords must be re-entered **once**; nothing else is lost. Never copy `data\` between machines expecting secrets to survive. |
+| Service stops at boot with `data\.session_key exists but is unusable` after copying `data\` to a new machine | Expected. `data\.session_key` / `data\.auth_key` are **DPAPI-protected per machine**, so a copy is unreadable on another host. The app refuses to start rather than replace them, because a new key would orphan every saved password. Restore the original `data\`, or, accepting that every stored secret is lost, delete those two files and re-enter the credentials. Never copy `data\` between machines expecting secrets to survive. |
+| `data\.session_key could not be read by this account` when starting the app by hand | The folder lock is doing its job, and nothing was changed. Start the service, or run from an elevated prompt (see [Folder permissions](#folder-permissions)). |
+| `Access is denied` opening `logs\`, `data\` or `.certs\` | Expected: use an elevated prompt. In Explorer choose **Cancel** rather than **Continue** (see [Folder permissions](#folder-permissions)). |
+| Install or `-Upgrade` stops with `could not restrict the install folder` | The volume may not support permissions (FAT/exFAT), or security software may be holding the folder. On `-Upgrade` the service was left running. Fix the cause and re-run. |
+| Health self-test fails **Folder permissions** | Other local users can reach what the step names, usually after restoring from a backup or copying files in. `Setup-NWDash.cmd -Upgrade` restores the lock. |
 | Port already in use / service flapping | The installer warns at install time if a foreign process owns the port (name + PID). Stop it or re-run with `-Port <other>`. On co-tenant hosts, check `-BindHost` is set (see §5). |
 | Install reports OK but browser can't reach the dashboard | Firewall: the installer opens inbound TCP on the chosen port (rule group `NetWorkerDashboard`) unless `-NoFirewall` was passed. Also confirm you're browsing the bound IP when `-BindHost` is pinned. |
 | Browser TLS warning | Expected with the default self-signed cert — see §6. |
@@ -399,9 +458,13 @@ The dashboard has a purpose-built wall-display mode at **`/tv`**:
   (`SameSite=Strict; Secure`); login rate limiting; **CSRF** synchronizer
   token enforced on every state-changing route.
 - **Secrets at rest**: NetWorker and SMTP passwords are encrypted; the keys
-  (`data\.session_key`, `data\.auth_key`) are **DPAPI machine/account-bound**
-  on Windows. The API always masks stored passwords — they are never returned
-  to the browser.
+  (`data\.session_key`, `data\.auth_key`) are **DPAPI machine-bound** on
+  Windows, so a copy is unreadable on another host. Machine-bound also means
+  any account on this host can unwrap a key file it can read, which is why the
+  install folder is locked: see [Folder permissions](#folder-permissions). Keep
+  copies of `data\` somewhere equally restricted, because a copy elsewhere on
+  this host is not protected by that lock. The API always masks stored passwords
+  — they are never returned to the browser.
 - **The install password never persists in plaintext**: `-AuthPassword` is
   removed from the service environment right after the first healthy boot.
 - **Outbound TLS verification is fail-closed**: on by default per connection

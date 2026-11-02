@@ -435,12 +435,14 @@ class TestSelfTest(TempDataMixin, unittest.TestCase):
     def test_steps_and_outcome(self):
         with mock.patch.object(admin, "load_profiles", return_value={}), \
              mock.patch.object(admin, "load_email_config", return_value={}), \
+             mock.patch.object(admin, "folder_permissions", return_value=("ok", "closed")), \
              mock.patch.object(_cfg, "TLS_CERT_FILE", ""):
             result = admin.run_self_test(lambda: (True, "healthy"))
         states = {step["id"]: step["state"] for step in result["steps"]}
         self.assertEqual(states["cert"], "bad")
         self.assertEqual(states["listener"], "ok")
         self.assertEqual(states["data"], "ok")
+        self.assertEqual(states["folders"], "ok")
         self.assertEqual(states["networker"], "warn")
         self.assertEqual(states["smtp"], "warn")
         self.assertFalse(result["passed"])
