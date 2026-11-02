@@ -230,7 +230,7 @@ names the backup folder to finish from.</li>
 <div class="tablewrap">
 <table>
 <tr><th>Location</th><th>Contents</th><th>Notes</th></tr>
-<tr><td><code>data\</code></td><td>Everything that matters: auth hash, encrypted sessions/profiles/schedules (<code>automations.json</code>, <code>profiles.json</code>, <code>email_*.json</code>), snapshots, DPAPI-wrapped keys (<code>.session_key</code>, <code>.auth_key</code>)</td><td>Back up to a <strong>restricted</strong> location. The keys are <strong>DPAPI machine/account-bound</strong> &mdash; a copy restored to a different host/account is unreadable; the app then warns loudly, regenerates keys, and stored passwords must be re-entered once</td></tr>
+<tr><td><code>data\</code></td><td>Everything that matters: auth hash, encrypted sessions/profiles/schedules (<code>automations.json</code>, <code>profiles.json</code>, <code>email_*.json</code>), snapshots, DPAPI-wrapped keys (<code>.session_key</code>, <code>.auth_key</code>)</td><td>Back up to a <strong>restricted</strong> location: any account on this host can unwrap a key file it can read, so a copy here needs the same protection as <code>data\</code> itself. The keys are <strong>DPAPI machine-bound</strong> &mdash; a copy restored to a different host is unreadable, and the app then refuses to start rather than replace them. Restored in place, re-run <code>Setup-NWDash.cmd -Upgrade</code> to put the folder lock back</td></tr>
 <tr><td><code>.certs\</code></td><td>TLS material (self-signed by default)</td><td>Regenerable if lost (self-signed case)</td></tr>
 <tr><td><code>backups\</code></td><td>Installer's own app+runtime backups (newest 3)</td><td>Managed automatically</td></tr>
 <tr><td><code>logs\</code></td><td>Service logs (10&nbsp;MB rotation)</td><td>No secrets by design; still restrict</td></tr>
@@ -258,6 +258,10 @@ connect out to.</li>
 <li><strong>Secrets:</strong> NetWorker/SMTP passwords encrypted at rest
 (DPAPI-bound keys); the API masks them, they never return to a browser; the
 install-time password never persists in plaintext.</li>
+<li><strong>Folder permissions:</strong> <code>data\</code>, <code>.certs\</code> and <code>logs\</code> are
+limited to SYSTEM, Administrators and the service account, and users cannot change
+the app (see <code>INSTALL.md</code>, Folder permissions). Use an elevated prompt
+to open them; the Health self-test fails if the lock is lost.</li>
 </ul>
 </section>
 
@@ -306,7 +310,8 @@ needs a local Chrome or Edge on the host; on some managed hosts Edge silently
 refuses <code>--screenshot</code> while Chrome works. Email falls back to
 HTML-only.</li>
 <li><strong>DPAPI key portability:</strong> <code>data\</code> cannot be moved
-between machines or service accounts with its secrets intact (&sect;6).</li>
+between machines with its secrets intact (&sect;6). Changing the service account
+on the same machine is fine.</li>
 </ul>
 </section>
 
