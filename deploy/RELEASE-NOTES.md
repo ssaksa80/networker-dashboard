@@ -23,8 +23,12 @@ under which bump) is [`../RELEASING.md`](../RELEASING.md).
 
 Minor tier: one new admin feature, plus fixes to daily reports and live
 updates. Daily report schedules gain a `report_range` field under `data\`,
-which v3.0.1 ignores. URLs and the service command line are the same, and
-`Setup-NWDash.cmd -Rollback` returns cleanly to v3.0.1.
+which v3.0.1 ignores. URLs and the service command line are the same.
+[`RELEASING.md`](../RELEASING.md) lists a changed default that alters existing
+installs under MAJOR. The move to 24-hour reports isn't one: 24 hours was
+already the app's default range, and the old behaviour was a fault.
+`Setup-NWDash.cmd -Rollback` restores v3.0.1, with the effects listed under
+Rollback below.
 
 ### New: replace the certificate from the admin console
 
@@ -40,6 +44,8 @@ which v3.0.1 ignores. URLs and the service command line are the same, and
 - The replaced pair is kept as `*.previous`, and **Put it back** restores it.
   If browsers refuse the new certificate and the console can't be reached,
   [`INSTALL.md`](INSTALL.md) section 6 has the recovery by hand.
+- `*.previous` includes the old private key. If you're replacing a leaked key,
+  delete both `*.previous` files once the new certificate works.
 - Keys with a passphrase and `.pfx`/`.p12` files are refused, and the tab
   shows the `openssl` commands to convert them.
 - Both changes go in the audit log, never with key material.
@@ -52,7 +58,9 @@ which v3.0.1 ignores. URLs and the service command line are the same, and
   the same day for the same range is still skipped.
 - **Daily reports now cover the last 24 hours by default.** They used to cover
   whatever range the dashboard session last used, which could be 30 days or
-  the same frozen custom dates every day.
+  the same frozen custom dates every day. **Every existing daily schedule
+  moves to 24 hours on upgrade**, with no action needed, even if the dashboard
+  was on 7 or 30 days.
 
 ### Fixes
 
@@ -74,10 +82,15 @@ which v3.0.1 ignores. URLs and the service command line are the same, and
 
 ### Support notes
 
-- **Other daily report ranges are API-only for now.** 7 and 30 days can be set
-  through `reportRange` on the API, but neither the email dialog nor the admin
-  Email tab has a control yet, and saving a schedule from either resets it to
-  24 hours.
+- **Other daily report ranges are API-only for now, and easy to lose.** To set
+  7 or 30 days, call `POST /api/alert-automation` with `action` `start`,
+  `scheduleType` `daily_report`, `reportRange` `7d` or `30d`, a dashboard
+  `sessionId` and the SMTP fields. Neither the email dialog nor the admin Email
+  tab has a control yet, so these put the range back to 24 hours:
+  - any **Save** on the admin Email tab, even an SMTP change;
+  - **Schedule selected report** or **Save configuration** in the email dialog
+    with the daily report type selected;
+  - an email profile saved from the dialog, which always stores 24 hours.
 - If live data isn't available when a daily report runs, it can still fall
   back to a cached dashboard of another range.
 - Alert schedules still use the dashboard session's range.
@@ -86,10 +99,39 @@ which v3.0.1 ignores. URLs and the service command line are the same, and
   `/api/export` answer 502 `networker_auth_failed` when the NetWorker server
   refuses the credentials. Not being signed in is still a 401, now marked
   `X-NWDash-Login: required`.
-- After a rollback to v3.0.1, an uploaded certificate stays in place (rollback
-  doesn't touch `.certs\`), and the false self-test failure above comes back.
 - Reload any dashboard or admin console tab that was open during the upgrade,
   so it picks up the new page.
+
+### Known issue
+
+- **A failed certificate upload can stop the next restart.** The service
+  account needs write access to the certificate, the key and their folder. If
+  the certificate file can be replaced but the key file can't (a read-only key
+  file, for example), the console shows "The certificate files could not be
+  written" and the service keeps serving the old certificate, but the two
+  files on disk no longer match and the service won't start next time. After
+  that error, copy the certificate's `.previous` file back over the
+  certificate file before restarting. If the folder itself can't be written,
+  the upload fails the same way but changes nothing.
+
+### Rollback
+
+`Setup-NWDash.cmd -Rollback` restores v3.0.1, and with it the faults this
+release fixes:
+
+- All-green sites stop getting daily reports again after at most one more
+  email.
+- A range set through the API is dropped from the schedule.
+- The false self-test failure comes back.
+
+An uploaded certificate stays in place, because rollback doesn't touch
+certificates.
+
+**Gates:** GitHub Actions (lint, unit tests on 3.12.10 and 3.14, installer
+tests, secret scan) green on the release PR and the release commit. ruff 0.17.2
+and the full 322-test suite run **locally** on Windows, on Python 3.13 and on
+this bundle's embedded Python 3.12.10: all green. The bundle was booted in the
+installed layout on its own runtime. Not tested against a real NetWorker server.
 
 ---
 

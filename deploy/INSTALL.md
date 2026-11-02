@@ -259,8 +259,15 @@ TLS is **always on** — the service is HTTPS-only.
   survives restarts and upgrades. The pair it replaced is kept beside them as
   `*.previous`, with a **Put it back** button. If browsers then refuse the
   dashboard altogether, copy the two `*.previous` files back over the
-  originals in `.certs\` and restart the service. A `.pfx` must be converted
-  first: `openssl pkcs12 -in site.pfx -nokeys -out site.crt` and
+  originals in `.certs\` and restart the service. `*.previous` includes the
+  old private key, so if you're replacing a leaked key, delete both files once
+  the new certificate works. The service account needs write access to the
+  certificate, the key and their folder. If an upload says "The certificate
+  files could not be written", copy the certificate's `.previous` file back
+  over the certificate before the service next restarts: in v3.1.0 the
+  certificate can be replaced without its key, and that pair won't start. A
+  `.pfx` must be converted first:
+  `openssl pkcs12 -in site.pfx -nokeys -out site.crt` and
   `openssl pkcs12 -in site.pfx -nocerts -nodes -out site.key`.
 - **Real certificate, on the host:** place PEM cert + key on the host and run the app with
   `--cert`/`--key` — on a service install, edit the service parameters:
