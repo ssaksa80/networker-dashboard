@@ -52,7 +52,10 @@ extraction (SHA-256 against the prior revision).
   all state-changing routes; `/api/login` and `/api/logout` are exempt.
 - Only the gateway's "not signed in" answer is a 401 with
   `X-NWDash-Login: required`, and the fetch wrapper reloads to the sign-in
-  page on that header alone. An expired dashboard session answers 409
+  page on that header alone; the admin console (`admin.js`) goes back to its
+  sign-in card on it too. A wrong password typed into the console (Security's
+  current password, the unlock card) is an unmarked 401 whose error is shown.
+  An expired dashboard session answers 409
   `session_expired`; a NetWorker server refusing the credentials (its own
   401/403) answers 502 `networker_auth_failed`. Keep it that way, or the
   page hides those errors behind a reload (review F2).
@@ -95,6 +98,19 @@ extraction (SHA-256 against the prior revision).
   (connections, email, schedules, snapshots) call the same routes the
   dashboard uses, which stay as open to a signed-in user as before; those
   routes now write audit entries too.
+- **Certificate upload** (TLS tab, `POST /api/admin/tls`): PEM certificate
+  (chain allowed, server certificate first, or found by trying each) and an
+  unencrypted key. Before anything is replaced the pair is loaded into a new
+  `SSLContext` (the key-matches-certificate check), the dates are checked,
+  and a certificate whose subjectAltNames don't cover the Host the console
+  was opened with needs an explicit confirm (HSTS is on, so a browser that
+  trusted the old certificate gets no click-through). The files the service
+  started with (`--cert`/`--key`) are overwritten, the replaced pair kept as
+  `*.previous` (`POST /api/admin/tls/restore` swaps them back), and the new
+  context goes on `server.ssl_context`, which `get_request` reads per
+  connection: new connections get it at once, no restart. PFX is not
+  accepted (the standard library cannot read PKCS#12); the form shows the
+  `openssl` conversion.
 
 ## Verification
 
@@ -153,6 +169,13 @@ for a matching session. If the encryption key was regenerated (DPAPI),
 the schedule stays armed but inert, with one loud log warning, until
 re-saved.
 
+A daily report covers the rolling range stored on its schedule
+(`report_range`, `24h` unless set) and is sent once per local date and
+range. It never uses, or writes back, the range the dashboard was last
+viewed with: `build_dashboard_from_session(..., remember_range=False)`.
+Interactive range changes are still remembered on the session, because
+the shared view refreshes on the session's range.
+
 ## Operational gotchas
 
 - `data/.session_key` and `data/.auth_key` are DPAPI-protected per
@@ -160,7 +183,8 @@ re-saved.
   the app warns at startup and regenerates, which invalidates saved
   sessions and profile passwords (re-enter once).
 - The dev TLS certificate in `.certs/` is self-signed; browsers warn
-  once. Provide `--cert`/`--key` for production.
+  once. Upload your CA's certificate on the admin console's TLS tab, or
+  provide `--cert`/`--key`, for production.
 - Headless-browser screenshot rendering (email reports) needs a local
   Chrome or Edge; on some managed hosts Edge silently refuses
   `--screenshot` while Chrome works.

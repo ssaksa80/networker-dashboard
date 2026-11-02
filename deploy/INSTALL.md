@@ -250,7 +250,19 @@ TLS is **always on** — the service is HTTPS-only.
 - **Default: self-signed.** First boot writes a development certificate to
   `.certs\` and serves with it. Browsers warn once; import the cert into the
   machine trust store to clear the warning, or supply a real cert.
-- **Real certificate:** place PEM cert + key on the host and run the app with
+- **Real certificate, from the browser:** open `/admin` → **TLS**, paste or
+  load the PEM certificate (intermediates after it) and its key (no
+  passphrase), and choose **Check and use**. The key is checked against the
+  certificate, and the dates and names against the address you opened the
+  console with, before anything is replaced. New connections get it straight
+  away, and it is written over the files the service started with, so it
+  survives restarts and upgrades. The pair it replaced is kept beside them as
+  `*.previous`, with a **Put it back** button. If browsers then refuse the
+  dashboard altogether, copy the two `*.previous` files back over the
+  originals in `.certs\` and restart the service. A `.pfx` must be converted
+  first: `openssl pkcs12 -in site.pfx -nokeys -out site.crt` and
+  `openssl pkcs12 -in site.pfx -nocerts -nodes -out site.key`.
+- **Real certificate, on the host:** place PEM cert + key on the host and run the app with
   `--cert`/`--key` — on a service install, edit the service parameters:
 
   ```powershell

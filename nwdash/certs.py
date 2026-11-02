@@ -4,6 +4,7 @@ Split from networker_dashboard.py (v2.5.0); behavior unchanged.
 """
 from __future__ import annotations
 
+import ssl
 from pathlib import Path
 
 EMBEDDED_DEV_CERT_PEM = """-----BEGIN CERTIFICATE-----
@@ -78,3 +79,17 @@ def ensure_certificate(cert_path: Path, key_path: Path) -> bool:
 
     write_embedded_dev_certificate(cert_path, key_path)
     return True
+
+
+def is_embedded_dev_certificate(der: bytes) -> bool:
+    return der == ssl.PEM_cert_to_DER_cert(EMBEDDED_DEV_CERT_PEM)
+
+
+def server_tls_context(cert_path: Path, key_path: Path) -> ssl.SSLContext:
+    """The listener's TLS context. run() builds one at start; the admin
+    console builds a new one when a certificate is uploaded, and loading the
+    pair is also the check that the key belongs to the certificate."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+    return context

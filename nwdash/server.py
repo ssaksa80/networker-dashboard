@@ -434,6 +434,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         cert = Path(_cfg.TLS_CERT_FILE) if _cfg.TLS_CERT_FILE else None
         return self_test_dashboard_listener(url, timeout_seconds=3.0, cert_path=cert)
 
+    def _use_tls_context(self, context: ssl.SSLContext) -> bool:
+        """Serve new connections with `context`; open ones keep theirs."""
+        if getattr(self.server, "ssl_context", None) is None:
+            return False
+        self.server.ssl_context = context
+        return True
+
     def _handle_admin_get(self, path: str, query: dict[str, str]) -> None:
         # The console marks reads a person asked for; its timed refreshes don't.
         if not self._admin_gate(activity=self.headers.get("X-NWDash-Activity") == "1"):
@@ -515,6 +522,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(status, body)
         elif route == "shares/revoke-all":
             self._send_json(HTTPStatus.OK, _admin.revoke_all_share_links(sid, ip))
+        elif route == "tls":
+            status, body = _admin.install_certificate(
+                payload.get("certificate"), payload.get("key"), host=_admin.request_host(self.headers.get("Host")),
+                confirm_name=payload.get("confirmName") is True, sid=sid, client_ip=ip, apply=self._use_tls_context)
+            self._send_json(status, body)
+        elif route == "tls/restore":
+            status, body = _admin.restore_previous_certificate(sid=sid, client_ip=ip, apply=self._use_tls_context)
+            self._send_json(status, body)
         elif route == "appearance":
             before = load_ui_prefs()
             changes = {k: payload[k] for k in ("theme", "design", "motion", "sidebar") if k in payload}
@@ -1216,17 +1231,28 @@ def preferred_launch_url(urls: list[tuple[str, str]]) -> str:
     return urls[0][1] if urls else ""
 
 
+def listener_trust_context(cert_path: Path) -> ssl.SSLContext:
+    """Pin our own serving certificate file as the sole trust anchor. The CN
+    rarely matches the probe host (localhost/IP), so hostname checking stays
+    off — chain verification against the exact cert is the point."""
+    context = ssl.create_default_context(cafile=str(cert_path))
+    context.check_hostname = False
+    # A CA-issued file holds the server certificate and intermediates but not
+    # the root: without PARTIAL_CHAIN (off by default before Python 3.13)
+    # OpenSSL wants a self-signed root and fails. STRICT (on from 3.13) judges
+    # the CA's extensions, which is not what this check is for.
+    context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return context
+
+
 def self_test_dashboard_listener(
     url: str, timeout_seconds: float = 8.0, cert_path: Path | None = None
 ) -> tuple[bool, str]:
     health_url = f"{url.rstrip('/')}/api/health"
     deadline = time.monotonic() + max(0.5, timeout_seconds)
     if cert_path and cert_path.exists():
-        # Pin our own serving certificate as the sole trust anchor. The CN
-        # rarely matches the probe host (localhost/IP), so hostname checking
-        # stays off — chain verification against the exact cert is the point.
-        tls_context = ssl.create_default_context(cafile=str(cert_path))
-        tls_context.check_hostname = False
+        tls_context = listener_trust_context(cert_path)
     else:
         tls_context = ssl._create_unverified_context()
     last_error = "listener did not respond"

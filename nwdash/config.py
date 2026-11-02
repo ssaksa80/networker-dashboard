@@ -94,6 +94,9 @@ BRAND_CARD_SOLID = "#103a47"
 BRAND_CARD_INK = "#ffffff"
 CUSTOM_REPORT_RANGE = "custom"
 DEFAULT_REPORT_RANGE = "24h"
+# What a scheduled daily report covers unless its schedule names another
+# rolling range. Never the range the dashboard was last viewed with.
+DAILY_REPORT_RANGE = "24h"
 SESSION_TTL_SECONDS = 365 * 24 * 60 * 60  # 1 year — sessions persist until server restart or explicit clear
 SHARED_REFRESH_SECONDS = 60
 ALERT_AUTOMATION_MIN_INTERVAL_MINUTES = 1
@@ -203,4 +206,5 @@ ALLOWLIST_SOURCE = "none"
 # boot: a password changed in the admin console is then replaced at restart.
 AUTH_PASSWORD_FROM_STARTUP = False
 TLS_CERT_FILE = ""  # the serving certificate, set by run()
+TLS_KEY_FILE = ""  # its private key, set by run(); the admin console replaces both
 TLS_CERT_AUTO = False  # True when run() generated/used the self-signed one

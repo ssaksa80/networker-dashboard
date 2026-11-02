@@ -17,7 +17,7 @@ from http import HTTPStatus
 from e2e_server import AppServer
 
 from nwdash.server import LOGIN_REQUIRED_HEADER, upstream_auth_failure
-from nwdash.ui import dashboard_html
+from nwdash.ui import admin_page_html, dashboard_html
 
 PASSWORD = "f2-regression-pass"
 
@@ -61,6 +61,9 @@ class TestDashboardReadsTheMarker(unittest.TestCase):
     def test_fetch_wrapper_checks_the_header_the_server_sends(self):
         self.assertIn(f'resp.headers.get("{LOGIN_REQUIRED_HEADER}") === "required"', dashboard_html())
 
+    def test_admin_console_checks_the_header_the_server_sends(self):
+        self.assertIn(f'r.headers.get("{LOGIN_REQUIRED_HEADER}") !== "required"', admin_page_html())
+
 
 class TestWhoAnswers401(unittest.TestCase):
     @classmethod
@@ -82,6 +85,31 @@ class TestWhoAnswers401(unittest.TestCase):
                 self.assertEqual(status, 401)
                 self.assertEqual(headers.get(LOGIN_REQUIRED_HEADER), "required")
                 self.assertEqual(json.loads(raw)["code"], "login_required")
+
+    def test_admin_console_signed_out_is_a_marked_401(self):
+        for method, path, body in (("GET", "/api/admin/overview", None),
+                                   ("POST", "/api/admin/password", {"current": "x", "new": "y"}),
+                                   ("POST", "/api/admin/unlock", {"password": "x"})):
+            with self.subTest(method=method, path=path):
+                status, _raw, headers = self.server.request(method, path, body)
+                self.assertEqual(status, 401)
+                self.assertEqual(headers.get(LOGIN_REQUIRED_HEADER), "required")
+
+    def test_admin_console_wrong_passwords_are_unmarked_401s(self):
+        # The admin.js client shows these errors; it would go back to the
+        # sign-in card instead if they carried the marker.
+        status, raw, headers = self.server.request("POST", "/api/login", {"password": PASSWORD, "admin": True})
+        self.assertEqual(status, 200, raw)
+        cookie, token = headers.get("Set-Cookie", "").split(";", 1)[0], json.loads(raw)["csrfToken"]
+        for path, body, error in (("/api/admin/password", {"current": "not-it", "new": "a new long password"},
+                                   "The current password is wrong."),
+                                  ("/api/admin/unlock", {"password": "not-it"}, "Wrong password.")):
+            with self.subTest(path=path):
+                status, raw, headers = self.server.request("POST", path, body, headers={"X-CSRF-Token": token}, cookie=cookie)
+                self.assertEqual(status, 401)
+                self.assertIsNone(headers.get(LOGIN_REQUIRED_HEADER))
+                self.assertEqual(json.loads(raw)["error"], error)
+        self.assertEqual(self.server.request("POST", "/api/login", {"password": PASSWORD})[0], 200, "password unchanged")
 
     def test_expired_dashboard_session_is_409(self):
         for path in ("/api/dashboard", "/api/export", "/api/server-health"):

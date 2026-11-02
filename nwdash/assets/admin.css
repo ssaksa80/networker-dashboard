@@ -189,6 +189,7 @@
     label.f { display: grid; gap: 5px; font-size: 12px; font-weight: 650; color: var(--muted); min-width: 0; }
     label.f input, label.f select, label.f textarea { width: 100%; font-size: 13.5px; font-weight: 400; }
     label.f small { font-weight: 400; color: var(--muted); opacity: 0.85; }
+    #tlsForm textarea { resize: vertical; font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; font-size: 12px; }
     label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
     label.chk { display: flex; align-items: center; gap: 8px; font-size: 13px; }
     label.chk input { min-height: 0; width: 16px; height: 16px; accent-color: var(--brand); }
