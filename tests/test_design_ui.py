@@ -22,6 +22,13 @@ def _count_id(html: str, element_id: str) -> int:
     return len(re.findall(r'\bid="' + re.escape(element_id) + r'"', html))
 
 
+def _z_index(css: str, selector: str) -> int:
+    match = re.search(r"^\s*" + re.escape(selector) + r"\s*\{[^}]*?\bz-index:\s*(\d+)", css, re.MULTILINE)
+    if match is None:
+        raise AssertionError(f"no z-index for {selector}")
+    return int(match.group(1))
+
+
 class TestDashboardFrame(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -54,6 +61,23 @@ class TestDashboardFrame(unittest.TestCase):
         app = (ASSETS / "app.js").read_text(encoding="utf-8")
         self.assertIn("window.NWDesign.onDashboard(data)", app)
         self.assertEqual(app.count("window.NWDesign.onReset()"), 2)
+
+
+class TestDialogStacking(unittest.TestCase):
+    def test_dialogs_open_above_the_frame(self):
+        # The orders live in two files. Below any of these, a dialog stays on
+        # screen with part of it unclickable, at 1280px under the docked
+        # sidebar and on a phone with its close button under the topbar.
+        dialog = _z_index((ASSETS / "app.css").read_text(encoding="utf-8"), ".modal-backdrop")
+        design = (ASSETS / "design.css").read_text(encoding="utf-8")
+        for selector in (".nw-main .topbar", "body.nav-open .nav-scrim", ".nav-side", ".nav-fab"):
+            self.assertGreater(dialog, _z_index(design, selector), selector)
+
+    def test_every_modal_uses_the_backdrop(self):
+        modals = re.findall(r'<[^>]+aria-modal="true"[^>]*>', dashboard_html())
+        self.assertEqual(len(modals), 4)
+        for modal in modals:
+            self.assertIn('class="modal-backdrop"', modal)
 
 
 class TestDesigns(unittest.TestCase):
