@@ -166,11 +166,26 @@ the schedule stays armed but inert, with one loud log warning, until
 re-saved.
 
 A daily report covers the rolling range stored on its schedule
-(`report_range`, `24h` unless set) and is sent once per local date and
-range. It never uses, or writes back, the range the dashboard was last
-viewed with: `build_dashboard_from_session(..., remember_range=False)`.
-Interactive range changes are still remembered on the session, because
-the shared view refreshes on the session's range.
+(`report_range`, `24h` unless set, chosen in the dashboard's Email window
+or on the admin Email tab) and is sent once per local date and range. It
+never uses, or writes back, the range the dashboard was last viewed with:
+`build_dashboard_from_session(..., remember_range=False)`. Interactive
+range changes are still remembered on the session, because the shared
+view refreshes on the session's range.
+
+When live backup job data is missing, a report only accepts a cached
+dashboard of its own range (`summary.range`, checked by
+`models.dashboard_covers_range` in `stale_dashboard_from_cache` and in the
+emailer's own `shared_reliable_dashboard_for_session` fallback). With none,
+no email goes out and the schedule's last result says why. The shared
+view, interactive builds and alert schedules pass no range, so they still
+take any last good dashboard. A test email ignores the dashboard the page
+sends if that is another range and builds its own.
+
+Saving email settings (the admin Email tab, the dialog's Save
+configuration) only writes `email_config.json`. An armed config-driven
+schedule keeps its range, time and recipients until the next restart
+(`_reconcile_config_driven_automations`) or until it is scheduled again.
 
 ## Operational gotchas
 

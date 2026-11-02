@@ -676,6 +676,8 @@
       trackDirty(emForm, "email");
       let emailCfg = null;
       let sharedSessionId = "";
+      const REPORT_RANGE_LABELS = {"24h": "Last 24 hours", "7d": "Last week", "30d": "Last month"};
+      function reportRangeLabel(value) { return REPORT_RANGE_LABELS[value] || value || REPORT_RANGE_LABELS["24h"]; }
       async function loadEmail() {
         try {
           const cfg = await get("/api/email-config");
@@ -693,6 +695,7 @@
             $("#emInterval").value = cfg.alert.intervalMinutes;
             $("#emReportTo").value = cfg.dailyReport.recipients;
             $("#emTime").value = cfg.dailyReport.reportTime;
+            $("#emRange").value = cfg.dailyReport.reportRange;
             clean("email");
           }
           const shared = await get("/api/current-dashboard").catch(() => ({}));
@@ -701,7 +704,7 @@
           const names = Object.keys(list.profiles || {}).sort();
           $("#epTable tbody").innerHTML = names.map((n) => {
             const p = list.profiles[n];
-            const type = (p.scheduleType || p.emailScheduleType) === "daily_report" ? "Daily report" : "Alerts";
+            const type = (p.scheduleType || p.emailScheduleType) === "daily_report" ? "Daily report · " + reportRangeLabel(p.reportRange) : "Alerts";
             return '<tr><td><button type="button" class="switch" role="switch" aria-checked="' + !!p.enabled + '" data-profile="' + esc(n) + '" aria-label="Switch ' + esc(n) + ' on or off"></button></td><td><b>' +
               esc(n) + '</b><div class="muted small">' + esc(p.smtpTo || "") + "</div></td><td>" + esc(type) + "</td></tr>";
           }).join("") || '<tr class="empty-row"><td colspan="3">No email profiles yet.</td></tr>';
@@ -731,7 +734,7 @@
           await post("/api/alert-automation", Object.assign({}, common, {scheduleType: "alert", smtpPassword: $("#emPass").value, smtpTo: $("#emAlertTo").value,
             trigger: $("#emTrigger").value, intervalMinutes: $("#emInterval").value}));
           await post("/api/alert-automation", Object.assign({}, common, {scheduleType: "daily_report", smtpTo: $("#emReportTo").value, reportTime: $("#emTime").value.trim(),
-            theme: (emailCfg && emailCfg.dailyReport && emailCfg.dailyReport.theme) || "default"}));
+            reportRange: $("#emRange").value, theme: (emailCfg && emailCfg.dailyReport && emailCfg.dailyReport.theme) || "default"}));
           toast("Email settings saved. Nothing new is scheduled.");
           clean("email");
           loadEmail();
@@ -745,7 +748,7 @@
           const rows = r.schedules || [];
           $("#scTable tbody").innerHTML = rows.map((s) => {
             const type = s.scheduleType === "daily_report" ? "Daily report" : "Alerts";
-            const cadence = s.scheduleType === "daily_report" ? "Daily " + s.reportTime : "Every " + s.intervalMinutes + " min";
+            const cadence = s.scheduleType === "daily_report" ? "Daily " + s.reportTime + " · " + reportRangeLabel(s.reportRange) : "Every " + s.intervalMinutes + " min";
             const next = s.enabled && s.nextRunAt ? when(s.nextRunAt) : (s.enabled ? "—" : "paused");
             const last = String(s.lastResult || "Not run yet");
             const kind = /fail|error|refused|rejected/i.test(last) ? "bad" : (s.lastRun ? "ok" : "warn");

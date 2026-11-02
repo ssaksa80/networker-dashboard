@@ -412,6 +412,55 @@ class TestReportRangeIsStoredOnTheAutomation(unittest.TestCase):
         self.addCleanup(_pop_automation, automation.automation_id)
         self.assertEqual(automation.report_range, "7d")
 
+    def post(self, **overrides):
+        status, body = emailer.handle_alert_automation(_start_form(**overrides))
+        self.assertEqual(status, HTTPStatus.OK, body)
+        return body
+
+    def stored_range(self):
+        return snapshots.load_email_config()["types"]["daily_report"]["report_range"]
+
+    def test_saving_keeps_the_chosen_range(self):
+        body = self.post(action="save", reportRange="30d")
+        self.assertEqual(self.stored_range(), "30d")
+        self.assertEqual(body["config"]["dailyReport"]["reportRange"], "30d")
+
+    def test_saving_the_alert_settings_leaves_the_report_range_alone(self):
+        # The admin Email tab saves the alert settings first, with no range.
+        self.post(action="save", reportRange="7d")
+        self.post(action="save", scheduleType="alert")
+        self.assertEqual(self.stored_range(), "7d")
+        self.assertEqual(snapshots.email_config_public()["dailyReport"]["reportRange"], "7d")
+
+    def test_scheduling_answers_with_the_saved_config(self):
+        # The dialog keeps this as its cache; without it, flipping the email
+        # type refills the old range and the next save would store that.
+        body = self.post(reportRange="30d")
+        self.addCleanup(_pop_automation, body["automationId"])
+        self.assertEqual(body["config"]["dailyReport"]["reportRange"], "30d")
+        self.assertNotIn("encrypted_password", body["config"]["smtp"])
+
+    def test_the_schedule_list_shows_the_range_for_editing(self):
+        automation = self.arm(reportRange="7d")
+        rows = {row["automationId"]: row for row in self.post(action="list")["schedules"]}
+        self.assertEqual(rows[automation.automation_id]["reportRange"], "7d")
+
+    def test_a_profile_round_trips_the_range_through_the_api(self):
+        self.post(action="save-profile", profileName="weekly", reportRange="7d")
+        self.assertEqual(self.post(action="get-profile", profileName="weekly")["profile"]["reportRange"], "7d")
+        self.assertEqual(self.post(action="list-profiles")["profiles"]["weekly"]["reportRange"], "7d")
+        body = self.post(action="toggle-profile", profileName="weekly", enabled=True)
+        self.addCleanup(_pop_automation, body["automationId"])
+        self.assertEqual(_get_automation(body["automationId"]).report_range, "7d")
+
+    def test_resaving_a_profile_that_is_on_moves_its_schedule_to_the_new_range(self):
+        self.post(action="save-profile", profileName="weekly", reportRange="7d")
+        self.post(action="toggle-profile", profileName="weekly", enabled=True)
+        self.post(action="save-profile", profileName="weekly", reportRange="30d")
+        automation_id = self.post(action="list-profiles")["profiles"]["weekly"]["automationId"]
+        self.addCleanup(_pop_automation, automation_id)
+        self.assertEqual(_get_automation(automation_id).report_range, "30d")
+
     @NEEDS_CIPHER
     def test_the_range_survives_a_restart_and_legacy_records_get_the_daily_window(self):
         stored = _daily_automation("c12-range:00stored")

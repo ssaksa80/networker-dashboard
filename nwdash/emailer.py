@@ -59,6 +59,7 @@ from .sessions import (
 from .snapshots import (
     clean_email_profile_name,
     delete_email_profile,
+    email_config_public,
     get_email_profile_masked,
     get_email_profile_raw,
     load_email_config,
@@ -1400,5 +1401,6 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         "ok": True,
         "automationId": automation_id,
         "message": message,
+        "config": email_config_public(),
         "activeAutomations": active_summary,
     }

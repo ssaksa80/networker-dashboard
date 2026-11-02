@@ -1178,16 +1178,18 @@
       const isDaily = emailScheduleType.value === "daily_report";
       const intervalEl = document.getElementById("alertIntervalMinutes");
       const reportTimeEl = document.getElementById("dailyReportTime");
+      const reportRangeEl = document.getElementById("dailyReportRange");
       if (intervalEl) {
         intervalEl.disabled = isDaily;
         const lbl = intervalEl.closest("label");
         if (lbl) lbl.classList.toggle("is-disabled", isDaily);
       }
-      if (reportTimeEl) {
-        reportTimeEl.disabled = !isDaily;
-        const lbl = reportTimeEl.closest("label");
+      [reportTimeEl, reportRangeEl].forEach(el => {
+        if (!el) return;
+        el.disabled = !isDaily;
+        const lbl = el.closest("label");
         if (lbl) lbl.classList.toggle("is-disabled", !isDaily);
-      }
+      });
       const quietStart = document.getElementById("quietStart");
       const quietEnd = document.getElementById("quietEnd");
       const digestEl = document.getElementById("emailDigest");
@@ -1207,6 +1209,7 @@
       if (emailScheduleType.value === "daily_report") {
         smtpToEl.value = c.dailyReport.recipients || "";
         document.getElementById("dailyReportTime").value = c.dailyReport.reportTime || "08:00";
+        document.getElementById("dailyReportRange").value = c.dailyReport.reportRange || "24h";
         // NOTE: do NOT touch themeSelect here. The report theme is dynamic and
         // follows the current dashboard theme (persisted server-side); the email
         // modal must never override the shared dashboard theme control.
@@ -1257,6 +1260,7 @@
       document.getElementById("emailScheduleType").value = s.scheduleType || "alert";
       document.getElementById("alertIntervalMinutes").value = s.intervalMinutes || 60;
       document.getElementById("dailyReportTime").value = s.reportTime || "08:00";
+      document.getElementById("dailyReportRange").value = s.reportRange || "24h";
       document.getElementById("alertTrigger").value = s.trigger || "critical";
       document.getElementById("smtpTo").value = s.recipients || "";
       if (s.smtpHost) document.getElementById("smtpHost").value = s.smtpHost;
@@ -1268,7 +1272,9 @@
       document.getElementById("quietEnd").value = s.quietEnd || "";
       document.getElementById("emailDigest").checked = s.digest !== false;
       syncSmtpSecurityFields();
-      applyEmailTypeBlock();
+      // Not applyEmailTypeBlock: it would replace this schedule's values with
+      // the saved email config's, and a profile's schedule can differ from it.
+      syncEmailTypeFields();
       alertAutomationStatus.textContent = "Editing schedule " + id + " - update fields and click Schedule or Save.";
     }
 
@@ -1318,7 +1324,7 @@
         list.innerHTML = rows.map(s => {
           const typeLabel = s.scheduleType === "daily_report" ? "Daily report" : "Alert check";
           const cadence = s.scheduleType === "daily_report"
-            ? ("at " + (s.reportTime || "08:00"))
+            ? ("at " + (s.reportTime || "08:00") + " · " + rangeLabelFromValue(s.reportRange || "24h"))
             : ("every " + (s.intervalMinutes || 0) + " min");
           const paused = s.enabled === false;
           // Schedules survive restarts/session loss; show how each one will run.
@@ -1359,7 +1365,7 @@
         ? (recips[0] + (recips.length > 1 ? " +" + (recips.length - 1) : ""))
         : "no recipients";
       const cadence = p.scheduleType === "daily_report"
-        ? "at " + (p.reportTime || "08:00")
+        ? "at " + (p.reportTime || "08:00") + " · " + rangeLabelFromValue(p.reportRange || "24h")
         : "every " + (p.intervalMinutes || 60) + " min";
       return typeLabel + " · " + recipLabel + " · " + cadence;
     }
@@ -1456,6 +1462,7 @@
       document.getElementById("emailScheduleType").value = p.scheduleType || "alert";
       document.getElementById("alertIntervalMinutes").value = p.intervalMinutes || 60;
       document.getElementById("dailyReportTime").value = p.reportTime || "08:00";
+      document.getElementById("dailyReportRange").value = p.reportRange || "24h";
       document.getElementById("alertTrigger").value = p.trigger || "critical";
       document.getElementById("quietStart").value = p.quietStart || "";
       document.getElementById("quietEnd").value = p.quietEnd || "";
@@ -1573,6 +1580,7 @@
         trigger: document.getElementById("alertTrigger").value,
         scheduleType: document.getElementById("emailScheduleType").value,
         reportTime: document.getElementById("dailyReportTime").value.trim(),
+        reportRange: document.getElementById("dailyReportRange").value,
         quietStart: document.getElementById("quietStart").value.trim(),
         quietEnd: document.getElementById("quietEnd").value.trim(),
         digest: document.getElementById("emailDigest").checked,
