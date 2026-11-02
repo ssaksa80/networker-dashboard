@@ -22,6 +22,9 @@ if ($RunIn) {
   [switch]$Upgrade = ($Mode -eq 'Upgrade')
   [switch]$Rollback = ($Mode -eq 'Rollback')
   [switch]$AllowUnauthenticated = $false
+  # Set above the block once the folder lock (review S5) lands; any value skips
+  # the lock, which needs real accounts. Unused until then.
+  $aclProblem = 'not under test here'
   $script:held = $null
 
   function Get-Service {
