@@ -24,6 +24,15 @@ foreach ($lo in @('127.0.0.1', 'localhost', '::1')) {
 }
 Assert ((Plan $false $false '' $true) -eq 'unauthenticated') '-AllowUnauthenticated opts in explicitly'
 
+# ---- data\ is locked and this run is not elevated: never refuse on a guess ----
+function PlanLocked([bool]$Given, [string]$Bind, [bool]$Allow) {
+  Get-NwdashAuthPlan -PasswordGiven $Given -PasswordStored $false -PasswordUnknown $true -BindHost $Bind -AllowUnauthenticated $Allow
+}
+Assert ((PlanLocked $false '' $false) -eq 'unknown')          'locked data\: the elevated run decides, no refusal'
+Assert ((PlanLocked $false '127.0.0.1' $false) -eq 'unknown') 'a stored password may exist on loopback too'
+Assert ((PlanLocked $false '' $true) -eq 'unknown')           'and with -AllowUnauthenticated'
+Assert ((PlanLocked $true '' $false) -eq 'password')          'a typed password still wins'
+
 # ---- the env var the installer sets is the one the app reads ----
 Assert ($script:NwdashAllowUnauthEnv -eq 'DASHBOARD_ALLOW_UNAUTHENTICATED=1') 'env var name/value pinned'
 

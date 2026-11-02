@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as _cfg
+from . import fsacl
 from .auth import (
     LOGIN_SESSIONS,
     _clear_login_failures,
@@ -45,9 +46,11 @@ from .auth import (
 from .certs import is_embedded_dev_certificate, server_tls_context
 from .config import (
     ADMIN_UNLOCK_SECONDS,
+    APP_BASE_DIR,
     APP_VERSION,
     AUDIT_FILE,
     AUDIT_MAX_BYTES,
+    AUTH_KEY_FILE,
     AUTH_TTL_SECONDS,
     CONSOLE_ALLOWLIST_FILE,
     DATA_DIR,
@@ -55,6 +58,7 @@ from .config import (
     LOG,
     LOG_FILE,
     PROCESS_START_TIME,
+    SESSION_KEY_FILE,
     SETUP_CODE_FILE,
 )
 from .models import (
@@ -367,6 +371,45 @@ def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> tuple[bool, st
         return False, str(exc) or exc.__class__.__name__
 
 
+def _exposure(paths: list[Path], wanted: int) -> tuple[list[str], list[str]]:
+    """Which of `paths` give other local users `wanted` rights, and through which
+    groups. A file that does not exist yet has nothing to show."""
+    names: list[str] = []
+    groups: set[str] = set()
+    for path in paths:
+        if not path.exists():
+            continue
+        found = fsacl.broad_grants(fsacl.dacl_sddl(path), wanted)
+        if found:
+            names.append(path.name)
+            groups.update(found)
+    return names, sorted(groups)
+
+
+def folder_permissions() -> tuple[str, str]:
+    """Is deploy/install.ps1's lock still in place? Other local users must not be
+    able to read the keys or the TLS key, nor change the app (review S5)."""
+    if sys.platform != "win32":
+        return "warn", "Not checked: this reads Windows permissions."
+    _cert_file, key_file = _tls_files()
+    secrets_at_rest = [DATA_DIR, SESSION_KEY_FILE, AUTH_KEY_FILE, LOG_FILE.parent]
+    if key_file:
+        secrets_at_rest += [key_file, _previous(key_file)]
+    try:
+        readable, readers = _exposure(secrets_at_rest, fsacl.READ)
+        changeable, writers = _exposure([APP_BASE_DIR, Path(__file__).resolve().parent], fsacl.CHANGE)
+    except OSError as exc:
+        return "warn", f"Could not read the permissions: {exc}"
+    findings = []
+    if readable:
+        findings.append(f"Other local users can read {', '.join(readable)} ({', '.join(readers)}).")
+    if changeable:
+        findings.append(f"Other local users can change {', '.join(changeable)} ({', '.join(writers)}).")
+    if findings:
+        return "bad", " ".join(findings) + " Setup-NWDash.cmd -Upgrade restores the lock."
+    return "ok", "Keys, logs and the TLS key are closed to other local users, and they cannot change the app."
+
+
 def run_self_test(probe_listener: Callable[[], tuple[bool, str]]) -> dict[str, Any]:
     """The checks behind the Health tab's self-test. Each step is ok, warn or
     bad; the listener probe is passed in by server.py (it owns the listener)."""
@@ -397,6 +440,8 @@ def run_self_test(probe_listener: Callable[[], tuple[bool, str]]) -> dict[str, A
         step("data", "Data folder", "warn" if free < 5 else "ok", f"writable, {free:.0f}% free")
     except OSError as exc:
         step("data", "Data folder", "bad", f"not writable: {exc}")
+
+    step("folders", "Folder permissions", *folder_permissions())
 
     with PROFILES_LOCK:
         profiles = load_profiles()

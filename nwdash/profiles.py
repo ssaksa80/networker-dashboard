@@ -233,7 +233,7 @@ def _missing_secret_message(profile_name: str, label: str, stored: bool) -> str:
         return f"Profile '{profile_name}' has no saved {label}. Enter it to connect."
     return (
         f"The saved {label} for profile '{profile_name}' could not be decrypted. The key in "
-        "data/.session_key is missing, or belongs to another machine or Windows account. "
+        "data/.session_key is missing, or belongs to another machine. "
         f"Re-enter the {label} to connect and save it again."
     )
 

@@ -15,7 +15,8 @@
 #   networker_dashboard.py  nwdash\  README.md  pyproject.toml   (app payload)
 #   runtime\python\         embedded CPython (bundled, zero host prereqs)
 #   nssm.exe                service manager (bundled)
-#   data\ .certs\ logs\ backups\    NEVER touched by upgrades/rollbacks
+#   data\ .certs\ logs\ backups\    NEVER touched by upgrades/rollbacks, except
+#                                   for their permissions (Set-NwdashInstallAcl)
 #
 # ASCII only + Windows PowerShell 5.1 safe.
 [CmdletBinding()] param(
@@ -59,10 +60,17 @@ function Get-NwdashLauncherArgs {
 }
 
 # Dashboard password plan for a fresh install (an upgrade decides from the live
-# service, below). data\ survives reinstalls, so a stored hash counts.
+# service, below). data\ survives reinstalls, so a stored hash counts. data\ is
+# locked on an existing install and this line also runs before elevation, so
+# 'denied' is an answer here: the elevated run can read the file and decide.
+$authFile = Get-NwdashPathState -Path (Join-Path $InstallDir 'data\auth.json')
 $authPlan = Get-NwdashAuthPlan -PasswordGiven ([bool]$AuthPassword) `
-  -PasswordStored (Test-Path (Join-Path $InstallDir 'data\auth.json')) `
+  -PasswordStored ($authFile -eq 'present') -PasswordUnknown ($authFile -eq 'denied') `
   -BindHost $BindHost -AllowUnauthenticated $AllowUnauthenticated.IsPresent
+
+# A folder this must not lock: refused for a new install, warned about for an
+# existing one, which keeps working as it is.
+$aclProblem = Get-NwdashAclTargetProblem -InstallDir $InstallDir
 
 # ---- -Check: dry-run plan (no admin, no changes) ----
 if ($Check) {
@@ -91,12 +99,21 @@ if ($Check) {
   $authLine = switch ($authPlan) {
     'password'        { 'set on first boot (salted hash), then removed from the service env' }
     'stored'          { 'already set (data\auth.json is kept)' }
+    'unknown'         { 'not known - data\ is locked; run -Check from an elevated prompt to see it (a real run decides after UAC)' }
     'loopback'        { 'none - loopback bind, reachable from this host only' }
     'unauthenticated' { 'NONE (-AllowUnauthenticated) - anyone who can reach the port controls the dashboard' }
     default           { 'NONE - an install would be REFUSED: pass -AuthPassword (or -AllowUnauthenticated)' }
   }
   Write-NwdashLog "  auth password  : $authLine"
   Write-NwdashLog "  allowed hosts  : $(if ($AllowedHosts) { $AllowedHosts } else { '(unrestricted)' })"
+  $lockAccount = if ($Upgrade -or $Rollback) { Read-NwdashServiceAccount } else { $ServiceAccount }
+  if ($Uninstall) { Write-NwdashLog '  permissions    : left as they are' }
+  elseif ($aclProblem) { Write-NwdashLog "  permissions    : NOT restricted ($aclProblem)$(if ($Upgrade -or $Rollback) { '' } else { ' - an install would be REFUSED' })" }
+  else {
+    $lockName = if ($lockAccount) { $lockAccount } else { 'LocalSystem' }
+    try { [void](Resolve-NwdashAccountSid -Account $lockAccount); Write-NwdashLog "  permissions    : data\, .certs\, logs\ for SYSTEM, Administrators and $lockName only; backups\ for SYSTEM and Administrators; app files read-only for other users" }
+    catch { Write-NwdashLog "  permissions    : $($_.Exception.Message) - an install would be REFUSED" }
+  }
   Write-NwdashLog "  existing state : service=$(if ($svc) { "$($svc.Status)" } else { 'none' }) task=$(if ($task) { 'present (will be migrated)' } else { 'none' }) files=$(if ($existing) { 'present' } else { 'none' })"
   Write-NwdashLog "  backups        : $InstallDir\backups\<version>-<timestamp>\{app,runtime} (keep 3 newest)"
   Write-NwdashLog '  never touched  : data\, .certs\, logs\, backups\'
@@ -113,6 +130,14 @@ if ($authPlan -eq 'refused' -and -not ($Upgrade -or $Rollback -or $Uninstall)) {
     "port $Port with no login, and the app refuses to start that way. Nothing was changed. Re-run with " +
     '-AuthPassword <password> (recommended), -BindHost 127.0.0.1 for access from this host only, or ' +
     '-AllowUnauthenticated to accept that anyone who can reach the port can read backup data and change the configuration.')
+}
+
+# The same goes for the folder lock: a typo in -ServiceAccount or a folder that
+# must not be locked is refused here, not after the old install is gone.
+if (-not ($Upgrade -or $Rollback -or $Uninstall)) {
+  if ($aclProblem) { Stop-Nwdash "$aclProblem, so its permissions cannot be restricted. Nothing was changed. Re-run with -InstallDir <a folder of its own>." }
+  try { $serviceSid = Resolve-NwdashAccountSid -Account $ServiceAccount }
+  catch { Stop-Nwdash "$($_.Exception.Message). Nothing was changed." }
 }
 
 # ---- elevation (everything below changes service/firewall/files) ----
@@ -211,6 +236,21 @@ if ($Upgrade -or $Rollback) {
       & $nssm set $SvcName AppEnvironmentExtra (@($envLines) + $script:NwdashAllowUnauthEnv) | Out-Null
       Write-NwdashWarn "service env: added $($script:NwdashAllowUnauthEnv) (-AllowUnauthenticated) - it runs WITHOUT a dashboard password"
     }
+  }
+
+  # Lock the folders while the old service still runs: a failure here stops the
+  # deploy with the service untouched. The account comes from the service itself
+  # (-ServiceAccount is ignored here, like the other flags), and without it the
+  # lock could shut a named account out of data\.
+  if ($aclProblem) {
+    Write-NwdashWarn "folder permissions NOT restricted: $aclProblem"
+  } else {
+    $liveAccount = Read-NwdashServiceAccount
+    if (-not $liveAccount) { Stop-Nwdash 'could not read the service account, so the install folder cannot be restricted. The service was not stopped.' }
+    try {
+      Set-NwdashInstallAcl -InstallDir $InstallDir -ServiceSid (Resolve-NwdashAccountSid -Account $liveAccount)
+      Write-NwdashLog "folder permissions restricted to SYSTEM, Administrators and $liveAccount"
+    } catch { Stop-Nwdash "could not restrict the install folder: $($_.Exception.Message). The service was not stopped." }
   }
 
   $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -370,6 +410,11 @@ if (-not (Test-Path "$InstallDir\nssm.exe")) {
   catch { Write-NwdashLog 'nssm.exe already present and in use - reusing it (same pinned version)' }
 }
 New-Item -ItemType Directory -Force "$InstallDir\logs" | Out-Null
+# Before the first start, so the keys and the TLS key are never written into an
+# open folder.
+Write-NwdashLog '[2/6] restricting folder permissions'
+try { Set-NwdashInstallAcl -InstallDir $InstallDir -ServiceSid $serviceSid }
+catch { Stop-Nwdash "could not restrict the install folder: $($_.Exception.Message)" }
 
 # 3/6 service
 Write-NwdashLog "[3/6] installing NSSM service $SvcName"
@@ -450,4 +495,5 @@ Write-NwdashLog "  URL     : https://${urlHost}:$Port/"
 Write-NwdashLog "  service : $SvcName (services.msc) - crash auto-restart, starts at boot"
 Write-NwdashLog "  logs    : $InstallDir\logs\service.out.log / service.err.log (10 MB rotation)"
 Write-NwdashLog "  data    : $InstallDir\data (keys, snapshots, profiles - survives upgrades)"
+Write-NwdashLog '  access  : data\, .certs\, logs\ and backups\ need an elevated prompt'
 exit 0

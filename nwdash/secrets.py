@@ -143,9 +143,24 @@ def _write_protected_key(path: Path, key: bytes, *, required: bool = True) -> No
             ) from exc
 
 
+def _refuse_denied_key(path: Path, exc: OSError) -> KeyMaterialError:
+    """Access denied says nothing about the key itself. deploy/install.ps1 closes
+    data/ to everyone but the service, so this is what a copy started by hand
+    gets, and the advice for a dead key (delete it) would cost every secret."""
+    message = (
+        f"data/{path.name} could not be read by this account ({exc}). It was NOT replaced. "
+        "The installer restricts data/ to SYSTEM, Administrators and the service account: "
+        "start the NetWorkerDashboard service, or run from an elevated prompt."
+    )
+    LOG.error(message)
+    return KeyMaterialError(message)
+
+
 def _read_protected_key(path: Path) -> bytes | None:
     try:
         raw = path.read_bytes()
+    except PermissionError as exc:
+        raise _refuse_denied_key(path, exc) from exc
     except OSError:
         return None
     if raw.startswith(DPAPI_MARKER):
@@ -168,8 +183,8 @@ def _refuse_key_replacement(path: Path, reason: str) -> KeyMaterialError:
         f"data/{path.name} exists but is unusable ({reason}). It was NOT replaced: "
         "generating a new key would permanently orphan every saved profile password, "
         "persisted session, and email profile encrypted under the old one. "
-        "Restore the original data/ directory (a key copied from another machine or "
-        "Windows account cannot be unwrapped here), or, accepting that every stored "
+        "Restore the original data/ directory (a key copied from another machine "
+        "cannot be unwrapped here), or, accepting that every stored "
         f"secret is lost, delete data/{path.name} and re-enter the credentials."
     )
     LOG.error(message)

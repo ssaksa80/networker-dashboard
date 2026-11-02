@@ -148,7 +148,7 @@ backup that can never be re-selected by a second `-Rollback`.
 
 | Location | Contents | Notes |
 |---|---|---|
-| `data\` | Everything that matters: auth hash, encrypted sessions/profiles/schedules (`automations.json`, `profiles.json`, `email_*.json`), snapshots, DPAPI-wrapped keys (`.session_key`, `.auth_key`) | Back up to a **restricted** location. The keys are **DPAPI machine/account-bound** — a copy restored to a different host/account is unreadable; the app then warns loudly, regenerates keys, and stored passwords must be re-entered once |
+| `data\` | Everything that matters: auth hash, encrypted sessions/profiles/schedules (`automations.json`, `profiles.json`, `email_*.json`), snapshots, DPAPI-wrapped keys (`.session_key`, `.auth_key`) | Back up to a **restricted** location: any account on this host can unwrap a key file it can read, so a copy here needs the same protection as `data\` itself. The keys are **DPAPI machine-bound** — a copy restored to a different host is unreadable, and the app then refuses to start rather than replace them. Restored in place, re-run `Setup-NWDash.cmd -Upgrade` to put the folder lock back |
 | `.certs\` | TLS material (self-signed by default) | Regenerable if lost (self-signed case) |
 | `backups\` | Installer's own app+runtime backups (newest 3) | Managed automatically |
 | `logs\` | Service logs (10 MB rotation) | No secrets by design; still restrict |
@@ -173,6 +173,10 @@ are a complete backup.
 - **Secrets:** NetWorker/SMTP passwords encrypted at rest (DPAPI-bound keys);
   the API masks them, they never return to a browser; the install-time
   password never persists in plaintext.
+- **Folder permissions:** `data\`, `.certs\` and `logs\` are limited to SYSTEM,
+  Administrators and the service account, and users cannot change the app (see
+  [`INSTALL.md`](INSTALL.md), Folder permissions). Use an elevated prompt to open
+  them; the Health self-test fails if the lock is lost.
 
 ---
 
@@ -215,5 +219,6 @@ re-pointed.
 - **Headless screenshot rendering** (the emailed dashboard image) needs a
   local Chrome or Edge on the host; on some managed hosts Edge silently
   refuses `--screenshot` while Chrome works. Email falls back to HTML-only.
-- **DPAPI key portability:** `data\` cannot be moved between machines or
-  service accounts with its secrets intact (§6).
+- **DPAPI key portability:** `data\` cannot be moved between machines with
+  its secrets intact (§6). Changing the service account on the same machine
+  is fine.

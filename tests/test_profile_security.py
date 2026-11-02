@@ -23,6 +23,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 if str(PROJECT_DIR) not in sys.path:
@@ -400,6 +401,34 @@ class TestKeyMaterialFailsLoud(unittest.TestCase):
         self._patch("_read_protected_key", lambda path: None)
         with self.assertRaises(secrets_mod.KeyMaterialError):
             secrets_mod._load_or_create_stable_key()
+        self.assertEqual(key_file.read_bytes(), original)
+
+    def test_a_denied_key_is_refused_without_telling_anyone_to_delete_it(self):
+        """deploy/install.ps1 closes data/, so a copy started by hand gets access
+        denied on a perfectly good key. Deleting it would lose every secret."""
+        key_file = self.dir / ".session_key"
+        original = b"a good key this account may not read"
+        key_file.write_bytes(original)
+        self._patch("SESSION_KEY_FILE", key_file)
+        self._patch("DATA_DIR", self.dir)
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Access is denied")), \
+             self.assertRaises(secrets_mod.KeyMaterialError) as ctx:
+            secrets_mod._load_or_create_stable_key()
+        message = str(ctx.exception)
+        self.assertIn("NOT replaced", message)
+        self.assertIn("service", message)
+        self.assertNotIn("delete", message.lower())
+        self.assertEqual(key_file.read_bytes(), original)
+
+    def test_a_denied_auth_key_is_refused_too(self):
+        key_file = self.dir / ".auth_key"
+        original = b"x" * 32
+        key_file.write_bytes(original)
+        self._patch("AUTH_KEY_FILE", key_file)
+        self._patch("DATA_DIR", self.dir)
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Access is denied")), \
+             self.assertRaises(secrets_mod.KeyMaterialError):
+            secrets_mod._load_or_create_auth_key()
         self.assertEqual(key_file.read_bytes(), original)
 
     def test_truncated_auth_key_raises_and_is_not_overwritten(self):

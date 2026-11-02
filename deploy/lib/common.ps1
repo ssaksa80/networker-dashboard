@@ -405,6 +405,9 @@ function Restore-NwdashApp {
     if (Test-Path $py) { Invoke-NwdashFileOp { Remove-Item -Recurse -Force $py } }
     Invoke-NwdashFileOp { Move-Item $bakRt $py }
   }
+  # Never fail a restore over this: getting the service back comes first.
+  try { Reset-NwdashAppAcl -InstallDir $InstallDir }
+  catch { Write-NwdashWarn "restored files may keep the permissions of their backup ($($_.Exception.Message)). Run Setup-NWDash.cmd -Upgrade to fix them." }
 }
 
 # Prune backups beyond the newest $Keep.
@@ -577,16 +580,198 @@ $script:NwdashAllowUnauthEnv = 'DASHBOARD_ALLOW_UNAUTHENTICATED=1'
 # What an install/upgrade does about the dashboard password, decided BEFORE
 # anything is stopped or copied: a password-less network install is refused up
 # front instead of failing its health gate in an NSSM restart loop. Returns
-# 'password' (set now), 'stored' (data\auth.json already holds one), 'loopback'
-# (bound to loopback, which the app permits), 'unauthenticated' (explicitly
-# allowed) or 'refused'. Pure + testable. Empty $BindHost = all interfaces.
+# 'password' (set now), 'stored' (data\auth.json already holds one), 'unknown'
+# (data\ is locked and this run is not elevated, so the elevated run decides),
+# 'loopback' (bound to loopback, which the app permits), 'unauthenticated'
+# (explicitly allowed) or 'refused'. Pure + testable. Empty $BindHost = all
+# interfaces.
 function Get-NwdashAuthPlan {
-  param([bool]$PasswordGiven, [bool]$PasswordStored, [string]$BindHost = '', [bool]$AllowUnauthenticated)
+  param([bool]$PasswordGiven, [bool]$PasswordStored, [string]$BindHost = '', [bool]$AllowUnauthenticated, [bool]$PasswordUnknown = $false)
   if ($PasswordGiven) { return 'password' }
   if ($PasswordStored) { return 'stored' }
+  if ($PasswordUnknown) { return 'unknown' }
   if ($BindHost -in @('127.0.0.1', 'localhost', '::1')) { return 'loopback' }
   if ($AllowUnauthenticated) { return 'unauthenticated' }
   return 'refused'
+}
+
+# ---- folder permissions ----
+
+# An install folder must not inherit from C:\: Users can read there on every
+# edition, and Authenticated Users can change on client editions. The keys in
+# data\ are machine-scope DPAPI, which unwraps them for anyone who can read the
+# file, so reading is enough to decrypt every stored credential and forge a
+# login cookie, and write access edits code that runs as LocalSystem (review
+# S5). The keys stay machine-scope on purpose: a user-scope key cannot survive a
+# change of service account. SIDs, not names: the names are translated on
+# non-English Windows.
+$script:NwdashSidSystem = 'S-1-5-18'
+$script:NwdashSidAdmins = 'S-1-5-32-544'
+$script:NwdashSidUsers  = 'S-1-5-32-545'
+# What other users may read, but never change. Anything else in InstallDir gets
+# the lock data\ gets: it may be an old data tree, and the service keeps its
+# access, so a --cert path inside InstallDir still works.
+$script:NwdashReadableItems = $script:NwdashAppItems + @('runtime', 'nssm.exe')
+
+# Does a path exist, as far as this process can tell? 'present', 'absent' or
+# 'denied'. Test-Path cannot say: on a locked folder it raises access denied,
+# which is fatal under $ErrorActionPreference = 'Stop'. Never throws.
+function Get-NwdashPathState {
+  param([Parameter(Mandatory)][string]$Path)
+  try { [void][IO.File]::GetAttributes($Path); return 'present' }
+  catch [UnauthorizedAccessException] { return 'denied' }
+  catch { return 'absent' }
+}
+
+# The SID an install grants access to, for a name as it appears in -ServiceAccount
+# or in the service's own configuration. Empty and LocalSystem are SYSTEM. Throws
+# when the account does not resolve, so a typo stops an install before it starts.
+function Resolve-NwdashAccountSid {
+  param([string]$Account = '')
+  $name = "$Account".Trim()
+  if (-not $name -or $name -ieq 'LocalSystem' -or $name -ieq '.\LocalSystem') { return $script:NwdashSidSystem }
+  if ($name -match '^S-1-\d+(-\d+)+$') { return $name }
+  if ($name.StartsWith('.\')) { $name = "$env:COMPUTERNAME\$($name.Substring(2))" }
+  try { return (New-Object Security.Principal.NTAccount($name)).Translate([Security.Principal.SecurityIdentifier]).Value }
+  catch { throw "service account '$Account' does not resolve to a Windows account" }
+}
+
+# The account the installed service logs on as, as the service manager reports
+# it ('LocalSystem', 'CORP\svc-nwdash', ...). '' when it cannot be read, which is
+# NOT the same as LocalSystem: locking on that guess would shut a named account
+# out of data\. Never throws.
+function Read-NwdashServiceAccount {
+  param([string]$Name = $script:NwdashServiceName, [scriptblock]$GetService = $null)
+  $getService = if ($GetService) { $GetService } else { { param($n) Get-CimInstance Win32_Service -Filter "Name='$n'" -ErrorAction SilentlyContinue } }
+  try {
+    $svc = & $getService $Name
+    if ($svc) { return "$($svc.StartName)".Trim() }
+  } catch { }
+  return ''
+}
+
+# Why a folder must not get this lock, or '' when it may. Removing inheritance
+# from a drive root or a system folder would break the machine, and -InstallDir
+# is free text. Pure + testable.
+function Get-NwdashAclTargetProblem {
+  param(
+    [Parameter(Mandatory)][string]$InstallDir,
+    [string[]]$SystemFolders = @($env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432, $env:ProgramData, $env:USERPROFILE, $env:PUBLIC)
+  )
+  $full = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+  if ($full -ieq [IO.Path]::GetPathRoot($full).TrimEnd('\')) { return "$InstallDir is a drive root" }
+  foreach ($folder in $SystemFolders) {
+    if (-not $folder) { continue }
+    $sys = $folder.TrimEnd('\')
+    if ($sys -ieq $full -or $sys.StartsWith("$full\", [StringComparison]::OrdinalIgnoreCase)) {
+      return "$InstallDir is or contains the system folder $sys"
+    }
+  }
+  return ''
+}
+
+# The access list one part of an install gets. Pure + testable. 'root' is
+# InstallDir itself and, by inheritance, the readable items; 'private' is data\,
+# .certs\, logs\ and anything unknown; 'backups' is for the installer alone.
+function Get-NwdashAclGrants {
+  param(
+    [Parameter(Mandatory)][ValidateSet('root', 'private', 'backups')][string]$Tier,
+    [Parameter(Mandatory)][string]$ServiceSid
+  )
+  $grants = @(
+    @{ Sid = $script:NwdashSidSystem; Rights = 'FullControl' },
+    @{ Sid = $script:NwdashSidAdmins; Rights = 'FullControl' }
+  )
+  $named = $ServiceSid -notin @($script:NwdashSidSystem, $script:NwdashSidAdmins)
+  if ($Tier -eq 'root') {
+    $grants += @{ Sid = $script:NwdashSidUsers; Rights = 'ReadAndExecute' }
+    if ($named) { $grants += @{ Sid = $ServiceSid; Rights = 'ReadAndExecute' } }
+  } elseif ($Tier -eq 'private' -and $named) {
+    $grants += @{ Sid = $ServiceSid; Rights = 'Modify' }
+  }
+  return $grants
+}
+
+# Replace an item's access list with exactly these grants, inheriting nothing. A
+# new security object, because icacls /grant:r only replaces the SIDs it names,
+# so an entry left by a previous service account or by hand would survive. Not
+# Set-Acl: on an item that is already protected it also writes the audit list,
+# which wipes any audit rules and needs SeSecurityPrivilege. This writes the
+# access list alone, in one call, so old and new entries never mix.
+function Set-NwdashItemAcl {
+  param([Parameter(Mandatory)]$Item, [Parameter(Mandatory)][hashtable[]]$Grants)
+  $isDir = [bool]$Item.PSIsContainer
+  $security = if ($isDir) { New-Object System.Security.AccessControl.DirectorySecurity } else { New-Object System.Security.AccessControl.FileSecurity }
+  $inherit = if ($isDir) { 'ContainerInherit,ObjectInherit' } else { 'None' }
+  $security.SetAccessRuleProtection($true, $false)
+  foreach ($grant in $Grants) {
+    $sid = New-Object System.Security.Principal.SecurityIdentifier($grant.Sid)
+    $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $grant.Rights, $inherit, 'None', 'Allow')))
+  }
+  # The method is .NET Framework (Windows PowerShell 5.1); pwsh 7 has the class.
+  if ($Item | Get-Member -Name SetAccessControl) { $Item.SetAccessControl($security) }
+  else { [System.IO.FileSystemAclExtensions]::SetAccessControl($Item, $security) }
+}
+
+# Run icacls and throw unless it worked. Never pass /C: with it icacls exits 0
+# even after every file failed, which would hide a lock that did not take. It
+# also exits 0 for a path that does not exist, so callers check first, and /T is
+# for folders only: on a file it searches every subfolder for that file name.
+function Invoke-NwdashIcacls {
+  param([Parameter(Mandatory)][string[]]$Arguments)
+  # PS 5.1 turns native stderr into a terminating error under 'Stop'; the exit
+  # code is the real arbiter here (DEDB PR #144 lesson).
+  $ErrorActionPreference = 'Continue'
+  $out = & icacls.exe @Arguments 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "icacls $($Arguments -join ' ') failed with exit code ${LASTEXITCODE}: $(($out | ForEach-Object { "$_" }) -join ' ')" }
+}
+
+# Put the app files back on InstallDir's permissions. Move-Item keeps a file's
+# access list, so whatever comes back from backups\ carries what it left with,
+# and a backup taken before the lock is open to every user. -Icacls is injectable
+# because /setowner needs elevation.
+function Reset-NwdashAppAcl {
+  param([Parameter(Mandatory)][string]$InstallDir, [scriptblock]$Icacls = $null)
+  $icacls = if ($Icacls) { $Icacls } else { { param($a) Invoke-NwdashIcacls -Arguments $a } }
+  foreach ($name in $script:NwdashReadableItems) {
+    $path = Join-Path $InstallDir $name
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    $tree = @(if (Test-Path -LiteralPath $path -PathType Container) { '/T' })
+    & $icacls (@($path, '/setowner', "*$($script:NwdashSidAdmins)") + $tree + '/Q')
+    & $icacls (@($path, '/reset') + $tree + '/Q')
+  }
+}
+
+# Lock an install (review S5). Idempotent, and safe with the service running: its
+# account is granted what it needs in the same call that takes everyone else's
+# access away. Private parts go first and the root last, so stopping part-way
+# never leaves a secret more open than it was.
+function Set-NwdashInstallAcl {
+  param(
+    [Parameter(Mandatory)][string]$InstallDir,
+    [Parameter(Mandatory)][string]$ServiceSid,
+    [scriptblock]$Icacls = $null
+  )
+  $icacls = if ($Icacls) { $Icacls } else { { param($a) Invoke-NwdashIcacls -Arguments $a } }
+  $root = $InstallDir.TrimEnd('\')
+  $admins = "*$($script:NwdashSidAdmins)"
+  # Created here, not left to the app: a folder made later would inherit the
+  # root's Users access, and that is where the TLS private key goes.
+  foreach ($dir in 'data', '.certs', 'logs', 'backups') { New-Item -ItemType Directory -Force (Join-Path $root $dir) | Out-Null }
+  foreach ($item in @(Get-ChildItem -LiteralPath $root -Force)) {
+    if ($item.Name -in $script:NwdashReadableItems) { continue }
+    $tier = if ($item.Name -eq 'backups') { 'backups' } else { 'private' }
+    $tree = @(if ($item.PSIsContainer) { '/T' })
+    # An owner can always rewrite an access list, so a folder a standard user
+    # created (a hand-started or legacy install) has to change hands first.
+    & $icacls (@($item.FullName, '/setowner', $admins) + $tree + '/Q')
+    Set-NwdashItemAcl -Item $item -Grants (Get-NwdashAclGrants -Tier $tier -ServiceSid $ServiceSid)
+    # Explicit entries on what is inside would outlive the new list above.
+    if ($item.PSIsContainer) { & $icacls @("$($item.FullName)\*", '/reset', '/T', '/Q') }
+  }
+  & $icacls @($root, '/setowner', $admins, '/Q')
+  Set-NwdashItemAcl -Item (Get-Item -LiteralPath $root -Force) -Grants (Get-NwdashAclGrants -Tier 'root' -ServiceSid $ServiceSid)
+  Reset-NwdashAppAcl -InstallDir $root -Icacls $icacls
 }
 
 # ---- firewall ----

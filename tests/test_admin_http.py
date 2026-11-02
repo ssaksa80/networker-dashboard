@@ -173,7 +173,7 @@ class TestAdminWithPassword(unittest.TestCase):
         cookie, csrf = self._signed_in(admin=True)
         status, body = self.post("/api/admin/self-test", {}, cookie, csrf)
         self.assertEqual(status, 200)
-        self.assertEqual([s["id"] for s in body["steps"]], ["cert", "listener", "data", "networker", "smtp", "log"])
+        self.assertEqual([s["id"] for s in body["steps"]], ["cert", "listener", "data", "folders", "networker", "smtp", "log"])
 
     def test_revoke_other_sessions(self):
         other_cookie, _ = self._signed_in()

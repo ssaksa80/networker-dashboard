@@ -420,7 +420,8 @@
       // ── Health ──────────────────────────────────────────────────────────
       const ST_STEPS = [
         {id: "cert", label: "Certificate"}, {id: "listener", label: "HTTPS listener"}, {id: "data", label: "Data folder"},
-        {id: "networker", label: "NetWorker servers"}, {id: "smtp", label: "Mail server"}, {id: "log", label: "Log file"},
+        {id: "folders", label: "Folder permissions"}, {id: "networker", label: "NetWorker servers"},
+        {id: "smtp", label: "Mail server"}, {id: "log", label: "Log file"},
       ];
       const stFlow = $("#stFlow");
       D.buildFlow(stFlow, ST_STEPS);
