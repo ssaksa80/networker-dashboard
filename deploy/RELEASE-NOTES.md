@@ -118,11 +118,13 @@ with its faults and without the range control, and daily reports keep the range
 they have. The folder lock stays: restored files take the current permissions,
 so rolling back doesn't reopen the install.
 
-**Gates:** ruff 0.17.2 and the full 444-test suite run **locally** on Windows, on
-Python 3.13, 3.14 and this bundle's embedded Python 3.12.10, and the installer
-tests under Windows PowerShell 5.1: all green. The bundle was booted in the
-installed layout on its own runtime. Not yet run on a real install or against a
-real NetWorker server.
+**Gates:** GitHub Actions (lint, unit tests on 3.12.10 and 3.14, installer
+tests, secret scan) green on the release PR. ruff 0.17.2 and the full 444-test
+suite run **locally** on Windows, on Python 3.13, 3.14 and this bundle's
+embedded Python 3.12.10, and the installer tests under Windows PowerShell 5.1:
+all green. The bundle was booted in the installed layout on its own runtime, and
+`-Upgrade` on a test host passed. The automated gates use no real NetWorker
+server.
 
 ---
 
