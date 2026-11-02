@@ -108,7 +108,9 @@ extraction (SHA-256 against the prior revision).
   started with (`--cert`/`--key`) are overwritten, the replaced pair kept as
   `*.previous` (`POST /api/admin/tls/restore` swaps them back), and the new
   context goes on `server.ssl_context`, which `get_request` reads per
-  connection: new connections get it at once, no restart. PFX is not
+  connection: new connections get it at once, no restart. The file swap is
+  all or nothing (`_swap_in`): a new certificate beside its old key stops the
+  service at its next start, so a failure puts the old files back. PFX is not
   accepted (the standard library cannot read PKCS#12); the form shows the
   `openssl` conversion.
 
@@ -124,8 +126,12 @@ every PR:
 
 - ruff, pinned in the workflow (bump it on purpose, with its fixes);
 - the unit suite on windows-latest under Python 3.12.10, the embedded
-  runtime the bundle ships, and 3.14;
+  runtime the bundle ships, and 3.14 (`test_deploy.py` fails if the
+  matrix stops including the build's runtime);
 - the installer tests in `deploy/test/` under Windows PowerShell 5.1.
+
+The bundle build also imports every `nwdash` module under its staged
+runtime before packing, in a throwaway copy laid out like an install.
 
 Tests are `unittest.TestCase` classes: `discover` does not collect bare
 pytest-style functions, so a test written that way never runs. Run the
