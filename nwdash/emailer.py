@@ -41,12 +41,14 @@ from .models import (
     automation_key,
     dashboard_backup_source_available,
     dashboard_backup_source_error,
+    dashboard_covers_range,
     existing_smtp_automation,
     generated_at,
     session_automation_keys,
     shared_reliable_dashboard_for_session,
 )
 from .reports import dashboard_alert_lines, dashboard_report_email, render_dashboard_snapshot_png
+from .restapi import report_range_label
 from .secrets import WMI_CIPHER, decrypt_process_secret, decrypt_profile_secret, encrypt_process_secret
 from .sessions import (
     build_dashboard_from_session,
@@ -57,6 +59,7 @@ from .sessions import (
 from .snapshots import (
     clean_email_profile_name,
     delete_email_profile,
+    email_config_public,
     get_email_profile_masked,
     get_email_profile_raw,
     load_email_config,
@@ -919,10 +922,13 @@ def run_alert_automation(automation_id: str) -> None:
         if automation.schedule_type == "daily_report":
             if not dashboard_backup_source_available(dashboard):
                 source_error = dashboard_backup_source_error(dashboard)
-                last_good_dashboard = shared_reliable_dashboard_for_session(automation.session_id)
+                last_good_dashboard = shared_reliable_dashboard_for_session(
+                    automation.session_id, automation.report_range
+                )
                 if not last_good_dashboard:
                     raise RuntimeError(
-                        f"Daily report skipped because backup job data was unavailable: {source_error}"
+                        "Daily report skipped because backup job data was unavailable and no saved "
+                        f"dashboard covers {report_range_label(automation.report_range)}: {source_error}"
                     )
                 dashboard = last_good_dashboard
                 dashboard["reportNotice"] = (
@@ -1307,7 +1313,8 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         attachments: dict[str, tuple[bytes, str, str]] = {}
         if automation.schedule_type == "daily_report":
             dashboard = payload.get("dashboard") if isinstance(payload.get("dashboard"), dict) else None
-            if dashboard:
+            # The page sends the dashboard on its screen, which may be another range.
+            if dashboard and dashboard_covers_range(dashboard, automation.report_range):
                 dashboard["theme"] = automation.theme
                 dashboard["scheduledReport"] = True
                 plain_body, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
@@ -1317,6 +1324,12 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                     session_id, automation.report_range, remember_range=False
                 )
                 if status == HTTPStatus.OK:
+                    if not dashboard_backup_source_available(dashboard):
+                        dashboard["reportNotice"] = (
+                            "Backup job data was unavailable and no saved dashboard covers "
+                            f"{report_range_label(automation.report_range)}, so the job figures below are "
+                            f"not reliable. Refresh error: {dashboard_backup_source_error(dashboard)}"
+                        )
                     dashboard["theme"] = automation.theme
                     dashboard["scheduledReport"] = True
                     plain_body, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
@@ -1388,5 +1401,6 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         "ok": True,
         "automationId": automation_id,
         "message": message,
+        "config": email_config_public(),
         "activeAutomations": active_summary,
     }

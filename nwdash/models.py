@@ -333,12 +333,18 @@ def load_last_good_dashboard_record() -> dict[str, Any] | None:
     }
 
 
-def cached_reliable_dashboard_for_session(session_id: str) -> dict[str, Any] | None:
-    cached = shared_reliable_dashboard_for_session(session_id)
+def cached_reliable_dashboard_for_session(
+    session_id: str, report_range: str | None = None
+) -> dict[str, Any] | None:
+    cached = shared_reliable_dashboard_for_session(session_id, report_range)
     if cached:
         return cached
     record = load_last_good_dashboard_record()
-    if record and record.get("sessionId") == session_id:
+    if (
+        record
+        and record.get("sessionId") == session_id
+        and dashboard_covers_range(record["dashboard"], report_range)
+    ):
         return record["dashboard"]
     return None
 
@@ -347,8 +353,12 @@ def stale_dashboard_from_cache(
     session_id: str,
     refresh_body: dict[str, Any],
     refresh_error: str = "",
+    report_range: str | None = None,
 ) -> dict[str, Any] | None:
-    cached = cached_reliable_dashboard_for_session(session_id)
+    """A copy of the last good dashboard, marked stale. With report_range, only
+    a dashboard of that range qualifies: the cache follows whatever range the
+    shared view last used."""
+    cached = cached_reliable_dashboard_for_session(session_id, report_range)
     if not cached:
         return None
     stale = json_clone(cached)
@@ -552,13 +562,23 @@ def dashboard_backup_source_error(dashboard: dict[str, Any]) -> str:
     return f"{path} failed: {safe_log_text(detail, 500)}"
 
 
-def shared_reliable_dashboard_for_session(session_id: str) -> dict[str, Any] | None:
+def dashboard_covers_range(dashboard: dict[str, Any], report_range: str | None) -> bool:
+    """True when the dashboard was built for report_range; None accepts any."""
+    if report_range is None:
+        return True
+    summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
+    return summary.get("range") == report_range
+
+
+def shared_reliable_dashboard_for_session(
+    session_id: str, report_range: str | None = None
+) -> dict[str, Any] | None:
     with SHARED_DASHBOARD_LOCK:
         shared_session_id = str(SHARED_DASHBOARD_STATE.get("sessionId") or "")
         dashboard = SHARED_DASHBOARD_STATE.get("dashboard")
         if shared_session_id != session_id or not isinstance(dashboard, dict):
             return None
         candidate = json_clone(dashboard)
-    if dashboard_backup_source_available(candidate):
+    if dashboard_backup_source_available(candidate) and dashboard_covers_range(candidate, report_range):
         return candidate
     return None
