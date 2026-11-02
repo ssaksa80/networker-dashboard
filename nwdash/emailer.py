@@ -5,7 +5,6 @@ Split from networker_dashboard.py (v2.5.0); behavior unchanged.
 from __future__ import annotations
 
 import email.utils
-import hashlib
 import json
 import smtplib
 import ssl
@@ -17,7 +16,17 @@ from email.message import EmailMessage
 from http import HTTPStatus
 from typing import Any
 
-from .config import APP_NAME, AUTOMATIONS_FILE, DATA_DIR, DEFAULT_API_PORT, LOG, debug_log, safe_log_text
+from .config import (
+    APP_NAME,
+    AUTOMATIONS_FILE,
+    DAILY_REPORT_RANGE,
+    DATA_DIR,
+    DEFAULT_API_PORT,
+    LOG,
+    REPORT_RANGES,
+    debug_log,
+    safe_log_text,
+)
 from .models import (
     SHARED_REFRESH_STOP,
     AlertAutomation,
@@ -329,6 +338,7 @@ def _profile_form_payload(profile: dict[str, Any]) -> dict[str, Any]:
         "trigger": profile.get("trigger"),
         "scheduleType": profile.get("scheduleType"),
         "reportTime": profile.get("reportTime"),
+        "reportRange": profile.get("reportRange"),
         "theme": profile.get("theme"),
         "quietStart": profile.get("quietStart"),
         "quietEnd": profile.get("quietEnd"),
@@ -424,6 +434,7 @@ def _arm_profile_automation(name: str, profile: dict[str, Any], session_id: str)
         trigger=settings["trigger"],
         schedule_type=settings["schedule_type"],
         report_time=settings["report_time"],
+        report_range=settings["report_range"],
         created_at=time.time(),
         theme=settings["theme"],
         quiet_start=settings["quiet_start"],
@@ -552,6 +563,7 @@ def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
         "trigger": automation.trigger,
         "schedule_type": automation.schedule_type,
         "report_time": automation.report_time,
+        "report_range": automation.report_range,
         "created_at": automation.created_at,
         "theme": automation.theme,
         "last_signature": automation.last_signature,
@@ -615,6 +627,7 @@ def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[st
         "trigger": _entry("trigger", automation.trigger),
         "scheduleType": automation.schedule_type,
         "reportTime": _entry("report_time", automation.report_time),
+        "reportRange": _entry("report_range", automation.report_range),
         "theme": _entry("theme", automation.theme),
         "quietStart": _entry("quiet_start", automation.quiet_start),
         "quietEnd": _entry("quiet_end", automation.quiet_end),
@@ -634,7 +647,7 @@ def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[st
     changed = False
     for attr in (
         "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from",
-        "recipients", "interval_minutes", "trigger", "report_time", "theme",
+        "recipients", "interval_minutes", "trigger", "report_time", "report_range", "theme",
         "quiet_start", "quiet_end", "digest",
     ):
         if getattr(automation, attr) != settings[attr]:
@@ -718,6 +731,7 @@ def restore_automations_from_disk() -> int:
                 dropped += 1
                 continue
             connection = rec.get("connection")
+            report_range = str(rec.get("report_range") or "")
             automation = AlertAutomation(
                 automation_id=str(rec.get("automation_id") or aid),
                 session_id=session_id,
@@ -733,6 +747,7 @@ def restore_automations_from_disk() -> int:
                 trigger=str(rec.get("trigger") or "critical"),
                 schedule_type=str(rec.get("schedule_type") or "alert"),
                 report_time=str(rec.get("report_time") or "08:00"),
+                report_range=report_range if report_range in REPORT_RANGES else DAILY_REPORT_RANGE,
                 created_at=float(rec.get("created_at") or time.time()),
                 theme=str(rec.get("theme") or "default"),
                 last_signature=str(rec.get("last_signature") or ""),
@@ -794,33 +809,14 @@ def scheduled_dashboard_email_payload(dashboard: dict[str, Any]) -> tuple[str, s
     return plain, html_body, attachments
 
 
-def _dashboard_content_signature(dashboard: dict[str, Any]) -> str:
-    """Stable hash of meaningful dashboard fields (no timestamps), used for
-    daily-report dedup so an unchanged dashboard is not re-emailed."""
-    try:
-        summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
-        tables = dashboard.get("tables") if isinstance(dashboard.get("tables"), dict) else {}
-        keys = ("totalJobs", "successfulJobs", "failedJobs", "activeJobs",
-                "recoveryJobs", "cloneJobs", "totalAlerts", "slaPercent", "health", "range")
-        payload: dict[str, Any] = {"summary": {k: summary.get(k) for k in keys}}
-
-        def _job_key(j: Any) -> tuple[str, str, str]:
-            if not isinstance(j, dict):
-                return ("", "", "")
-            return (str(j.get("name") or ""), str(j.get("client") or ""), str(j.get("status") or ""))
-
-        def _alert_key(a: Any) -> tuple[str, str]:
-            if not isinstance(a, dict):
-                return ("", "")
-            return (str(a.get("message") or ""), str(a.get("severity") or ""))
-
-        payload["jobs"] = sorted(_job_key(j) for j in (tables.get("jobs") or []))
-        payload["failedJobs"] = sorted(_job_key(j) for j in (tables.get("failedJobs") or []))
-        payload["alerts"] = sorted(_alert_key(a) for a in (tables.get("alerts") or []))
-        blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-        return hashlib.sha1(blob).hexdigest()
-    except (AttributeError, TypeError, ValueError):
-        return ""
+def _daily_report_signature(dashboard: dict[str, Any]) -> str:
+    """Dedup key of a scheduled daily report: the local date it is sent on plus
+    the report window it covers. Content is deliberately left out — an
+    unchanged, all-green estate still gets its email every day. Alerts keep
+    their content signature (the same alert must not repeat)."""
+    summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
+    window = f"{summary.get('range') or ''}|{summary.get('rangeLabel') or ''}"
+    return f"daily:{datetime.now().astimezone().date().isoformat()}:{window}"
 
 
 def alert_email_subject(severity: str, digest: bool = True) -> str:
@@ -911,7 +907,12 @@ def run_alert_automation(automation_id: str) -> None:
             return
         if not _ensure_automation_session(automation):
             return  # run skipped; finally-block reschedules the next attempt
-        status, dashboard = build_dashboard_from_session(automation.session_id)
+        # A daily report always covers its own range, never whatever range the
+        # dashboard was last viewed with, and building it leaves that view alone.
+        report_range = automation.report_range if automation.schedule_type == "daily_report" else None
+        status, dashboard = build_dashboard_from_session(
+            automation.session_id, report_range, remember_range=False
+        )
         debug_log(f"run_alert_automation build status={status} id={automation_id}")
         if status != HTTPStatus.OK:
             raise RuntimeError(dashboard.get("error") or f"Dashboard session refresh failed (HTTP {status}).")
@@ -933,10 +934,10 @@ def run_alert_automation(automation_id: str) -> None:
             # the schedule was created.
             dashboard["theme"] = load_ui_theme() or automation.theme
             dashboard["scheduledReport"] = True
-            new_signature = _dashboard_content_signature(dashboard)
-            if new_signature and new_signature == automation.last_signature:
+            new_signature = _daily_report_signature(dashboard)
+            if new_signature == automation.last_signature:
                 automation.last_result = (
-                    f"Skipped at {generated_at()}: no change since last successful report"
+                    f"Skipped at {generated_at()}: today's report for this window was already sent"
                 )
                 automation.last_run = time.time()
                 return
@@ -958,7 +959,7 @@ def run_alert_automation(automation_id: str) -> None:
                 attachments=attachments,
             ) or smtp_debug_snapshot(automation, report_password, "sent")
             _record_identity_send(automation, new_signature)
-            automation.last_signature = new_signature or (dashboard.get("generatedAt") or generated_at())
+            automation.last_signature = new_signature
             automation.last_result = (
                 f"Sent daily backup/SLA report at {generated_at()} "
                 f"via {smtp_debug.get('host')}:{smtp_debug.get('port')}"
@@ -1135,6 +1136,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 "recipients": ", ".join(automation.recipients or []),
                 "intervalMinutes": automation.interval_minutes,
                 "reportTime": automation.report_time,
+                "reportRange": automation.report_range,
                 "trigger": automation.trigger,
                 "theme": automation.theme,
                 "smtpHost": automation.smtp_host,
@@ -1291,6 +1293,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         trigger=settings["trigger"],
         schedule_type=settings["schedule_type"],
         report_time=settings["report_time"],
+        report_range=settings["report_range"],
         created_at=time.time(),
         theme=settings["theme"],
         quiet_start=settings["quiet_start"],
@@ -1310,7 +1313,9 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
                 plain_body, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
                 subject = "NetWorker daily backup status and SLA report - test"
             else:
-                status, dashboard = build_dashboard_from_session(session_id)
+                status, dashboard = build_dashboard_from_session(
+                    session_id, automation.report_range, remember_range=False
+                )
                 if status == HTTPStatus.OK:
                     dashboard["theme"] = automation.theme
                     dashboard["scheduledReport"] = True

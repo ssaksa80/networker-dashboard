@@ -14,7 +14,14 @@ from http.cookiejar import CookieJar
 from typing import Any
 
 from . import config as _cfg
-from .config import DATA_DIR, LAST_GOOD_DASHBOARD_FILE, SHARED_REFRESH_SECONDS, debug_log, safe_log_text
+from .config import (
+    DAILY_REPORT_RANGE,
+    DATA_DIR,
+    LAST_GOOD_DASHBOARD_FILE,
+    SHARED_REFRESH_SECONDS,
+    debug_log,
+    safe_log_text,
+)
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,9 @@ class AlertAutomation:
     report_time: str
     created_at: float
     theme: str = "default"
+    # Rolling window a daily report covers (a REPORT_RANGES key), passed
+    # explicitly at fire time. Legacy records restore with the daily window.
+    report_range: str = DAILY_REPORT_RANGE
     enabled: bool = True
     quiet_start: str = ""
     quiet_end: str = ""
