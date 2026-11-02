@@ -454,6 +454,58 @@ const post = async (_path, body) => {
         self.assertIn("Daily report · Last week", self.result["profiles"])
 
 
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping admin.js logic tests")
+class TestAdminEmailTabSaveToast(unittest.TestCase):
+    """What the Email tab says after a save, for each answer the server can give."""
+
+    @classmethod
+    def setUpClass(cls):
+        email = _extract(r"      // ── Email ─+\n.*?(?=      // ── Schedules ─)", ADMIN_JS)
+        script = r"""
+const nodes = {};
+const $ = (selector) => nodes[selector] || (nodes[selector] = {
+  value: "", placeholder: "", innerHTML: "", listeners: {},
+  addEventListener(type, handler) { this.listeners[type] = handler; },
+});
+const dirty = {email: true};
+const trackDirty = () => {}, clean = () => {}, busy = () => {};
+const fail = (e) => { throw e; };
+const esc = (value) => String(value);
+const get = async () => ({});
+let toasts = [], answers = [];
+const toast = (message, kind) => toasts.push([message, kind || "ok"]);
+const post = async (_path, body) => body.action === "list-profiles" ? {profiles: {}} : answers.shift();
+""" + email + r"""
+const saved = async (...replies) => {
+  toasts = [];
+  answers = replies;
+  await $("#emForm").listeners.submit({preventDefault() {}});
+  return toasts;
+};
+(async () => {
+  process.stdout.write(JSON.stringify({
+    nothing: await saved({schedulesUpdated: 0, warning: ""}, {schedulesUpdated: 0, warning: ""}),
+    firstOnly: await saved({schedulesUpdated: 1, warning: ""}, {schedulesUpdated: 0, warning: ""}),
+    secondOnly: await saved({schedulesUpdated: 0, warning: ""}, {schedulesUpdated: 2, warning: ""}),
+    warned: await saved({schedulesUpdated: 1, warning: "w"}, {schedulesUpdated: 0, warning: "Type the password."}),
+  }));
+})();
+"""
+        cls.result = _run_node(script)
+
+    def test_with_nothing_updated_it_says_only_that_it_saved(self):
+        self.assertEqual(self.result["nothing"], [["Email settings saved. Nothing new is scheduled.", "ok"]])
+
+    def test_either_save_updating_a_schedule_says_so(self):
+        for case in ("firstOnly", "secondOnly"):
+            with self.subTest(case=case):
+                self.assertEqual(len(self.result[case]), 1)
+                self.assertIn("Schedules that follow them are updated", self.result[case][0][0])
+
+    def test_a_missing_password_is_a_warning_of_its_own(self):
+        self.assertEqual(self.result["warned"][1:], [["Type the password.", "warn"]])
+
+
 class TestReportRangeControls(unittest.TestCase):
     def test_both_controls_offer_only_the_rolling_ranges(self):
         for page, select in (("dashboard.html", "dailyReportRange"), ("admin.html", "emRange")):

@@ -518,13 +518,6 @@ def email_config_public() -> dict[str, Any]:
     }
 
 
-def saved_email_smtp_password() -> str:
-    smtp = load_email_config().get("smtp")
-    if isinstance(smtp, dict) and smtp.get("encrypted_password"):
-        return decrypt_process_secret(str(smtp.get("encrypted_password")))
-    return ""
-
-
 # ── Stored SMTP secret <-> server binding ─────────────────────────────────────
 # A stored SMTP password may only travel to the server it was saved for: SMTP
 # AUTH hands it to whoever answers on smtpHost. Without this, a caller could

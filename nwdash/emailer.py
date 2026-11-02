@@ -11,6 +11,7 @@ import ssl
 import threading
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from http import HTTPStatus
@@ -71,7 +72,6 @@ from .snapshots import (
     resolve_email_profile_password,
     save_email_config_from_payload,
     save_email_profile,
-    saved_email_smtp_password,
     saved_email_smtp_secret,
     set_email_profile_connection,
     settings_smtp_target,
@@ -595,6 +595,19 @@ def persist_automations() -> None:
         pass
 
 
+# A saved config re-aims a live schedule (_sync_automation_from_email_config)
+# while a send may be in flight on a scheduler thread. A send works from its own
+# copy, taken under this lock, so the password it logs in with always belongs to
+# the server it connects to (see snapshots.smtp_target).
+_AUTOMATION_SMTP_LOCK = threading.Lock()
+
+
+def _smtp_send_view(automation: AlertAutomation) -> tuple[AlertAutomation, str]:
+    """A private copy of the schedule to send with, and its SMTP password."""
+    with _AUTOMATION_SMTP_LOCK:
+        return replace(automation), decrypt_process_secret(automation.encrypted_smtp_password)
+
+
 def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[str, Any]) -> bool:
     """Overwrite a CONFIG-DRIVEN schedule's settings from email_config.json —
     the single source of truth for schedules not armed from a named profile.
@@ -603,7 +616,9 @@ def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[st
     Identity fields (automation_id, session_id, connection, last_signature,
     enabled) are never touched. Returns True when anything changed. No config
     entry for the type, or an invalid one, keeps the schedule as-is — config
-    deletion is not schedule deletion (the Stop button is)."""
+    deletion is not schedule deletion (the Stop button is). Runs on a live
+    schedule after every save, not only at boot, so it never moves the next run
+    unless the cadence moved."""
     types = cfg.get("types") if isinstance(cfg.get("types"), dict) else {}
     entry = types.get(automation.schedule_type)
     if not isinstance(entry, dict):
@@ -647,22 +662,28 @@ def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[st
     old_target = smtp_target(
         automation.smtp_host, automation.smtp_port, automation.smtp_username, automation.smtp_security
     )
+    new_target = settings_smtp_target(settings)
+    saved_target, saved_password = saved_email_smtp_secret()
+    if smtp_target_changes(saved_target, new_target):
+        saved_password = ""  # read after `cfg`, and a save has re-aimed it since
+    old_cadence = (automation.interval_minutes, automation.report_time)
     changed = False
-    for attr in (
-        "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from",
-        "recipients", "interval_minutes", "trigger", "report_time", "report_range", "theme",
-        "quiet_start", "quiet_end", "digest",
-    ):
-        if getattr(automation, attr) != settings[attr]:
-            setattr(automation, attr, settings[attr])
-            changed = True
-    if smtp_target_changes(old_target, settings_smtp_target(settings)):
-        # Re-aimed at the config's server: the schedule's own password was saved
-        # for its old server and must not follow it (snapshots.smtp_target).
-        automation.encrypted_smtp_password = ""
-    if not decrypt_process_secret(automation.encrypted_smtp_password):
-        saved_password = saved_email_smtp_password()
-        if saved_password:
+    with _AUTOMATION_SMTP_LOCK:
+        for attr in (
+            "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from",
+            "recipients", "interval_minutes", "trigger", "report_time", "report_range", "theme",
+            "quiet_start", "quiet_end", "digest",
+        ):
+            if getattr(automation, attr) != settings[attr]:
+                setattr(automation, attr, settings[attr])
+                changed = True
+        if smtp_target_changes(old_target, new_target):
+            # Re-aimed at the config's server: the schedule's own password was saved
+            # for its old server and must not follow it (snapshots.smtp_target).
+            automation.encrypted_smtp_password = ""
+        # The config's password is bound to this server, and it wins over the
+        # schedule's own: that is how a rotated password reaches the schedule.
+        if saved_password and saved_password != decrypt_process_secret(automation.encrypted_smtp_password):
             automation.encrypted_smtp_password = encrypt_process_secret(saved_password)
             changed = True
     if changed:
@@ -670,7 +691,7 @@ def _sync_automation_from_email_config(automation: AlertAutomation, cfg: dict[st
             f"reconcile: synced {automation.schedule_type} schedule "
             f"{automation.automation_id} from email_config.json"
         )
-        # The cadence may have moved (report_time/interval) — recompute.
+    if (automation.interval_minutes, automation.report_time) != old_cadence:
         schedule_alert_automation(automation)
     return changed
 
@@ -685,7 +706,8 @@ def _reconcile_config_driven_automations() -> tuple[int, int]:
     recipient list has a different identity and would keep firing. Keeps the
     NEWEST schedule per type, drops the rest, then syncs each survivor from
     the config file. Profile-driven schedules are untouched: multiple named
-    profiles may be ON concurrently by design. Returns (dropped, synced)."""
+    profiles may be ON concurrently by design. Runs at boot and whenever the
+    config is saved. Never arms a schedule. Returns (dropped, synced)."""
     grouped: dict[str, list[AlertAutomation]] = {}
     for _key, automation in _automation_items_snapshot():
         if not automation.profile_name:
@@ -955,15 +977,15 @@ def run_alert_automation(automation_id: str) -> None:
                 automation.last_run = time.time()
                 return
             plain, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
-            report_password = decrypt_process_secret(automation.encrypted_smtp_password)
+            smtp_view, report_password = _smtp_send_view(automation)
             smtp_debug = send_smtp_email(
-                automation,
+                smtp_view,
                 "NetWorker daily backup status and SLA report",
                 plain,
                 report_password,
                 html_body,
                 attachments=attachments,
-            ) or smtp_debug_snapshot(automation, report_password, "sent")
+            ) or smtp_debug_snapshot(smtp_view, report_password, "sent")
             _record_identity_send(automation, new_signature)
             automation.last_signature = new_signature
             automation.last_result = (
@@ -988,13 +1010,13 @@ def run_alert_automation(automation_id: str) -> None:
                 automation.last_run = time.time()
                 return
             subject = alert_email_subject(severity, automation.digest)
-            alert_password = decrypt_process_secret(automation.encrypted_smtp_password)
+            smtp_view, alert_password = _smtp_send_view(automation)
             smtp_debug = send_smtp_email(
-                automation,
+                smtp_view,
                 subject,
                 "\n".join(lines),
                 alert_password,
-            ) or smtp_debug_snapshot(automation, alert_password, "sent")
+            ) or smtp_debug_snapshot(smtp_view, alert_password, "sent")
             _record_identity_send(automation, signature)
             automation.last_signature = signature
             automation.last_result = (
@@ -1222,17 +1244,39 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
             "activeAutomations": active_automation_summary(session_id),
         }
     if action == "save":
-        # Save ONLY persists the email configuration — it never arms a
-        # schedule. (It used to also arm one, which combined with the explicit
-        # Schedule button created duplicate automations and sent alerts the
-        # user never scheduled.) Only action=start creates/updates schedules.
+        # Save persists the email configuration and syncs the config-driven
+        # schedules already armed from it, as the next restart would. Every
+        # type's, not just the saved one: the SMTP server is shared. It must
+        # never start sending, so it never arms a schedule. (It used to also arm
+        # one, which combined with the explicit Schedule button created
+        # duplicate automations and sent alerts the user never scheduled.) Only
+        # action=start creates schedules. Paused ones stay paused, and one armed
+        # from a profile follows its profile.
         config = save_email_config_from_payload(payload)
+        dropped, synced = _reconcile_config_driven_automations()
+        if dropped or synced:
+            persist_automations()
+        following = [automation for _key, automation in _automation_items_snapshot() if not automation.profile_name]
+        saved_type = str(payload.get("scheduleType") or "alert").strip().lower()
+        message = "Email notification configuration saved"
+        message += f" and {synced} schedule(s) updated." if synced else "."
+        if not any(automation.schedule_type == saved_type for automation in following):
+            message += (
+                " No schedule of this type follows it yet — "
+                "use the Schedule selected report button to start sending."
+            )
+        warning = ""
+        if any(a.smtp_username and not decrypt_process_secret(a.encrypted_smtp_password) for a in following):
+            warning = (
+                "No SMTP password is saved for this server, so the schedules that follow it "
+                "cannot log in. Type the password and save again."
+            )
+            message += f" {warning}"
         return HTTPStatus.OK, {
             "ok": True,
-            "message": (
-                "Email notification configuration saved. Nothing is scheduled yet — "
-                "use the Schedule selected report button to start sending."
-            ),
+            "message": message,
+            "warning": warning,
+            "schedulesUpdated": synced,
             "config": config,
             "activeAutomations": active_automation_summary(session_id) if session_id else "",
         }
@@ -1383,6 +1427,9 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
     cancel_alert_automation(automation_id)
     _put_automation(automation_id, automation)
     schedule_alert_automation(automation)
+    # Scheduling saved the email configuration too, and its SMTP server is
+    # shared: the other type's config-driven schedule follows it like a save.
+    _reconcile_config_driven_automations()
     persist_automations()
     active_summary = active_automation_summary(session_id)
     message = (

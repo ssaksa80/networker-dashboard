@@ -731,11 +731,14 @@
         try {
           // The SMTP server is shared; alert and report recipients are saved per
           // type. The password goes with the first save only.
-          await post("/api/alert-automation", Object.assign({}, common, {scheduleType: "alert", smtpPassword: $("#emPass").value, smtpTo: $("#emAlertTo").value,
+          const alertSave = await post("/api/alert-automation", Object.assign({}, common, {scheduleType: "alert", smtpPassword: $("#emPass").value, smtpTo: $("#emAlertTo").value,
             trigger: $("#emTrigger").value, intervalMinutes: $("#emInterval").value}));
-          await post("/api/alert-automation", Object.assign({}, common, {scheduleType: "daily_report", smtpTo: $("#emReportTo").value, reportTime: $("#emTime").value.trim(),
+          const reportSave = await post("/api/alert-automation", Object.assign({}, common, {scheduleType: "daily_report", smtpTo: $("#emReportTo").value, reportTime: $("#emTime").value.trim(),
             reportRange: $("#emRange").value, theme: (emailCfg && emailCfg.dailyReport && emailCfg.dailyReport.theme) || "default"}));
-          toast("Email settings saved. Nothing new is scheduled.");
+          toast(alertSave.schedulesUpdated || reportSave.schedulesUpdated
+            ? "Email settings saved. Schedules that follow them are updated; nothing new is scheduled."
+            : "Email settings saved. Nothing new is scheduled.");
+          if (reportSave.warning) toast(reportSave.warning, "warn");
           clean("email");
           loadEmail();
         } catch (err) { fail(err); } finally { busy(button, false); }
