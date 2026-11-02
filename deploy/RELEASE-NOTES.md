@@ -19,6 +19,115 @@ under which bump) is [`../RELEASING.md`](../RELEASING.md).
 
 ---
 
+## v3.2.0 — choose a daily report's range, a locked install folder, and safer upgrades
+
+Minor tier: a new range control for daily reports, the install folder locked
+against other local users, and fixes, including the certificate upload bug in
+v3.1.0. Nothing under `data\` changes format, no key is rewritten, and URLs and
+the service command line are the same. [`RELEASING.md`](../RELEASING.md) lists
+a changed default that alters existing installs under MAJOR. The folder lock
+changes who can open the folder, but nothing an install runs on stops working,
+so it ships as a minor with the notes below. `Setup-NWDash.cmd -Rollback`
+restores v3.1.0, with the effects listed under Rollback.
+
+### Before you upgrade: the install folder gets locked
+
+Until now the install folder inherited from `C:\`, and any local user who could
+read a key file could unwrap it. The upgrade now sets these permissions, with
+the service still running, and no password has to be entered again:
+
+| Folder | SYSTEM, Administrators | Service account | Other users |
+|---|---|---|---|
+| `data\`, `.certs\`, `logs\` | Full control | Modify | None |
+| `backups\` | Full control | None | None |
+| The app and runtime | Full control | Read | Read |
+
+- **Anything that reads these folders under an ordinary account loses access**,
+  a log shipper or a monitoring agent for example. Run it as an administrator
+  or SYSTEM, or read through the dashboard instead. The lock replaces each
+  access list outright, so entries added by hand are removed.
+- **Open `logs\`, `data\` and `.certs\` from an elevated prompt.** If Explorer
+  offers "You don't currently have permission… Continue", choose **Cancel**:
+  **Continue** adds your account to the folder's access list until the next
+  `-Upgrade`.
+- **Starting the app by hand** needs an elevated prompt too.
+- **Keep `--cert` and `--key` in `.certs\` or a folder of their own.** The TLS
+  tab writes beside them, and a key in the root of the install folder would end
+  up readable by users.
+- If the lock can't be set, the upgrade stops there with the service still
+  running. On a drive root or a system folder it isn't set at all, and the
+  installer warns.
+
+### New
+
+- **Choose a daily report's range.** The email dialog and the admin Email tab
+  now have a 24 hours, 7 days or 30 days control that shows the saved value, and
+  the schedule and profile lists show each report's range.
+- **Saved email settings reach running schedules straight away**, with no
+  restart. That covers the SMTP server, recipients, times and range, for alert
+  and report schedules alike. Saving still never starts sending: it arms
+  nothing, paused schedules stay paused, and a schedule armed from a profile
+  follows its profile. The save says how many schedules it updated.
+- **Health self-test** has a new Folder permissions step, which fails if the
+  lock is lost.
+
+### Fixes
+
+- **Certificate upload is all or nothing.** The Known issue in v3.1.0 is fixed.
+  If either file can't be written, both stay as they were, the error says
+  "Nothing was replaced", and **Put it back** still has the pair it had.
+- **A failed upgrade or rollback recovers.** If a file stays locked or the disk
+  fills during the swap, the previous files go back, the service starts, and
+  the installer exits non-zero with the cause. The service stays stopped only
+  if the old files can't be put back either, because a half-restored app must
+  not run. The error then names the backup folder to finish from by hand.
+- **A daily report never uses cached data of another range.** If NetWorker has
+  no job data and no saved dashboard covers the report's range, no email goes
+  out, and the schedule's last result says why. **Send test** follows the same
+  rule, and a test email with no data for its range says so.
+- **A changed SMTP password reaches its schedules.** It used to miss any
+  schedule that already had a password, even across a restart.
+- **Dialogs open above the sidebar and the top bar.** The sidebar could cover
+  part of the Email, Add server and Share dialogs, and on a phone the top bar
+  could cover a dialog's close button.
+- **Edit on a schedule** now shows that schedule's own recipients, time and
+  range, not the email configuration's.
+
+### Support notes
+
+- **Check the range on the Schedules tab after upgrading.** A range set through
+  the API on v3.1.0 stays, unless the email settings were saved afterwards: on
+  v3.1.0 that save takes effect at the next restart, which this upgrade is.
+  The resets described in the v3.1.0 notes no longer happen.
+- **No daily report today?** Look at the schedule's last result. A skipped day
+  isn't retried until the next run.
+- **The email configuration's password now wins** over a schedule's own, once
+  it's confirmed for that schedule's server, on a save or at a restart. If no
+  password is saved for a new server, the save warns that schedules can't log
+  in.
+- While a dialog is open the sidebar is dimmed, and clicking it closes the
+  dialog.
+- Alert schedules still use the dashboard session's range.
+- Reload any dashboard or admin console tab that was open during the upgrade,
+  so it picks up the new page.
+
+### Rollback
+
+Run `Setup-NWDash.cmd -Rollback` from an elevated prompt. It restores v3.1.0,
+with its faults and without the range control, and daily reports keep the range
+they have. The folder lock stays: restored files take the current permissions,
+so rolling back doesn't reopen the install.
+
+**Gates:** GitHub Actions (lint, unit tests on 3.12.10 and 3.14, installer
+tests, secret scan) green on the release PR. ruff 0.17.2 and the full 444-test
+suite run **locally** on Windows, on Python 3.13, 3.14 and this bundle's
+embedded Python 3.12.10, and the installer tests under Windows PowerShell 5.1:
+all green. The bundle was booted in the installed layout on its own runtime, and
+`-Upgrade` on a test host passed. The automated gates use no real NetWorker
+server.
+
+---
+
 ## v3.1.0 — replace the TLS certificate from the console, and daily reports every day
 
 Minor tier: one new admin feature, plus fixes to daily reports and live
