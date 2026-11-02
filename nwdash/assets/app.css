@@ -1063,10 +1063,12 @@
       white-space: nowrap;
     }
 
+    /* Over design.css's topbar (30), sidebar (40) and its float button (45);
+       the job drawer, tooltips and toast stay above this. */
     .modal-backdrop {
       position: fixed;
       inset: 0;
-      z-index: 20;
+      z-index: 80;
       display: none;
       align-items: center;
       justify-content: center;
