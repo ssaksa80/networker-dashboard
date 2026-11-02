@@ -9,6 +9,7 @@ Certificates come from tests/certgen.py (standard library only), so no
 private key is committed to this public repository.
 """
 import json
+import os
 import socket
 import ssl
 import unittest
@@ -223,6 +224,73 @@ class TestInstall(Keys, TempDataMixin, unittest.TestCase):
         admin.restore_previous_certificate(apply=self.apply)
         self.assertEqual(self.cert_file.read_text(encoding="ascii"), self.cert)
         self.assertEqual(len(self.applied), 3)
+
+    def refusing(self, target):
+        """os.replace refuses `target`, as Windows does for a read-only file."""
+        real = os.replace
+
+        def replace(src, dst):
+            if Path(dst) == target:
+                raise PermissionError(13, "Access is denied", str(dst))
+            real(src, dst)
+        return mock.patch("nwdash.admin.os.replace", replace)
+
+    def assert_failed_and_clean(self, status, body):
+        self.assertEqual(status, HTTPStatus.INTERNAL_SERVER_ERROR)
+        server_tls_context(self.cert_file, self.key_file)  # still a pair, so the service can start
+        self.assertFalse(list(self.cert_file.parent.glob("*.new")))
+        self.assertIn("could not be written", body["error"])
+        self.assertIn("Nothing was replaced", body["error"])
+
+    def test_a_file_that_cannot_be_replaced_changes_neither(self):
+        for target in (self.key_file, self.cert_file):
+            with self.subTest(target.name), self.refusing(target):
+                status, body = self.install(self.cert, self.key.pem())
+                self.assert_failed_and_clean(status, body)
+                self.assert_untouched()
+
+    def test_a_failed_upload_keeps_the_pair_put_aside_by_the_last_one(self):
+        self.install(self.cert, self.key.pem())
+        with self.refusing(self.key_file):
+            status, body = self.install(certgen.certificate(self.other_key), self.other_key.pem())
+        self.assert_failed_and_clean(status, body)
+        self.assertEqual(self.cert_file.read_text(encoding="ascii"), self.cert)
+        self.assertEqual(self.key_file.read_text(encoding="ascii"), self.key.pem())
+        self.assertEqual((self.dir / "certs" / "nwdash.crt.previous").read_text(encoding="ascii"), EMBEDDED_DEV_CERT_PEM)
+        self.assertEqual(len(self.applied), 1)
+
+    def test_put_back_that_cannot_finish_changes_neither(self):
+        self.install(self.cert, self.key.pem())
+        with self.refusing(self.key_file):
+            status, body = admin.restore_previous_certificate(apply=self.apply)
+        self.assert_failed_and_clean(status, body)
+        self.assertEqual(self.cert_file.read_text(encoding="ascii"), self.cert)
+        self.assertEqual((self.dir / "certs" / "nwdash.crt.previous").read_text(encoding="ascii"), EMBEDDED_DEV_CERT_PEM)
+
+    def test_a_folder_that_cannot_be_written_changes_nothing(self):
+        with mock.patch("nwdash.admin._write_private", side_effect=PermissionError(13, "Access is denied")):
+            status, body = self.install(self.cert, self.key.pem())
+        self.assert_failed_and_clean(status, body)
+        self.assert_untouched()
+
+    def test_an_old_pair_that_cannot_be_kept_stops_the_upload(self):
+        with mock.patch("nwdash.admin.shutil.copyfile", side_effect=PermissionError(13, "Access is denied")):
+            status, body = self.install(self.cert, self.key.pem())
+        self.assert_failed_and_clean(status, body)
+        self.assert_untouched()
+
+    def test_the_old_pair_comes_back_if_it_cannot_be_put_aside_at_the_end(self):
+        real = admin.shutil.copyfile
+
+        def copyfile(src, dst):
+            if Path(dst).name == "nwdash.key.previous":
+                raise PermissionError(13, "Access is denied", str(dst))
+            return real(src, dst)
+        with mock.patch("nwdash.admin.shutil.copyfile", copyfile):
+            status, body = self.install(self.cert, self.key.pem())
+        self.assert_failed_and_clean(status, body)
+        self.assertEqual(self.cert_file.read_text(encoding="ascii"), EMBEDDED_DEV_CERT_PEM)
+        self.assertEqual(self.applied, [])
 
 
 def _handshake(server_ctx: ssl.SSLContext, client_ctx: ssl.SSLContext) -> None:
