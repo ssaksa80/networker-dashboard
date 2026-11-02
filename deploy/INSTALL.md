@@ -262,11 +262,12 @@ TLS is **always on** — the service is HTTPS-only.
   originals in `.certs\` and restart the service. `*.previous` includes the
   old private key, so if you're replacing a leaked key, delete both files once
   the new certificate works. The service account needs write access to the
-  certificate, the key and their folder. If an upload says "The certificate
-  files could not be written", copy the certificate's `.previous` file back
-  over the certificate before the service next restarts: in v3.1.0 the
-  certificate can be replaced without its key, and that pair won't start. A
-  `.pfx` must be converted first:
+  certificate, the key and their folder. If an upload on v3.1.0 says "The
+  certificate files could not be written", copy the certificate's `.previous`
+  file back over the certificate before the service next restarts: that
+  version can replace the certificate without its key, and that pair won't
+  start. Later versions leave both files as they were. A `.pfx` must be
+  converted first:
   `openssl pkcs12 -in site.pfx -nokeys -out site.crt` and
   `openssl pkcs12 -in site.pfx -nocerts -nodes -out site.key`.
 - **Real certificate, on the host:** place PEM cert + key on the host and run the app with

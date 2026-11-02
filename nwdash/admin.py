@@ -763,6 +763,31 @@ def _stage_and_load(cert_file: Path, key_file: Path, chain: list[str], key: str)
     return load(orders[-1])
 
 
+def _swap_in(moves: dict[Path, Path]) -> None:
+    """Put the staged files in place and keep the ones they replace as
+    *.previous. All or nothing: a new certificate beside its old key stops the
+    service at its next start, so a failure part-way puts the old files back.
+    The copies of the old files are *.previous.new until then, so a failed
+    upload also leaves the pair the last one kept."""
+    kept = {live: _staged(_previous(live)) for live in dict.fromkeys(moves.values()) if live.exists()}
+    swapped: list[Path] = []
+    try:
+        for live, copy in kept.items():
+            shutil.copyfile(live, copy)
+        for staged, live in moves.items():
+            os.replace(staged, live)
+            swapped.append(live)
+        for live, copy in kept.items():
+            shutil.copyfile(copy, _previous(live))
+    except OSError as exc:
+        for live in swapped:
+            if live in kept:
+                shutil.copyfile(kept[live], live)
+            else:
+                live.unlink()
+        raise OSError(f"{exc}. Nothing was replaced.") from exc
+
+
 def _fingerprint_note(info: dict[str, Any]) -> str:
     if not info.get("ok"):
         return "(unreadable)"
@@ -792,6 +817,8 @@ def install_certificate(cert_text: Any, key_text: Any, *, host: str = "", confir
                 context, moves = _stage_and_load(cert_file, key_file, chain, key)
             except ssl.SSLError as exc:
                 return HTTPStatus.BAD_REQUEST, {"ok": False, "error": _ssl_problem(exc)}
+            except OSError as exc:
+                raise OSError(f"{exc}. Nothing was replaced.") from exc
             staged_cert = _staged(cert_file)
             _der, decoded, _err = _read_leaf(staged_cert)
             if decoded is not None:
@@ -814,16 +841,12 @@ def install_certificate(cert_text: Any, key_text: Any, *, host: str = "", confir
                     }
             new_info = _describe_certificate(staged_cert, now)
             old_info = _describe_certificate(cert_file, now) if cert_file.exists() else {"ok": False}
-            for live in dict.fromkeys(moves.values()):
-                if live.exists():
-                    shutil.copyfile(live, _previous(live))
-            for staged, live in moves.items():
-                os.replace(staged, live)
+            _swap_in(moves)
         except OSError as exc:
             LOG.warning(f"certificate upload failed: {exc}", extra={"event": "tls"})
             return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"The certificate files could not be written: {exc}"}
         finally:
-            for staged in (_staged(cert_file), _staged(key_file)):
+            for staged in (_staged(cert_file), _staged(key_file), _staged(_previous(cert_file)), _staged(_previous(key_file))):
                 try:
                     staged.unlink(missing_ok=True)
                 except OSError:

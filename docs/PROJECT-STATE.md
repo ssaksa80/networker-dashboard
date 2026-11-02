@@ -108,7 +108,9 @@ extraction (SHA-256 against the prior revision).
   started with (`--cert`/`--key`) are overwritten, the replaced pair kept as
   `*.previous` (`POST /api/admin/tls/restore` swaps them back), and the new
   context goes on `server.ssl_context`, which `get_request` reads per
-  connection: new connections get it at once, no restart. PFX is not
+  connection: new connections get it at once, no restart. The file swap is
+  all or nothing (`_swap_in`): a new certificate beside its old key stops the
+  service at its next start, so a failure puts the old files back. PFX is not
   accepted (the standard library cannot read PKCS#12); the form shows the
   `openssl` conversion.
 
