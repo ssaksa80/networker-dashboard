@@ -39,14 +39,46 @@
   <div id="content"><div class="status-bar"><span class="pill load">Loading…</span><span id="statusText">Fetching dashboard data…</span></div></div>
 </div>
 <script>
+  // The token is the link's secret: it is used here and never shown (review F5).
+  const VIEW_API = '/api/view/__SHARE_TOKEN__';
+  const REFRESH_MS = 60000;
+  let timer = null;
+
+  function show(html) {
+    document.getElementById('content').innerHTML = html;
+  }
+
+  function showNotice(pillCls, pillLabel, message) {
+    show('<div class="status-bar"><span class="pill ' + pillCls + '">' + esc(pillLabel) + '</span>' +
+         '<span id="statusText">' + esc(message) + '</span></div>');
+  }
+
   async function load() {
+    let r;
     try {
-      const r = await fetch('/api/view/__SHARE_TOKEN__', {cache: 'no-store'});
-      const data = await r.json();
-      render(data);
-    } catch(e) {
-      document.getElementById('content').innerHTML = '<div class="error-box">Failed to load dashboard data: ' + (e.message || 'unknown error') + '</div>';
+      r = await fetch(VIEW_API, {cache: 'no-store'});
+    } catch (e) {
+      showNotice('bad', 'Offline', 'Could not reach the dashboard server. Retrying every 60 s.');
+      return;
     }
+    if (r.status === 410 || r.status === 404) {
+      // Expired, revoked or never issued: asking again will not change that.
+      clearInterval(timer);
+      timer = null;
+      showNotice('bad', 'Link expired', 'This share link has expired or is invalid. Ask for a new link.');
+      return;
+    }
+    let data = null;
+    try {
+      data = await r.json();
+    } catch (_) {}
+    if (!r.ok || !data || !data.ok || !data.dashboard) {
+      const reason = (data && (data.message || data.error)) ||
+                     (r.ok ? 'No dashboard data yet.' : 'The server answered HTTP ' + r.status + '.');
+      showNotice(r.ok ? 'load' : 'bad', r.ok ? 'Waiting' : 'Error', reason + ' Retrying every 60 s.');
+      return;
+    }
+    render(data);
   }
 
   function esc(s) {
@@ -78,11 +110,11 @@
       '<span id="statusText">Server: ' + esc(data.dashboard?.target?.restApiBase || 'unknown') + '</span>' +
       '<span style="margin-left:auto;font-size:12px">' + esc(ts) + '</span></div>' +
       '<div class="metric-grid">' + cards + '</div>' +
-      '<p class="refresh-hint">Auto-refreshes every 60 s · Token: __SHARE_TOKEN__</p>';
+      '<p class="refresh-hint">Auto-refreshes every 60 s</p>';
   }
 
+  timer = setInterval(load, REFRESH_MS);
   load();
-  setInterval(load, 60000);
 </script>
 </body>
 </html>
