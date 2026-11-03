@@ -393,6 +393,37 @@ process.stdout.write(JSON.stringify(out));
         self.assertEqual(self.result["alert"], {"disabled": True, "time": True})
 
 
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping app.js logic tests")
+class TestProfileLoadKeepsTlsVerification(unittest.TestCase):
+    """Review S7: a profile saved before verifyTls existed loaded with the box
+    unchecked, so Connect sent its stored password without verification."""
+
+    @classmethod
+    def setUpClass(cls):
+        source = _extract(r"function applyProfile\(profile\) \{.*?\n    \}\n")
+        script = r"""
+const form = new Proxy({}, {get: (fields, name) => fields[name] || (fields[name] = {value: "", checked: false})});
+const syncRangeToToolbar = () => {};
+""" + source + r"""
+const out = {};
+for (const [label, profile] of [["older", {restApiHost: "nw.example.test"}],
+                                ["on", {restApiHost: "nw.example.test", verifyTls: true}],
+                                ["off", {restApiHost: "nw.example.test", verifyTls: false}]]) {
+  form.verifyTls.checked = label !== "older";  // whatever the form showed before
+  applyProfile(profile);
+  out[label] = form.verifyTls.checked;
+}
+process.stdout.write(JSON.stringify(out));
+"""
+        cls.result = _run_node(script)
+
+    def test_a_profile_without_the_setting_verifies(self):
+        self.assertIs(self.result["older"], True)
+
+    def test_a_stored_setting_is_shown_as_saved(self):
+        self.assertEqual((self.result["on"], self.result["off"]), (True, False))
+
+
 @unittest.skipIf(NODE is None, "node is not on PATH; skipping admin.js logic tests")
 class TestAdminEmailTabReportRange(unittest.TestCase):
     """The admin Email tab's real load and save, against a fake server. It used

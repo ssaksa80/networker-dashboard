@@ -135,9 +135,6 @@ def profile_connection_form(profile_name: str, profiles: dict[str, Any]) -> dict
             f"Saved profile '{profile_name}' stores an unusable connection ({exc}). "
             "Re-save the profile."
         ) from exc
-    # Profiles saved before verifyTls existed cannot be held to a value they
-    # never recorded — bind it only when the profile actually specifies it.
-    form["_binds_verify_tls"] = "verifyTls" in prof
     form["password"] = decrypt_profile_secret(
         str(prof.get("_enc_password") or ""), name=profile_name, field="password"
     )
@@ -181,14 +178,13 @@ def _resolve_profile_password(payload: dict[str, Any]) -> dict[str, Any]:
             "Re-enter the password to connect."
         )
 
-    bound_keys = [
-        key for key in _BOUND_FIELD_LABELS
-        if key != "verifyTls" or form["_binds_verify_tls"]
-    ]
+    # verifyTls is bound like the rest. A profile saved before it existed
+    # reads as True (_connection_target's default): a missing key must not let
+    # a request switch verification off for the stored password (review S7).
     requested = _connection_target(payload)
     differing = [
         _BOUND_FIELD_LABELS[key]
-        for key in bound_keys
+        for key in _BOUND_FIELD_LABELS
         if requested.get(key) != form.get(key)
     ]
     if differing:
@@ -212,7 +208,7 @@ def _resolve_profile_password(payload: dict[str, Any]) -> dict[str, Any]:
     # Belt and braces: even though the request matched, the destination actually
     # used is read back out of the stored profile, so no comparison gap can put
     # a stored secret on a caller-chosen host.
-    for key in bound_keys:
+    for key in _BOUND_FIELD_LABELS:
         result[key] = form[key]
     if wants_password:
         if not form["password"]:

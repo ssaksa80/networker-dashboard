@@ -2686,7 +2686,7 @@
       form.timeoutSeconds.value   = profile.timeoutSeconds   || "30";
       form.useWmiHealth.checked   = !!profile.useWmiHealth;
       form.wmiUsername.value      = profile.wmiUsername      || "";
-      form.verifyTls.checked      = !!profile.verifyTls;
+      form.verifyTls.checked      = profile.verifyTls !== false;  // unset (older profiles) = verify
       form.useAuthcHeader.checked = profile.useAuthcHeader !== false;
       // "(saved)" means server has encrypted password — keep as-is; getPayload() sends sentinel
       form.password.value    = profile.password    || "";
