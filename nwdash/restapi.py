@@ -1024,6 +1024,8 @@ def is_clone_job(job: Any) -> bool:
 
 
 def is_recovery_job(job: Any) -> bool:
+    """A restore, by its name or action. Not by its text: a failed backup's
+    message can mention a recover, and it must stay a backup (review C4)."""
     if is_clone_job(job):
         return False
     fields = [
@@ -1031,7 +1033,6 @@ def is_recovery_job(job: Any) -> bool:
         first_value(job, "policyActionName"),
         first_value(job, "actionName"),
         first_value(job, "workflowName"),
-        first_value(job, "message"),
     ]
     text = " ".join(stringify(field, 120).lower() for field in fields)
     return any(word in text for word in ("recover", "recovery", "restore"))
@@ -1318,7 +1319,11 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
     ]
     failed_records = collection_from(raw_results.get("failedJobs"), "jobs")
     clone_jobs = [job for job in jobs if is_clone_job(job)]
-    backup_jobs = [job for job in jobs if not is_clone_job(job)]
+    other_jobs = [job for job in jobs if not is_clone_job(job)]
+    # Restores are counted once, as restores: not also as backups in the
+    # totals and the SLA (review C4).
+    recovery_jobs = [job for job in other_jobs if is_recovery_job(job)]
+    backup_jobs = [job for job in other_jobs if not is_recovery_job(job)]
     if history_available:
         # The failures are the jobs the shared classifier calls failed, which
         # include the cancelled and abandoned jobs the failed query leaves
@@ -1329,6 +1334,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
             job for job in sort_jobs(failed_records)
             if in_report_window(first_value(job, "startTime", "started", "start"), config)
             and not is_clone_job(job)
+            and not is_recovery_job(job)
         ]
     alerts = [
         alert for alert in collection_from(raw_results.get("alerts"), "alerts")
@@ -1336,16 +1342,16 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         or in_report_window(first_value(alert, "time", "timestamp", "date", "createdTime"), config)
     ]
     policies = collection_from(raw_results.get("policies"), "policies")
-    recovery_jobs = [job for job in backup_jobs if is_recovery_job(job)]
 
     critical_alerts = sum(1 for alert in alerts if is_critical_alert(alert))
     warning_alerts = sum(1 for alert in alerts if is_warning_alert(alert))
     failed_count = len(failed_jobs)
+    recovery_failed = sum(1 for job in recovery_jobs if is_failed_job(job))
     clone_failed = sum(1 for job in clone_jobs if is_failed_job(job))
     clone_running = sum(1 for job in clone_jobs if is_active_job(job))
     source_errors = sum(1 for item in sources.values() if not item.get("ok"))
 
-    if failed_count or clone_failed or critical_alerts:
+    if failed_count or recovery_failed or clone_failed or critical_alerts:
         health = "critical"
     elif warning_alerts or source_errors:
         health = "warning"
@@ -1359,7 +1365,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "failedJobs": failed_count,
         "activeJobs": sum(1 for job in backup_jobs if is_active_job(job)),
         "recoveryJobs": len(recovery_jobs),
-        "recoveryFailed": sum(1 for job in recovery_jobs if is_failed_job(job)),
+        "recoveryFailed": recovery_failed,
         "recoveryRunning": sum(1 for job in recovery_jobs if is_active_job(job)),
         "cloneJobs": len(clone_jobs),
         "cloneFailed": clone_failed,
@@ -1385,7 +1391,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "cloneJobs": [project_job(job) for job in clone_jobs[:TABLE_LIMIT]],
         "logs": [
             row
-            for row in (project_job_log(job) for job in (backup_jobs + clone_jobs)[:TABLE_LIMIT])
+            for row in (project_job_log(job) for job in (other_jobs + clone_jobs)[:TABLE_LIMIT])
             if row.get("message")
         ],
         "alerts": [project_alert(alert) for alert in alerts[:TABLE_LIMIT]],

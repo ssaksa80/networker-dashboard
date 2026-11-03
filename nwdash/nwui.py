@@ -50,6 +50,7 @@ from .restapi import (
     is_clone_job,
     is_failed_job,
     is_queued_job,
+    is_recovery_job,
     is_running_job,
     is_success_job,
     job_history_endpoint,
@@ -911,6 +912,32 @@ def build_nwui_clients(jobs: list[dict[str, Any]]) -> list[dict[str, str]]:
     return sorted(output, key=lambda item: item["hostname"])
 
 
+def merge_recoveries(monitored: list[Any], restores: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Recovery rows, newest first, from NWUI's recoveries monitor and the
+    restores the jobs database holds, each restore once (review C4). A
+    restore both list (same client, same start second) keeps the jobs
+    database's record, which has its final status."""
+    by_run: dict[tuple[str, int], tuple[float, dict[str, str]]] = {}
+    unkeyed: list[tuple[float, dict[str, str]]] = []
+    for item in monitored:
+        started = timestamp(item.get("startTime") or item.get("start"))
+        client = str(item.get("clientName") or item.get("client") or item.get("hostname") or "").strip().lower()
+        row = (started, project_nwui_recovery(item))
+        if started:
+            by_run[(client, int(started))] = row
+        else:
+            unkeyed.append(row)
+    for job in restores:
+        started = float(job.get("_started_ts") or 0)
+        row = (started, nwui_job_table_row(job))
+        if started:
+            by_run[(str(job.get("client") or "").strip().lower(), int(started))] = row
+        else:
+            unkeyed.append(row)
+    rows = sorted([*by_run.values(), *unkeyed], key=lambda pair: pair[0], reverse=True)
+    return [row for _, row in rows]
+
+
 def newest_first(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Projected jobs by start time, newest first. Not by `started`: as a
     dd-mm-YYYY string it put the highest day of the month first (review C2)."""
@@ -1215,7 +1242,11 @@ def build_dashboard_nwui(
     jobs = [job for job in (project_nwui_job(item) for item in raw_actions) if job]
     jobs = newest_first(jobs)
     clone_jobs = [job for job in jobs if is_clone_job(job)]
-    backup_jobs = [job for job in jobs if not is_clone_job(job)]
+    other_jobs = [job for job in jobs if not is_clone_job(job)]
+    # The jobs database lists restores too. They are counted once, as
+    # restores: not also as backups in the totals and the SLA (review C4).
+    history_restores = [job for job in other_jobs if is_recovery_job(job)]
+    backup_jobs = [job for job in other_jobs if not is_recovery_job(job)]
     if _cfg.APP_DEBUG:
         debug_log(
             "NWUI action merge: "
@@ -1261,7 +1292,7 @@ def build_dashboard_nwui(
     policy_alert_rows = build_nwui_policies(raw_policies, backup_jobs)
     recovery_jobs = [item for item in raw_recoveries if isinstance(item, dict) and not is_clone_job(item)]
     clone_recoveries = [item for item in raw_recoveries if isinstance(item, dict) and is_clone_job(item)]
-    recovery_rows = [project_nwui_recovery(item) for item in recovery_jobs]
+    recovery_rows = merge_recoveries(recovery_jobs, history_restores)
     clone_recovery_rows = [project_nwui_recovery(item) for item in clone_recoveries]
 
     clone_session_counts = session_counts_for_jobs(clone_jobs)
@@ -1312,7 +1343,7 @@ def build_dashboard_nwui(
         "cloneJobs": ([nwui_job_table_row(job) for job in clone_jobs] + clone_recovery_rows)[:TABLE_LIMIT],
         "logs": [
             row
-            for row in (nwui_job_log_row(job) for job in (backup_jobs + clone_jobs)[:TABLE_LIMIT])
+            for row in (nwui_job_log_row(job) for job in (other_jobs + clone_jobs)[:TABLE_LIMIT])
             if row.get("message")
         ],
         "alerts": (alerts + policy_alert_rows)[:TABLE_LIMIT],
@@ -1343,7 +1374,7 @@ def build_dashboard_nwui(
             "successfulJobs": successful_jobs,
             "failedJobs": failed_count,
             "activeJobs": active_jobs,
-            "recoveryJobs": len(recovery_jobs),
+            "recoveryJobs": len(recovery_rows),
             "recoveryFailed": recovery_failed,
             "recoveryRunning": recovery_running,
             "cloneJobs": len(clone_jobs) + len(clone_recoveries),
