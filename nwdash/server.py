@@ -793,6 +793,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.request_id = uuid.uuid4().hex[:8]
         self._body_consumed = False  # one handler instance serves many keep-alive requests
+        # The gates read client headers before the routes' own try. An error
+        # there escaped to socketserver, which dropped the connection without
+        # an answer (review S11). Every POST now gets one.
+        try:
+            self._post_routes()
+        except Exception:
+            ref = getattr(self, "request_id", "-")
+            LOG.exception("do_POST unhandled error", extra={"request_id": ref})
+            try:
+                self._drain_request_body()
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
+            except Exception as exc2:  # noqa: BLE001 — headers may already be sent
+                LOG.debug(f"failed to send error response (ref {ref}): {exc2}")
+
+    def _post_routes(self) -> None:
         path = urlparse(self.path).path
         # Cross-site gate for EVERY POST, with or without a password. The CSRF
         # token below exists only when auth is on, so without these a page the

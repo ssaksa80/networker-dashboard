@@ -288,6 +288,10 @@ def _make_csrf_token(cookie_value: str) -> str:
 def _verify_csrf_token(cookie_value: str, token: str) -> bool:
     if not cookie_value or not token:
         return False
+    # Neither is one this server issued if it is not ASCII, and both
+    # _make_csrf_token and compare_digest raise on such a str (review S11).
+    if not cookie_value.isascii() or not token.isascii():
+        return False
     return hmac.compare_digest(_make_csrf_token(cookie_value), token)
 
 
