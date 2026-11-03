@@ -4,7 +4,9 @@ import re
 import unittest
 from pathlib import Path
 
-from nwdash.ui import tv_page_html
+from served import with_assets
+
+from nwdash.ui import asset_response, tv_page_html
 
 PROJECT = Path(__file__).resolve().parent.parent
 ASSETS = PROJECT / "nwdash" / "assets"
@@ -76,15 +78,19 @@ class TestTvDesignSpec(unittest.TestCase):
 
 class TestTvPageHtml(unittest.TestCase):
     def setUp(self):
-        self.page = tv_page_html()
+        self.page = with_assets(tv_page_html())
 
     def test_all_markers_replaced(self):
         for marker in ("__TV_CSS__", "__TV_JS__", "__NETWORKER_LOGO_SRC__",
                        "/*__TV_THEME_CSS__*/"):
             self.assertNotIn(marker, self.page)
 
-    def test_logo_embedded_as_data_uri(self):
-        self.assertIn("data:image/", self.page)
+    def test_logo_is_linked_not_inlined(self):
+        # Review F10: the logo was inlined twice; both now name one cached URL.
+        self.assertNotIn("data:image/", self.page)
+        logos = set(re.findall(r'<img src="([^"]+)"', self.page))
+        self.assertEqual(len(logos), 1)
+        self.assertIsNotNone(asset_response(logos.pop()))
 
     def test_all_15_theme_blocks_generated(self):
         named = set()

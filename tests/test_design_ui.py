@@ -11,6 +11,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from served import with_assets
+
 from nwdash.config import THEME_PALETTES, UI_DESIGNS
 from nwdash.ui import admin_page_html, dashboard_html
 
@@ -32,7 +34,7 @@ def _z_index(css: str, selector: str) -> int:
 class TestDashboardFrame(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.html = dashboard_html()
+        cls.html = with_assets(dashboard_html())
 
     def test_moved_controls_exist_once(self):
         # Moved from the topbar account menu and the page into the sidebar;
@@ -74,7 +76,7 @@ class TestDialogStacking(unittest.TestCase):
             self.assertGreater(dialog, _z_index(design, selector), selector)
 
     def test_every_modal_uses_the_backdrop(self):
-        modals = re.findall(r'<[^>]+aria-modal="true"[^>]*>', dashboard_html())
+        modals = re.findall(r'<[^>]+aria-modal="true"[^>]*>', with_assets(dashboard_html()))
         self.assertEqual(len(modals), 4)
         for modal in modals:
             self.assertIn('class="modal-backdrop"', modal)
@@ -106,7 +108,7 @@ class TestDesigns(unittest.TestCase):
 class TestAdminPage(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.html = admin_page_html()
+        cls.html = with_assets(admin_page_html())
         cls.js = (ASSETS / "admin.js").read_text(encoding="utf-8")
 
     def test_markers_are_all_replaced(self):
@@ -125,7 +127,7 @@ class TestAdminPage(unittest.TestCase):
 
 class TestPagesStaySelfContained(unittest.TestCase):
     def test_no_inline_event_handlers(self):
-        for name, html in (("dashboard", dashboard_html()), ("admin", admin_page_html())):
+        for name, html in (("dashboard", with_assets(dashboard_html())), ("admin", with_assets(admin_page_html()))):
             self.assertIsNone(re.search(r"<[^>]+\son[a-z]+\s*=", html), name)
 
     def test_no_external_scripts_styles_or_fonts(self):

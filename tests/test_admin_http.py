@@ -6,6 +6,7 @@ Boots the real app from a temp copy (tests/e2e_server.py), with and without a
 gateway password.
 """
 import json
+import re
 import time
 import unittest
 
@@ -45,8 +46,12 @@ class TestAdminWithPassword(unittest.TestCase):
         self.assertEqual(status, 200)
         html = body.decode("utf-8")
         self.assertIn("NetWorker Admin Console", html)
-        self.assertIn("/api/admin/state", html)
-        self.assertNotRegex(html, r"__[A-Z_]+__")
+        # admin.js is a linked file (review F10), served without a cookie.
+        scripts = re.findall(r'<script src="([^"]+)"></script>', html)
+        self.assertEqual(len(scripts), 2)
+        loaded = html + "".join(self.server.request("GET", src)[1].decode("utf-8") for src in scripts)
+        self.assertIn("/api/admin/state", loaded)
+        self.assertNotRegex(loaded, r"__[A-Z_]+__")
         self.assertIn("frame-ancestors 'none'", headers.get("Content-Security-Policy", ""))
 
     def test_state_without_a_cookie_asks_for_sign_in(self):

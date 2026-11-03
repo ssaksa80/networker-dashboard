@@ -6,6 +6,7 @@ creates its own data/ and .certs/ and never touches the project's state.
 """
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -138,6 +139,29 @@ class TestServerHttp(unittest.TestCase):
         self.assertTrue(cookie.startswith("nwdash_auth="), f"unexpected cookie: {set_cookie!r}")
         return cookie, token
 
+    def _linked_assets(self, page):
+        """Fetch, with no cookie, every file the page links and every file its
+        CSS links (review F10), and return their bodies joined."""
+        queue = list(dict.fromkeys(re.findall(rb'(?:href|src)="(/assets/[^"]+)"', page)))
+        self.assertTrue(queue, "the page links no assets")
+        seen, bodies = set(), []
+        while queue:
+            url = queue.pop(0).decode("ascii")
+            if url in seen:
+                continue
+            seen.add(url)
+            status, body, headers = self._raw_request("GET", url)
+            self.assertEqual(status, 200, url)
+            self.assertEqual(headers.get("Cache-Control"), "public, max-age=31536000, immutable", url)
+            self.assertIsNone(headers.get("Pragma"), url)
+            self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff", url)
+            expected = {"css": "text/css", "js": "text/javascript", "png": "image/png"}[url.rsplit(".", 1)[1]]
+            self.assertEqual(headers.get("Content-Type", "").split(";")[0], expected, url)
+            if url.endswith(".css"):
+                queue += re.findall(rb'url\("(/assets/[^"]+)"\)', body)
+            bodies.append(body)
+        return b"".join(bodies)
+
     def test_health_ok(self):
         status, body, _ = self._raw_request("GET", "/api/health")
         self.assertEqual(status, 200)
@@ -248,12 +272,55 @@ class TestServerHttp(unittest.TestCase):
         cookie, _ = self._login()
         status, body, _ = self._raw_request("GET", "/tv", cookie=cookie)
         self.assertEqual(status, 200)
-        self.assertIn(b"calc(100vw / 240)", body, "fluid scaling rule missing")
-        self.assertIn(b"jobs-min", body, "minimize wiring missing")
-        self.assertIn(b"data:image/", body, "embedded logo data URI missing")
-        self.assertIn(b"/api/current-dashboard", body, "bootstrap fetch missing")
-        self.assertIn(b"/api/stream", body, "SSE wiring missing")
-        self.assertNotIn(b"__NETWORKER_LOGO_SRC__", body)
+        loaded = body + self._linked_assets(body)
+        self.assertIn(b"calc(100vw / 240)", loaded, "fluid scaling rule missing")
+        self.assertIn(b"jobs-min", loaded, "minimize wiring missing")
+        self.assertIn(b"\x89PNG", loaded, "linked logo missing")
+        self.assertIn(b"/api/current-dashboard", loaded, "bootstrap fetch missing")
+        self.assertIn(b"/api/stream", loaded, "SSE wiring missing")
+        self.assertNotIn(b"__NETWORKER_LOGO_SRC__", loaded)
+
+    def test_dashboard_links_its_css_js_and_logo(self):
+        # Review F10: the page was 1.4 MB, the logo inlined five times.
+        cookie, _ = self._login()
+        status, body, headers = self._raw_request("GET", "/", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Cache-Control"), "no-store, max-age=0")
+        self.assertLess(len(body), 100_000)
+        self.assertNotIn(b"data:image/", body)
+        loaded = body + self._linked_assets(body)
+        self.assertIn(b"X-CSRF-Token", loaded)
+        self.assertIn(b"window.NWDesign = {", loaded)
+        self.assertIn(b"function renderDashboard(data)", loaded)
+        self.assertNotRegex(loaded, rb"__[A-Z_]+__")
+
+    def test_admin_console_loads_its_assets_before_sign_in(self):
+        # The console's own sign-in card needs its CSS and JS, so the asset
+        # routes are open; the page is the only thing that links them.
+        status, body, _ = self._raw_request("GET", "/admin")
+        self.assertEqual(status, 200)
+        self.assertNotIn(b"data:image/", body)
+        loaded = body + self._linked_assets(body)
+        self.assertIn(b'opts.headers["X-CSRF-Token"] = csrf', loaded)
+        self.assertNotRegex(loaded, rb"__[A-Z_]+__")
+
+    def test_only_the_linked_urls_are_served(self):
+        cookie, _ = self._login()
+        for path in ("/assets/app.css", "/assets/app.0000000000000000.css", "/assets/", "/assets/app.js/",
+                     "/assets/../nwdash/ui.py", "/assets/%2e%2e/nwdash/ui.py", "/nwdash/assets/app.css"):
+            with self.subTest(path=path):
+                status, _, _ = self._raw_request("GET", path)
+                self.assertEqual(status, 401)
+                status, _, _ = self._raw_request("GET", path, cookie=cookie)
+                self.assertEqual(status, 404)
+
+    def test_logo_route_serves_the_logo(self):
+        # It served the favicon wherever assets/networker-logo.png was absent,
+        # which is every install: the logo is embedded in nwdash/ui.py.
+        status, body, headers = self._raw_request("GET", "/networker-logo.png")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), "image/png")
+        self.assertTrue(body.startswith(b"\x89PNG"))
 
     def test_current_dashboard_with_cookie_returns_json(self):
         cookie, _ = self._login()
