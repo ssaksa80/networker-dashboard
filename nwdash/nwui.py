@@ -62,6 +62,7 @@ from .restapi import (
     nwui_api_base_url,
     oldest_job_start,
     origin_url,
+    project_client,
     read_limited,
     remove_rest_field_from_path,
     report_coverage,
@@ -481,6 +482,35 @@ def cached_nwui_job_history(
     return items, path, False, oldest_start
 
 
+# The REST API's client list, for NWUI mode's Clients figure (review C21). It
+# does not depend on the report range, so it is cached per server.
+_CLIENTS_CACHE: dict[tuple[Any, ...], tuple[float, list[Any], str]] = {}
+
+
+def cached_nwui_clients(config: ApiConfig, context: ssl.SSLContext) -> tuple[list[Any], str, bool]:
+    """Return (clients, path, from_cache): /global/clients from the REST API
+    behind NWUI, cached like the job history."""
+    key = (
+        str(config.backup_server_host or "").lower(),
+        int(config.backup_server_port or 0),
+        str(config.rest_api_host or "").lower(),
+        int(config.rest_api_port or 0),
+        str(config.username or ""),
+    )
+    now = time.time()
+    with _JOBS_HISTORY_LOCK:
+        entry = _CLIENTS_CACHE.get(key)
+        if entry and now - entry[0] < JOBS_HISTORY_TTL_SECONDS:
+            return entry[1], entry[2], True
+    items, path = nwui_rest_fallback_items(config, "clients", context)
+    with _JOBS_HISTORY_LOCK:
+        _CLIENTS_CACHE[key] = (now, items, path)
+        if len(_CLIENTS_CACHE) > JOBS_HISTORY_CACHE_MAX:
+            for old_key in sorted(_CLIENTS_CACHE, key=lambda k: _CLIENTS_CACHE[k][0])[:-JOBS_HISTORY_CACHE_MAX]:
+                _CLIENTS_CACHE.pop(old_key, None)
+    return items, path, False
+
+
 def cmd_flag_value(command: str, flag: str) -> str:
     if not command:
         return ""
@@ -556,6 +586,9 @@ def project_nwui_job(item: Any) -> dict[str, Any]:
         "_group": str(item.get("groupName") or group_from_cmd or ""),
         "_pool": pool_from_cmd,
         "_server": server_from_cmd,
+        # The client host of a jobs-database record; NWUI's own actions are
+        # per workflow and name none.
+        "_client_host": str(item.get("clientHostname") or ""),
         "_sessions": {
             "success": success,
             "failed": failed,
@@ -624,6 +657,7 @@ def rest_job_as_nwui_action(job: Any) -> dict[str, Any]:
         # The NetWorker job id, under a name the NWUI feed never uses: the
         # history merge keys on it (review C1).
         "restJobId": first_value(job, "id"),
+        "clientHostname": first_value(job, "clientHostname", "client", "hostname"),
         "startTime": first_value(job, "startTime", "started", "start"),
         "duration": first_value(job, "elapsedTime", "duration", "elapsed"),
         "status": status,
@@ -771,8 +805,8 @@ def nwui_rest_fallback_items(
     if not config.password:
         raise RestApiError(502, "Direct REST fallback needs the current login password; reconnect to refresh this source.")
     paths = dashboard_endpoints(config)
-    source_name = "jobs" if target == "actions" else "policies"
-    original_path = job_history_endpoint() if target == "actions" else paths["policies"]
+    source_name = {"actions": "jobs", "clients": "clients"}.get(target, "policies")
+    original_path = job_history_endpoint() if target == "actions" else paths[source_name]
     last_error: RestApiError | None = None
     attempts: list[str] = []
     for fallback_config in nwui_rest_fallback_configs(config):
@@ -799,7 +833,7 @@ def nwui_rest_fallback_items(
                         f"nwuiFallback:{source_name}:{endpoint_host}:{version}",
                         max_bytes=fetch_max_bytes,
                     )
-                    preferred_key = "jobs" if target == "actions" else "policies"
+                    preferred_key = source_name
                     items = collection_from(data, preferred_key)
                     if target == "actions":
                         if _cfg.APP_DEBUG:
@@ -837,7 +871,7 @@ def nwui_rest_fallback_items(
                 except RestApiError as exc:
                     invalid_field = invalid_rest_query_field(exc.message, exc.body)
                     if (
-                        target == "actions"
+                        target in ("actions", "clients")
                         and exc.status_code == 400
                         and invalid_field
                         and invalid_field not in removed_fields
@@ -957,12 +991,15 @@ def project_nwui_alert(item: Any) -> dict[str, str]:
 
 
 def build_nwui_clients(jobs: list[dict[str, Any]]) -> list[dict[str, str]]:
-    by_workflow: dict[str, dict[str, Any]] = {}
+    """Client rows from the jobs of the range, for when the REST API's client
+    list is out of reach: one per client host that ran a job. Not per
+    workflow: a workflow name is not a client (review C21)."""
+    by_host: dict[str, dict[str, Any]] = {}
     for job in jobs:
-        name = job.get("_workflow") or job.get("client") or ""
+        name = job.get("_client_host") or ""
         if not name:
             continue
-        row = by_workflow.setdefault(
+        row = by_host.setdefault(
             name,
             {
                 "hostname": name,
@@ -979,7 +1016,7 @@ def build_nwui_clients(jobs: list[dict[str, Any]]) -> list[dict[str, str]]:
         if job.get("_group"):
             row["protectionGroups"].add(job["_group"])
     output = []
-    for row in by_workflow.values():
+    for row in by_host.values():
         groups = ", ".join(sorted(row["protectionGroups"]))
         output.append(
             {
@@ -1329,6 +1366,30 @@ def build_dashboard_nwui(
             "severity": "warning",
         }
 
+    # The Clients figure counts NetWorker's clients (review C21). It asks the
+    # REST API that just answered for the history; without it, the client
+    # hosts that ran a job stand in.
+    rest_clients: list[Any] | None = None
+    if history_available:
+        try:
+            rest_clients, clients_path, clients_from_cache = cached_nwui_clients(config, context)
+            sources["clients"] = {
+                "ok": True,
+                "path": clients_path,
+                "count": len(rest_clients),
+                "cached": clients_from_cache,
+            }
+        except RestApiError as exc:
+            sources["clients"] = {
+                "ok": False,
+                "path": "/nwrestapi/global/clients",
+                "status": exc.status_code,
+                "error": safe_log_text(exc.message, 300),
+                "detail": "Clients are the client hosts that ran a job in this range.",
+                "severity": "info",
+                "diagnosticOnly": True,
+            }
+
     jobs = [job for job in (project_nwui_job(item) for item in raw_actions) if job]
     jobs = newest_first(jobs)
     clone_jobs = [job for job in jobs if is_clone_job(job)]
@@ -1367,7 +1428,10 @@ def build_dashboard_nwui(
                     f"workflowName={sample.get('workflowName')!r}"
                 )
     failed_jobs = [job for job in backup_jobs if str(job.get("status", "")).lower() in ("failed", "warning")]
-    clients = build_nwui_clients(backup_jobs)
+    if rest_clients is None:
+        clients = build_nwui_clients(backup_jobs)
+    else:
+        clients = [project_client(client) for client in rest_clients]
     alerts = [project_nwui_alert(item) for item in raw_alerts if isinstance(item, dict)]
     if not alerts:
         alerts = [
