@@ -88,6 +88,16 @@ behaviour was the previously documented one.
    Get-FileHash dist\nwdash-bundle-X.Y.Z-win-x64.zip -Algorithm SHA256
    ```
 
+   Put it in the notes on a line of its own, in exactly this form:
+
+   ```
+   **Bundle SHA-256:** `<hex>` (`nwdash-bundle-X.Y.Z-win-x64.zip`)
+   ```
+
+   `Setup-NWDash.cmd -Update` reads that line and uses a download only when it
+   matches both the line and GitHub's own digest for the asset. Without the
+   line, no host can update to the release with `-Update`.
+
 6. **Publish the release** with both assets — the bundle AND the bootstrap
    (operators need the pair side by side; `Setup-NWDash.cmd` finds the newest
    bundle next to itself):
@@ -101,8 +111,9 @@ behaviour was the previously documented one.
    ```
 
 7. **Verify the release page** — tag, both assets, SHA-256 in the notes.
-   `Setup-NWDash.cmd` on hosts with `gh`/`GITHUB_TOKEN` will now auto-detect
-   and download this version; air-gapped hosts take the zip by hand.
+   `Setup-NWDash.cmd` on hosts with `gh`/`GITHUB_TOKEN` will now report this
+   version, and download it with `-Update` (checked against that SHA-256);
+   air-gapped hosts take the zip by hand.
 
 ## Non-goals
 

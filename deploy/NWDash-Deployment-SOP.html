@@ -158,7 +158,8 @@ command line, probe URL, firewall), changes nothing, needs no admin:
 After UAC it asks for the dashboard password (hidden, typed twice). For an
 unattended install, run it from an elevated prompt with <code>-AuthPassword &lt;pw&gt;</code>.
 On an air-gapped host add <code>-NoUpdate</code> (skips the GitHub latest-release
-check; the check is fail-soft either way).</li>
+check; the check is fail-soft either way). A connected host downloads a newer
+release only with <code>-Update</code>, and uses it only if its SHA-256 matches the release.</li>
 <li>The installer migrates any <strong>legacy scheduled-task install</strong>
 automatically (task removed, service registered, <code>data\</code> untouched),
 opens the firewall (rule group <code>NetWorkerDashboard</code>), starts the
@@ -204,9 +205,10 @@ it is re-enabled on every exit path.</p>
 <h2>5. Upgrade / rollback SOP</h2>
 <h3>Upgrade (config + data preserved)</h3>
 <ol>
-<li>Place the new bundle next to <code>Setup-NWDash.cmd</code> (connected hosts: the
-bootstrap self-fetches the newest release when <code>gh</code>/<code>GITHUB_TOKEN</code>
-is available).</li>
+<li>Place the new bundle next to <code>Setup-NWDash.cmd</code> (connected hosts: add
+<code>-Update</code> in step 3 and the bootstrap fetches the newest release when
+<code>gh</code>/<code>GITHUB_TOKEN</code> is available, using it only if its SHA-256 matches the
+release).</li>
 <li>Verify the zip's SHA-256 against the release notes.</li>
 <li>Run <code>Setup-NWDash.cmd -Upgrade</code> from an elevated prompt.</li>
 <li>It backs up app+runtime to <code>backups\&lt;ver&gt;-&lt;timestamp&gt;\</code>, swaps,

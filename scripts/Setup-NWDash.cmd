@@ -20,14 +20,17 @@ REM    Setup-NWDash.cmd -Uninstall [-Purge]      remove service + files
 REM    Setup-NWDash.cmd -Port 9443 -BindHost 10.0.0.5   asks for the dashboard
 REM                                              password (-AuthPassword ... for
 REM                                              unattended installs)
+REM    Setup-NWDash.cmd -Update ...              download a newer published
+REM                                              bundle, verified by SHA-256
 REM    Setup-NWDash.cmd -NoUpdate ...            skip the latest-release check
-REM                                              (air-gapped hosts; handled by
-REM                                              this bootstrap, not forwarded)
+REM                                              (air-gapped hosts; both are
+REM                                              handled here, not forwarded)
 REM
 REM  Version detection: checks GitHub for the newest published release (via an
-REM  authenticated gh CLI, else a GITHUB_TOKEN env var) and downloads a newer
-REM  nwdash-bundle-*-win-x64.zip automatically. Offline or credential-less
-REM  hosts fall back to the local bundle - the check never blocks an install.
+REM  authenticated gh CLI, else a GITHUB_TOKEN env var) and says when it is newer
+REM  than the local bundle. Only -Update downloads it, and only a download whose
+REM  SHA-256 matches the release's published hash is used. Offline or
+REM  credential-less hosts use the local bundle - the check never blocks.
 REM
 REM  The installer registers a REAL Windows service 'NetWorkerDashboard'
 REM  (services.msc) via the bundled nssm.exe, running the bundled embedded
@@ -51,7 +54,7 @@ function Fail([string]$msg) {
     exit 1
 }
 
-# -NoUpdate is the bootstrap's own switch (skip the release check); everything
+# -NoUpdate and -Update are the bootstrap's own switches (step 1b); everything
 # else is forwarded to the bundle's deploy\install.ps1, except the passwords,
 # which do not go on its command line (step 3).
 # Which installer password an argument names, allowing PowerShell's unique
@@ -64,12 +67,14 @@ function Get-SecretParam([string]$arg) {
     return $null
 }
 $NoUpdate = $false
+$Update = $false
 $fwd = @()
 $secrets = [ordered]@{}
 $Rest = @($Rest)
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]
     if ($a -ieq "-NoUpdate") { $NoUpdate = $true; continue }
+    if ($a -ieq "-Update") { $Update = $true; continue }
     $secret = Get-SecretParam $a
     if ($secret) {
         # PowerShell hands -Name:value over as "-Name:" and "value".
@@ -106,58 +111,93 @@ function Select-NewestBundle {
 $bundle = Select-NewestBundle
 $localVer = if ($bundle) { Get-BundleVersion $bundle.Name } else { $null }
 
-# --- 1b. Latest published release check + self-update of the bundle ----------
-# Fail-soft by design: air-gapped hosts, missing credentials, or GitHub being
-# unreachable all fall back to whatever bundle sits next to this script.
+# --- 1b. Newer published release (review S10) --------------------------------
+# What this bootstrap unpacks runs elevated, so a download must be asked for and
+# verified. By default it only says that a newer release exists. -Update
+# downloads it to a temporary folder and moves it next to this script only when
+# its SHA-256 matches both GitHub's digest for the asset and the "Bundle
+# SHA-256" line of the release notes. Both come from the same release: this
+# catches a corrupted or altered download, not a forged release. Fail-soft:
+# offline or credential-less hosts carry on with the local bundle.
+function Get-FileSha256([string]$path) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($path)
+    try { return ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace "-", "").ToLowerInvariant() }
+    finally { $stream.Dispose(); $sha.Dispose() }
+}
+# Why a downloaded bundle cannot be used, or $null when it verifies.
+function Get-DownloadProblem([string]$path, $release, [string]$name) {
+    if (-not (Test-Path -LiteralPath $path)) { return "the download did not produce $name" }
+    $asset = @($release.Assets | Where-Object { $_.name -eq $name }) | Select-Object -First 1
+    $digest = $null
+    if ($asset -and "$($asset.digest)" -match '^sha256:([0-9a-fA-F]{64})$') { $digest = $Matches[1].ToLowerInvariant() }
+    $noted = $null
+    if ("$($release.Body)" -match ('Bundle SHA-256:\**\s*`?([0-9a-fA-F]{64})`?\s*\(`?' + [regex]::Escape($name))) { $noted = $Matches[1].ToLowerInvariant() }
+    if (-not $digest) { return "GitHub gives no SHA-256 digest for $name, so it cannot be verified" }
+    if (-not $noted) { return "the release notes give no Bundle SHA-256 for $name, so it cannot be verified" }
+    if ($digest -ne $noted) { return "GitHub's digest and the release notes disagree about $name" }
+    $actual = Get-FileSha256 $path
+    if ($actual -ne $digest) { return "$name does not match its published SHA-256 (got $actual, expected $digest)" }
+    return $null
+}
 if (-not $NoUpdate) {
     $repo = "ssaksa80/networker-dashboard"
-    $latestTag = $null
+    $release = $null
     $gh = Get-Command gh -ErrorAction SilentlyContinue
     if ($gh) {
         try {
-            $json = & gh release view --repo $repo --json tagName,assets 2>$null | ConvertFrom-Json
-            if ($json -and $json.tagName) { $latestTag = $json.tagName }
+            $json = & gh release view --repo $repo --json tagName,body,assets 2>$null | ConvertFrom-Json
+            if ($json -and $json.tagName) { $release = @{ Tag = $json.tagName; Body = $json.body; Assets = @($json.assets) } }
         } catch { }
     }
-    if (-not $latestTag -and $env:GITHUB_TOKEN) {
+    if (-not $release -and $env:GITHUB_TOKEN) {
         try {
             $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" `
                 -Headers @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = "application/vnd.github+json" } -TimeoutSec 15
-            if ($rel.tag_name) { $latestTag = $rel.tag_name }
+            if ($rel.tag_name) { $release = @{ Tag = $rel.tag_name; Body = $rel.body; Assets = @($rel.assets) } }
         } catch { }
     }
-    if ($latestTag -and $latestTag -match "^v?(\d+\.\d+\.\d+)$") {
+    if ($release -and $release.Tag -match "^v?(\d+\.\d+\.\d+)$") {
+        $latestTag = $release.Tag
         $latestVer = [version]$Matches[1]
         $localText = if ($localVer) { "v$localVer" } else { "none" }
         Write-Host "Version : latest published $latestTag, local bundle $localText"
         if (-not $localVer -or $latestVer -gt $localVer) {
-            Write-Host "Update  : downloading nwdash-bundle-$latestVer-win-x64.zip ..."
-            $ok = $false
-            if ($gh) {
-                try {
-                    & gh release download $latestTag --repo $repo --pattern "nwdash-bundle-*" --dir $ScriptDir --clobber 2>$null
-                    $ok = ($LASTEXITCODE -eq 0)
-                } catch { }
-            }
-            if (-not $ok -and $env:GITHUB_TOKEN) {
-                try {
-                    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/$latestTag" `
-                        -Headers @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = "application/vnd.github+json" } -TimeoutSec 15
-                    $asset = $rel.assets | Where-Object { $_.name -like "nwdash-bundle-*-win-x64.zip" } | Select-Object -First 1
-                    if ($asset) {
-                        Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$($asset.id)" `
-                            -Headers @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = "application/octet-stream" } `
-                            -OutFile (Join-Path $ScriptDir $asset.name) -TimeoutSec 300
-                        $ok = $true
-                    }
-                } catch { }
-            }
-            if ($ok) {
-                $bundle = Select-NewestBundle
-                $localVer = if ($bundle) { Get-BundleVersion $bundle.Name } else { $null }
-                if ($localVer -ne $latestVer) { Write-Host "Update  : download did not produce v$latestVer; continuing with local bundle" }
+            $name = "nwdash-bundle-$latestVer-win-x64.zip"
+            if (-not $Update) {
+                Write-Host "Update  : $latestTag is available. Re-run with -Update to download and verify it, or put $name next to this script."
             } else {
-                Write-Host "Update  : download unavailable (no gh auth / GITHUB_TOKEN); continuing with local bundle"
+                Write-Host "Update  : downloading $name ..."
+                $download = Join-Path $env:TEMP ("nwdash-update-" + [guid]::NewGuid().ToString("N"))
+                New-Item -ItemType Directory -Force -Path $download | Out-Null
+                try {
+                    $file = Join-Path $download $name
+                    if ($gh) {
+                        try { & gh release download $latestTag --repo $repo --pattern $name --dir $download --clobber 2>$null } catch { }
+                    }
+                    if (-not (Test-Path -LiteralPath $file) -and $env:GITHUB_TOKEN) {
+                        $asset = @($release.Assets | Where-Object { $_.name -eq $name }) | Select-Object -First 1
+                        if ($asset -and $asset.id) {
+                            try {
+                                Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$($asset.id)" `
+                                    -Headers @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = "application/octet-stream" } `
+                                    -OutFile $file -TimeoutSec 300
+                            } catch { }
+                        }
+                    }
+                    $problem = Get-DownloadProblem $file $release $name
+                    if ($problem) {
+                        Write-Host "Update  : NOT used - $problem. Continuing with the local bundle."
+                    } else {
+                        $verified = Get-FileSha256 $file
+                        Move-Item -Force -LiteralPath $file -Destination (Join-Path $ScriptDir $name)
+                        Write-Host "Update  : $name verified (SHA-256 $verified)"
+                        $bundle = Select-NewestBundle
+                        $localVer = if ($bundle) { Get-BundleVersion $bundle.Name } else { $null }
+                    }
+                } finally {
+                    Remove-Item -Recurse -Force $download -ErrorAction SilentlyContinue
+                }
             }
         }
     } else {
@@ -176,23 +216,39 @@ New-Item -ItemType Directory -Force -Path $staging | Out-Null
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [System.IO.Compression.ZipFile]::OpenRead($bundle.FullName)
+$outside = $null
 try {
     $entries = @($archive.Entries | Where-Object { $_.Name })  # skip directory entries
-    $total = $entries.Count
-    $done = 0
-    Show-Bar "Unpacking" 0
+    # Every entry must land inside the staging folder: a "..\" or absolute name
+    # would write wherever this run can (zip-slip, review S10). All of them are
+    # checked before any is extracted.
+    $root = [IO.Path]::GetFullPath($staging).TrimEnd("\") + "\"
+    $targets = @()
     foreach ($entry in $entries) {
-        $rel = $entry.FullName -replace "/", "\"
-        $dest = Join-Path $staging $rel
-        $destDir = Split-Path -Parent $dest
-        if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
-        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
-        $done++
-        Show-Bar "Unpacking" ([int](100 * $done / $total))
+        $dest = $null
+        try { $dest = [IO.Path]::GetFullPath([IO.Path]::Combine($root, ($entry.FullName -replace "/", "\"))) } catch { }
+        if (-not $dest -or -not $dest.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $outside = $entry.FullName; break }
+        $targets += , @($entry, $dest)
+    }
+    if (-not $outside) {
+        $total = $targets.Count
+        $done = 0
+        Show-Bar "Unpacking" 0
+        foreach ($target in $targets) {
+            $destDir = Split-Path -Parent $target[1]
+            if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($target[0], $target[1], $true)
+            $done++
+            Show-Bar "Unpacking" ([int](100 * $done / $total))
+        }
     }
 }
 finally {
     $archive.Dispose()
+}
+if ($outside) {
+    Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+    Fail "$($bundle.Name) has an entry that would unpack outside its folder ($outside), so nothing was unpacked. Download the bundle again from the GitHub release and check its SHA-256."
 }
 
 # --- 3. Hand off to the installer that ships inside the bundle ----------------

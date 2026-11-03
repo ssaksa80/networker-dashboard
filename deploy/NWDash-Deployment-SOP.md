@@ -76,7 +76,9 @@ One Python process, standard library only (plus the bundled optional
    unattended install, run it from an elevated prompt with `-AuthPassword <pw>`.
 
    On an air-gapped host add `-NoUpdate` (skips the GitHub latest-release
-   check; the check is fail-soft either way).
+   check; the check is fail-soft either way). A connected host downloads a
+   newer release only with `-Update`, and uses it only if its SHA-256 matches
+   the release.
 
 4. The installer migrates any **legacy scheduled-task install** automatically
    (task removed, service registered, `data\` untouched), opens the firewall
@@ -122,9 +124,10 @@ guarantees it is re-enabled on every exit path.
 
 **Upgrade** (config + data preserved; see `INSTALL.md` §7 for full detail):
 
-1. Place the new bundle next to `Setup-NWDash.cmd` (connected hosts:
-   the bootstrap self-fetches the newest release when `gh`/`GITHUB_TOKEN` is
-   available).
+1. Place the new bundle next to `Setup-NWDash.cmd` (connected hosts: add
+   `-Update` in step 3 and the bootstrap fetches the newest release when
+   `gh`/`GITHUB_TOKEN` is available, using it only if its SHA-256 matches the
+   release).
 2. Verify the zip's SHA-256 against the release notes.
 3. Run `Setup-NWDash.cmd -Upgrade` from an elevated prompt.
 4. It backs up app+runtime to `backups\<ver>-<timestamp>\`, swaps, restarts,

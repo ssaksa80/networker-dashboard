@@ -131,12 +131,19 @@ Double-click **`Setup-NWDash.cmd`** (or run it from an elevated prompt) and
 approve the UAC prompt. It:
 
 1. **Checks GitHub for a newer published release first** — via an
-   authenticated `gh` CLI or a `GITHUB_TOKEN` env var — and downloads a newer
-   bundle automatically if one exists. This check is **fail-soft**: offline or
-   credential-less hosts silently fall back to the local bundle; it never
-   blocks an install. Pass **`-NoUpdate`** to skip the check entirely
-   (air-gapped hosts — saves the timeout).
-2. Unpacks the newest local bundle to a temp staging folder.
+   authenticated `gh` CLI or a `GITHUB_TOKEN` env var — and **says** when one
+   exists. It downloads it only with **`-Update`**: into a temporary folder,
+   and it moves the zip next to the script only if its SHA-256 matches both
+   GitHub's digest for the asset and the `Bundle SHA-256` line of the release
+   notes. Otherwise it says why and uses the local bundle. Both hashes come
+   from the same GitHub release, so this catches a corrupted or altered
+   download, not a forged release. The check is **fail-soft**: offline or
+   credential-less hosts fall back to the local bundle; it never blocks an
+   install. Pass **`-NoUpdate`** to skip the check entirely (air-gapped hosts —
+   saves the timeout).
+2. Unpacks the newest local bundle to a temp staging folder. A zip with an
+   entry that would land outside that folder (`..\`, an absolute path) is
+   refused before anything is unpacked.
 3. Hands off to the installer **inside** the bundle (`deploy\install.ps1`),
    forwarding all other arguments unchanged.
 
@@ -158,6 +165,7 @@ Setup-NWDash.cmd -BindHost 192.0.2.10         pin ONE interface (co-tenancy)
 Setup-NWDash.cmd -AuthPassword <pw>           set the password unattended (else you are asked)
 Setup-NWDash.cmd -AllowUnauthenticated        run with NO password (isolated networks only)
 Setup-NWDash.cmd -AllowedHosts 198.51.100.0/24  NetWorker host allow-list
+Setup-NWDash.cmd -Update ...                  download a newer release (SHA-256 verified)
 Setup-NWDash.cmd -NoUpdate ...                skip the release check
 ```
 
@@ -358,8 +366,9 @@ Place the new bundle next to `Setup-NWDash.cmd` and run:
 Setup-NWDash.cmd -Upgrade
 ```
 
-(On a host with `gh` auth or `GITHUB_TOKEN`, plain `Setup-NWDash.cmd
--Upgrade` also self-fetches the newest published bundle first.)
+(On a host with `gh` auth or `GITHUB_TOKEN`, `Setup-NWDash.cmd -Update
+-Upgrade` fetches the newest published bundle first and verifies its SHA-256.
+Plain `-Upgrade` only says when a newer one exists.)
 
 What `-Upgrade` does, in order:
 
