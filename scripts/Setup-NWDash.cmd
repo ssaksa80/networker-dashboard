@@ -17,7 +17,9 @@ REM    Setup-NWDash.cmd -Check                   dry-run: print the plan only
 REM    Setup-NWDash.cmd -Upgrade                 upgrade (config + data kept)
 REM    Setup-NWDash.cmd -Rollback                restore the newest backup
 REM    Setup-NWDash.cmd -Uninstall [-Purge]      remove service + files
-REM    Setup-NWDash.cmd -Port 9443 -BindHost 10.0.0.5 -AuthPassword ...
+REM    Setup-NWDash.cmd -Port 9443 -BindHost 10.0.0.5   asks for the dashboard
+REM                                              password (-AuthPassword ... for
+REM                                              unattended installs)
 REM    Setup-NWDash.cmd -NoUpdate ...            skip the latest-release check
 REM                                              (air-gapped hosts; handled by
 REM                                              this bootstrap, not forwarded)
@@ -50,11 +52,32 @@ function Fail([string]$msg) {
 }
 
 # -NoUpdate is the bootstrap's own switch (skip the release check); everything
-# else is forwarded to the bundle's deploy\install.ps1 verbatim.
+# else is forwarded to the bundle's deploy\install.ps1, except the passwords,
+# which do not go on its command line (step 3).
+# Which installer password an argument names, allowing PowerShell's unique
+# prefixes (-AuthPass, -ServicePass) and the -Name:value form.
+function Get-SecretParam([string]$arg) {
+    if ($arg -notmatch "^-([A-Za-z]+)(:|$)") { return $null }
+    $n = $Matches[1]
+    if ($n.Length -ge 2 -and "AuthPassword".StartsWith($n, [StringComparison]::OrdinalIgnoreCase)) { return "AuthPassword" }
+    if ($n.Length -ge 8 -and "ServicePassword".StartsWith($n, [StringComparison]::OrdinalIgnoreCase)) { return "ServicePassword" }
+    return $null
+}
 $NoUpdate = $false
 $fwd = @()
-foreach ($a in @($Rest)) {
-    if ($a -ieq "-NoUpdate") { $NoUpdate = $true } else { $fwd += $a }
+$secrets = [ordered]@{}
+$Rest = @($Rest)
+for ($i = 0; $i -lt $Rest.Count; $i++) {
+    $a = $Rest[$i]
+    if ($a -ieq "-NoUpdate") { $NoUpdate = $true; continue }
+    $secret = Get-SecretParam $a
+    if ($secret) {
+        # PowerShell hands -Name:value over as "-Name:" and "value".
+        if ($a -match "^-[A-Za-z]+:(.+)$") { $secrets[$secret] = $Matches[1] }
+        elseif ($i + 1 -lt $Rest.Count) { $i++; $secrets[$secret] = $Rest[$i] }
+        continue
+    }
+    $fwd += $a
 }
 
 Write-Host "=== NetWorker Dashboard setup (bootstrap) ==="
@@ -178,8 +201,24 @@ if (-not (Test-Path $installer)) {
     Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
     Fail "$($bundle.Name) does not contain deploy\install.ps1 - it is an old-layout bundle. Download the current nwdash-bundle-<version>-win-x64.zip from the latest GitHub release."
 }
-Write-Host "Handoff : $installer $($fwd -join ' ')"
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer @fwd
-$code = $LASTEXITCODE
+# The passwords go in the environment, which the installer reads and clears,
+# instead of on its command line, where process-creation auditing records them
+# (review S9). An older bundle's installer only takes them as arguments.
+$setupEnv = @{ AuthPassword = "NWDASH_SETUP_AUTH_PASSWORD"; ServicePassword = "NWDASH_SETUP_SERVICE_PASSWORD" }
+$viaEnv = [IO.File]::ReadAllText($installer) -match "NWDASH_SETUP_AUTH_PASSWORD"
+$installerArgs = @($fwd)
+$shown = @($fwd)
+foreach ($name in @($secrets.Keys)) {
+    $shown += "-$name", "********"
+    if ($viaEnv) { [Environment]::SetEnvironmentVariable($setupEnv[$name], $secrets[$name], "Process") }
+    else { $installerArgs += "-$name", $secrets[$name] }
+}
+Write-Host "Handoff : $installer $($shown -join ' ')"
+try {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer @installerArgs
+    $code = $LASTEXITCODE
+} finally {
+    foreach ($var in $setupEnv.Values) { [Environment]::SetEnvironmentVariable($var, $null, "Process") }
+}
 Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
 exit $code

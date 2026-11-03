@@ -135,6 +135,95 @@ class TestDashboardPasswordGate(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class TestPasswordsStayOffTheRecord(unittest.TestCase):
+    """The dashboard password reaches neither a command line the installer
+    starts nor the service's registry environment (review S9).
+
+    The defect: Setup-NWDash.cmd echoed it and passed it on, the UAC relaunch
+    put it on the elevated command line, and nssm set it into the service env
+    (readable by local users) until a health gate passed, so a failed install
+    left it there, re-applied by the app at every start.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.install = (DEPLOY / "install.ps1").read_text(encoding="utf-8")
+        cls.common = (DEPLOY / "lib" / "common.ps1").read_text(encoding="utf-8")
+        cls.fresh = cls.install[cls.install.index("# ---- fresh install"):]
+
+    def test_the_service_env_never_gets_the_password(self):
+        self.assertNotIn("DASHBOARD_AUTH_PASSWORD=$AuthPassword", self.install)
+        self.assertNotIn("DASHBOARD_AUTH_PASSWORD=", self.common)
+
+    def test_the_hash_is_stored_under_the_lock_before_the_first_start(self):
+        stored = self.fresh.index("Set-NwdashAuthPassword -InstallDir $InstallDir")
+        self.assertLess(self.fresh.index("Set-NwdashInstallAcl"), stored)
+        self.assertLess(stored, self.fresh.index("Start-NwdashServiceVerified"))
+
+    def test_passwords_are_asked_for_before_anything_changes(self):
+        self.assertLess(self.fresh.index("Read-NwdashSecret -Label 'Dashboard password' -Twice"), self.fresh.index("[1/6]"))
+
+    def test_the_relaunch_carries_no_password(self):
+        elevation = self.install[self.install.index("# ---- elevation"):self.install.index("# ---- uninstall")]
+        self.assertIn("Get-NwdashRelaunchArgs -Bound $PSBoundParameters -Given $givenSecrets", elevation)
+        self.assertNotIn("$PSBoundParameters.Keys", self.install)
+
+    def test_the_bootstrap_and_installer_agree_on_the_hand_over(self):
+        bootstrap = SETUP_CMD.read_text(encoding="utf-8")
+        names = dict(re.findall(r"(AuthPassword|ServicePassword) = '(NWDASH_SETUP_[A-Z_]+)'", self.common))
+        self.assertEqual(names, {"AuthPassword": "NWDASH_SETUP_AUTH_PASSWORD",
+                                 "ServicePassword": "NWDASH_SETUP_SERVICE_PASSWORD"})
+        for name, var in names.items():
+            self.assertIn(f'{name} = "{var}"', bootstrap)
+        # The bootstrap recognises a new installer by this name in install.ps1.
+        self.assertIn('-match "NWDASH_SETUP_AUTH_PASSWORD"', bootstrap)
+        self.assertIn("NWDASH_SETUP_AUTH_PASSWORD", self.install)
+
+    def test_an_upgrade_drops_a_plaintext_password_left_behind(self):
+        upgrade = self.install[self.install.index("# ---- upgrade / rollback"):self.install.index("# ---- fresh install")]
+        self.assertLess(upgrade.index("Where-Object { $_ -notlike 'DASHBOARD_AUTH_PASSWORD=*' }"),
+                        upgrade.index("$upgradePlan = Get-NwdashAuthPlan"))
+
+    def test_the_hash_uses_the_apps_iterations(self):
+        from nwdash.config import PBKDF2_ITERATIONS
+
+        match = re.search(r"\$script:NwdashPbkdf2Iterations = (\d+)", self.common)
+        self.assertEqual(int(match.group(1)), PBKDF2_ITERATIONS)
+
+    @unittest.skipUnless(shutil.which("powershell"), "Windows PowerShell not available")
+    def test_secret_handoff_powershell_tests_pass(self):
+        env = {name: value for name, value in os.environ.items() if name.upper() != "PSMODULEPATH"}
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(DEPLOY / "test" / "secret-handoff.test.ps1")],
+            capture_output=True, text=True, timeout=120, check=False, env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(shutil.which("powershell"), "Windows PowerShell not available")
+    def test_a_password_the_installer_stores_signs_in(self):
+        from nwdash import auth
+
+        install_dir = Path(tempfile.mkdtemp(prefix="nwdash-authjson-"))
+        self.addCleanup(shutil.rmtree, install_dir, True)
+        (install_dir / "data").mkdir()
+        password = "päss wörd 'quoted' \"too\""
+        env = {name: value for name, value in os.environ.items() if name.upper() != "PSMODULEPATH"}
+        env["NWDASH_TEST_PW"] = password
+        script = (f". '{DEPLOY / 'lib' / 'common.ps1'}'; "
+                  f"Set-NwdashAuthPassword -InstallDir '{install_dir}' -Python '{sys.executable}' -Password $env:NWDASH_TEST_PW")
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True, text=True, timeout=120, check=False, env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        stored = install_dir / "data" / "auth.json"
+        with mock.patch.object(auth, "AUTH_CONFIG_FILE", stored):
+            self.assertTrue(auth.verify_auth_password(password))
+            self.assertFalse(auth.verify_auth_password(password[:-1]))
+        self.assertEqual(sorted(p.name for p in stored.parent.iterdir()), ["auth.json"])
+
+
 class TestFolderLock(unittest.TestCase):
     """install.ps1 locks the install folder on every path (review S5).
 
@@ -182,7 +271,8 @@ class TestFolderLock(unittest.TestCase):
         self.assertIn("Reset-NwdashAppAcl -InstallDir $InstallDir", restore)
 
     def test_new_scripts_stay_ascii(self):
-        for path in (DEPLOY / "install.ps1", DEPLOY / "lib" / "common.ps1", DEPLOY / "test" / "folder-acl.test.ps1"):
+        for path in (DEPLOY / "install.ps1", DEPLOY / "lib" / "common.ps1", DEPLOY / "test" / "folder-acl.test.ps1",
+                     DEPLOY / "test" / "secret-handoff.test.ps1", SETUP_CMD):
             self.assertTrue(path.read_bytes().isascii(), f"{path.name} must stay ASCII for Windows PowerShell 5.1")
 
     def test_the_lock_does_not_use_set_acl(self):

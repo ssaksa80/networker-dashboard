@@ -155,7 +155,7 @@ Setup-NWDash.cmd -Uninstall [-Purge]          remove service [+ data]
 Setup-NWDash.cmd -InstallDir D:\apps\nwdash   custom install directory
 Setup-NWDash.cmd -Port 9443                   custom HTTPS port
 Setup-NWDash.cmd -BindHost 192.0.2.10         pin ONE interface (co-tenancy)
-Setup-NWDash.cmd -AuthPassword <pw>           set the dashboard password
+Setup-NWDash.cmd -AuthPassword <pw>           set the password unattended (else you are asked)
 Setup-NWDash.cmd -AllowUnauthenticated        run with NO password (isolated networks only)
 Setup-NWDash.cmd -AllowedHosts 198.51.100.0/24  NetWorker host allow-list
 Setup-NWDash.cmd -NoUpdate ...                skip the release check
@@ -165,6 +165,10 @@ Unattended installs can call the in-bundle installer directly:
 `powershell -ExecutionPolicy Bypass -File <unpacked>\deploy\install.ps1 <args>`
 (same parameters; it self-elevates and **forwards its full argument list**
 through the UAC relaunch, so an elevated child never silently runs defaults).
+The exception is the passwords: `-AuthPassword` and `-ServicePassword` are not
+put on the elevated command line, so the elevated window asks for them again.
+Run unattended installs from an elevated prompt (or as SYSTEM), where there is
+no relaunch.
 
 ### Install layout
 
@@ -240,18 +244,27 @@ install on a new host — it tells you what the real run would do.
 
 ### First install — set the dashboard password
 
+Run `Setup-NWDash.cmd` without a password. After UAC, the installer asks for
+one (hidden, typed twice) before it changes anything. For an unattended install
+from an elevated prompt:
+
 ```
 Setup-NWDash.cmd -AuthPassword <choose-a-password>
 ```
 
-The app reads `DASHBOARD_AUTH_PASSWORD` once at first boot, persists a
-**salted PBKDF2 hash** in `data\auth.json`, and the installer then **removes
-the plaintext from the service environment** — it never stays in the
-registry.
+The installer stores a **salted PBKDF2 hash** in `data\auth.json` itself,
+before the service first starts. The plaintext never goes into the service
+environment (the registry) or onto a command line the installer starts: the
+bootstrap hands it to the installer in its environment, and a UAC relaunch
+asks for it again rather than passing it on. A password typed on the
+`Setup-NWDash.cmd` command line is still in that command's own command line
+and history, which is why the prompt is the recommended way. Passwords with
+spaces or double quotes need the prompt, because `cmd.exe` splits them.
 
 A password is **required** unless the dashboard is bound to loopback
-(`-BindHost 127.0.0.1`): with no `-AuthPassword` and no stored
-`data\auth.json`, the installer refuses before it changes anything, and the
+(`-BindHost 127.0.0.1`): with no password typed or given and no stored
+`data\auth.json`, an unattended (non-interactive) install refuses before it
+changes anything, and the
 app itself refuses to start on a network bind without one. `-Upgrade` checks
 the installed service the same way before stopping it. To run without a
 password on an isolated network anyway, pass `-AllowUnauthenticated`: the
@@ -465,8 +478,10 @@ The dashboard has a purpose-built wall-display mode at **`/tv`**:
   copies of `data\` somewhere equally restricted, because a copy elsewhere on
   this host is not protected by that lock. The API always masks stored passwords
   — they are never returned to the browser.
-- **The install password never persists in plaintext**: `-AuthPassword` is
-  removed from the service environment right after the first healthy boot.
+- **The install password never persists in plaintext**: the installer stores
+  only its salted hash, and the plaintext never enters the service
+  environment. `-Upgrade` removes a plaintext `DASHBOARD_AUTH_PASSWORD` that
+  an earlier version left there after a failed install.
 - **Outbound TLS verification is fail-closed**: on by default per connection
   profile; restored sessions missing the flag default to verify.
 - **Allow-list**: `-AllowedHosts` (or `DASHBOARD_ALLOWED_HOSTS`) restricts

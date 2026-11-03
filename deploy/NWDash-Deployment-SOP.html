@@ -137,7 +137,7 @@ the operations view.</div>
 <tr><td>Windows Server (2019/2022)</td><td>Target host. Nothing needs preinstalling &mdash; Python and nssm ship in the bundle</td></tr>
 <tr><td>The two release assets</td><td><code>Setup-NWDash.cmd</code> + <code>nwdash-bundle-&lt;ver&gt;-win-x64.zip</code>, side by side; SHA-256 in the release notes</td></tr>
 <tr><td>NetWorker reachability</td><td>The host must reach the NetWorker server's REST API (and/or NWUI on 9090 for older servers)</td></tr>
-<tr><td>Dashboard password</td><td>Chosen up front; passed once as <code>-AuthPassword</code> (stored as a salted PBKDF2 hash, plaintext then removed from the service env)</td></tr>
+<tr><td>Dashboard password</td><td>Chosen up front; typed when the installer asks after UAC, or <code>-AuthPassword</code> for an unattended install from an elevated prompt (stored only as a salted PBKDF2 hash, never in the service env)</td></tr>
 <tr><td>Service account</td><td>Optional (<code>-ServiceAccount CORP\svc-nwdash</code>); default LocalSystem. Needed only if WMI health or SMTP require a domain identity</td></tr>
 <tr><td>TLS certificate</td><td>Optional PEM cert+key for the dashboard's own HTTPS; default is a self-signed cert generated on first boot</td></tr>
 <tr><td>Free HTTPS port</td><td>Default <strong>8443</strong>; co-tenant hosts additionally need a dedicated IP for <code>-BindHost</code> (&sect;3)</td></tr>
@@ -154,7 +154,9 @@ the operations view.</div>
 command line, probe URL, firewall), changes nothing, needs no admin:
 <pre><code>Setup-NWDash.cmd -Check</code></pre></li>
 <li>Install (elevated; UAC is requested automatically):
-<pre><code>Setup-NWDash.cmd -AuthPassword &lt;pw&gt; [-Port 8443] [-BindHost &lt;ip&gt;] [-AllowedHosts &lt;cidrs&gt;]</code></pre>
+<pre><code>Setup-NWDash.cmd [-Port 8443] [-BindHost &lt;ip&gt;] [-AllowedHosts &lt;cidrs&gt;]</code></pre>
+After UAC it asks for the dashboard password (hidden, typed twice). For an
+unattended install, run it from an elevated prompt with <code>-AuthPassword &lt;pw&gt;</code>.
 On an air-gapped host add <code>-NoUpdate</code> (skips the GitHub latest-release
 check; the check is fail-soft either way).</li>
 <li>The installer migrates any <strong>legacy scheduled-task install</strong>

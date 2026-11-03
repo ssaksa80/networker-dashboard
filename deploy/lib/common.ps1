@@ -658,13 +658,115 @@ $script:NwdashAllowUnauthEnv = 'DASHBOARD_ALLOW_UNAUTHENTICATED=1'
 # (explicitly allowed) or 'refused'. Pure + testable. Empty $BindHost = all
 # interfaces.
 function Get-NwdashAuthPlan {
-  param([bool]$PasswordGiven, [bool]$PasswordStored, [string]$BindHost = '', [bool]$AllowUnauthenticated, [bool]$PasswordUnknown = $false)
+  param([bool]$PasswordGiven, [bool]$PasswordStored, [string]$BindHost = '', [bool]$AllowUnauthenticated, [bool]$PasswordUnknown = $false,
+        [bool]$CanPrompt = $false)
   if ($PasswordGiven) { return 'password' }
   if ($PasswordStored) { return 'stored' }
   if ($PasswordUnknown) { return 'unknown' }
   if ($BindHost -in @('127.0.0.1', 'localhost', '::1')) { return 'loopback' }
   if ($AllowUnauthenticated) { return 'unauthenticated' }
+  if ($CanPrompt) { return 'prompt' }
   return 'refused'
+}
+
+# ---- passwords (review S9) ----
+# The dashboard and service-account passwords never go on a command line the
+# installer starts, where process-creation auditing records them, nor into the
+# service's registry environment, which local users can read. Setup-NWDash.cmd
+# hands them over in the environment; a UAC relaunch cannot inherit that, so
+# the elevated window asks for them instead.
+$script:NwdashSecretParams = @('AuthPassword', 'ServicePassword')
+$script:NwdashSetupEnv = @{ AuthPassword = 'NWDASH_SETUP_AUTH_PASSWORD'; ServicePassword = 'NWDASH_SETUP_SERVICE_PASSWORD' }
+# nwdash.config.PBKDF2_ITERATIONS (tests/test_deploy.py pins the two together).
+$script:NwdashPbkdf2Iterations = 200000
+
+# Can this run (or the elevated window it opens) ask the operator? Not under
+# -NonInteractive, nor in a session with no desktop (a service, a scheduler).
+function Test-NwdashCanPrompt {
+  if (-not [Environment]::UserInteractive) { return $false }
+  foreach ($a in [Environment]::GetCommandLineArgs()) { if ($a -match '^[-/]noni') { return $false } }
+  return $true
+}
+
+# The arguments for the elevated relaunch: the same plan, with each password
+# that was given replaced by a switch that asks for it again after UAC.
+function Get-NwdashRelaunchArgs {
+  param([System.Collections.IDictionary]$Bound, [string[]]$Given = @())
+  $fwd = @()
+  foreach ($k in $Bound.Keys) {
+    if ($k -in $script:NwdashSecretParams) { continue }
+    $v = $Bound[$k]
+    if ($v -is [switch] -or $v -is [bool]) { if ($v) { $fwd += "-$k" } }
+    else { $fwd += "-$k"; $fwd += "`"$v`"" }
+  }
+  foreach ($name in $script:NwdashSecretParams) {
+    if ($name -in $Given -and "-Prompt$name" -notin $fwd) { $fwd += "-Prompt$name" }
+  }
+  return ,($fwd + '-Elevated')
+}
+
+function ConvertFrom-NwdashSecureString {
+  param([Security.SecureString]$Secure)
+  if (-not $Secure -or $Secure.Length -eq 0) { return '' }
+  $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+  try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
+  finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+}
+
+# Ask without echoing; -Twice makes the operator confirm a new password.
+function Read-NwdashSecret {
+  param([string]$Label, [switch]$Twice, [int]$Attempts = 3)
+  for ($i = 0; $i -lt $Attempts; $i++) {
+    $first = ConvertFrom-NwdashSecureString (Read-Host -Prompt $Label -AsSecureString)
+    if (-not $first) { Write-NwdashWarn 'nothing was typed'; continue }
+    if (-not $Twice) { return $first }
+    $again = ConvertFrom-NwdashSecureString (Read-Host -Prompt "$Label (again)" -AsSecureString)
+    if ($first -ceq $again) { return $first }
+    Write-NwdashWarn 'the two entries differ'
+  }
+  Stop-Nwdash "no $($Label.ToLower()) was entered. Nothing was changed."
+}
+
+# Store the dashboard password as the app does (nwdash.auth.set_auth_password:
+# salted PBKDF2-SHA256 in data\auth.json), with the bundled Python, which reads
+# it on stdin. The code is a file: Windows PowerShell 5.1 drops the double
+# quotes inside a native command's argument.
+function Set-NwdashAuthPassword {
+  param([string]$InstallDir, [string]$Python, [string]$Password)
+  $work = Join-Path $env:TEMP ('nwdash-auth-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Force -Path $work | Out-Null
+  try {
+    $code = Join-Path $work 'set_password.py'
+    @'
+import hashlib, json, os, sys
+target, iterations = sys.argv[1], int(sys.argv[2])
+data = sys.stdin.buffer.read()
+if data.startswith(b'\xef\xbb\xbf'):
+    data = data[3:]
+if data.endswith(b'\r\n'):
+    data = data[:-2]
+elif data.endswith(b'\n'):
+    data = data[:-1]
+data.decode('utf-8')
+if not data:
+    sys.exit('no password on stdin')
+salt = os.urandom(16)
+record = {'salt': salt.hex(), 'hash': hashlib.pbkdf2_hmac('sha256', data, salt, iterations).hex(), 'iterations': iterations}
+with open(target + '.tmp', 'w', encoding='utf-8') as handle:
+    json.dump(record, handle)
+os.replace(target + '.tmp', target)
+print('auth-ok')
+'@ | Set-Content -Path $code -Encoding ascii
+    # Windows PowerShell 5.1 pipes ASCII, turning every other character into
+    # '?', and only reads the GLOBAL $OutputEncoding: a local one is ignored.
+    $savedEncoding = $global:OutputEncoding
+    $global:OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    try { $out = $Password | & $Python -I -B $code (Join-Path $InstallDir 'data\auth.json') $script:NwdashPbkdf2Iterations }
+    finally { $global:OutputEncoding = $savedEncoding }
+    if ($LASTEXITCODE -ne 0 -or "$out" -notmatch 'auth-ok') { throw "could not store the dashboard password (exit $LASTEXITCODE)" }
+  } finally {
+    Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+  }
 }
 
 # ---- folder permissions ----
