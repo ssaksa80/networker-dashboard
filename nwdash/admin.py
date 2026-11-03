@@ -61,6 +61,7 @@ from .config import (
     SESSION_KEY_FILE,
     SETUP_CODE_FILE,
 )
+from .fileio import atomic_write_text, replace_with_retry
 from .models import (
     SHARE_TOKEN_LOCK,
     SHARE_TOKEN_TTL_SECONDS,
@@ -275,7 +276,7 @@ def audit(action: str, *, ip: str = "", sid: str = "", item: Any = "", field: An
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             if AUDIT_FILE.exists() and AUDIT_FILE.stat().st_size >= AUDIT_MAX_BYTES:
-                AUDIT_FILE.replace(AUDIT_FILE.with_name(AUDIT_FILE.name + ".1"))
+                replace_with_retry(AUDIT_FILE, AUDIT_FILE.with_name(AUDIT_FILE.name + ".1"))
             with AUDIT_FILE.open("a", encoding="utf-8") as handle:
                 handle.write(line)
         except OSError as exc:
@@ -820,7 +821,7 @@ def _swap_in(moves: dict[Path, Path]) -> None:
         for live, copy in kept.items():
             shutil.copyfile(live, copy)
         for staged, live in moves.items():
-            os.replace(staged, live)
+            replace_with_retry(staged, live)
             swapped.append(live)
         for live, copy in kept.items():
             shutil.copyfile(copy, _previous(live))
@@ -1023,9 +1024,7 @@ def save_allowlist(raw: Any, sid: str, client_ip: str) -> tuple[int, dict[str, A
     before = allowlist_entries()
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = CONSOLE_ALLOWLIST_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"entries": entries}), encoding="utf-8")
-        tmp.replace(CONSOLE_ALLOWLIST_FILE)
+        atomic_write_text(CONSOLE_ALLOWLIST_FILE, json.dumps({"entries": entries}))
     except OSError as exc:
         return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"The allow-list could not be saved: {exc}"}
     configure_allowed_hosts(",".join(entries))

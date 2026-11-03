@@ -18,11 +18,11 @@ from .config import (
     AUTH_SESSIONS_FILE,
     AUTH_TTL_SECONDS,
     DATA_DIR,
-    LOG,
     LOGIN_MAX_ATTEMPTS,
     LOGIN_WINDOW_SECONDS,
     PBKDF2_ITERATIONS,
 )
+from .fileio import atomic_write_text
 from .secrets import AUTH_SECRET_KEY
 
 
@@ -38,9 +38,7 @@ def set_auth_password(password: str) -> None:
         "iterations": PBKDF2_ITERATIONS,
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = AUTH_CONFIG_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(record), encoding="utf-8")
-    tmp.replace(AUTH_CONFIG_FILE)
+    atomic_write_text(AUTH_CONFIG_FILE, json.dumps(record))
     try:
         AUTH_CONFIG_FILE.chmod(0o600)
     except OSError:
@@ -120,14 +118,11 @@ class _LoginSessions:
 
     def _save(self, table: dict[str, dict[str, Any]]) -> None:
         try:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = AUTH_SESSIONS_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(table), encoding="utf-8")
-            tmp.replace(AUTH_SESSIONS_FILE)
-        except OSError as exc:
-            # The in-memory table still holds until restart; after one, a logout
-            # that was not saved would be undone.
-            LOG.warning(f"could not write {AUTH_SESSIONS_FILE.name}: {exc}", extra={"event": "auth"})
+            atomic_write_text(AUTH_SESSIONS_FILE, json.dumps(table))
+        except OSError:
+            # Logged by atomic_write_text. The in-memory table still holds until
+            # restart; after one, a logout that was not saved would be undone.
+            pass
 
     def add(self, sid: str, exp: int, ip: str = "", agent: str = "") -> None:
         with self._lock:

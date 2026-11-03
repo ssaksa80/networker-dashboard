@@ -266,7 +266,7 @@ class TestSaveProfilesFailsLoud(ProfileFixtureMixin, unittest.TestCase):
         target.mkdir()
         self._patch(profiles_mod, "PROFILES_FILE", target)
         self._patch(profiles_mod, "DATA_DIR", Path(tmp.name))
-        with self.assertRaises(OSError):
+        with mock.patch("nwdash.fileio.REPLACE_RETRY_DELAYS", ()), self.assertRaises(OSError):
             profiles_mod.save_profiles({"a": {}})
 
 
