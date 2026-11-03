@@ -48,8 +48,10 @@ class TestSourceGuards(unittest.TestCase):
         sys.path.insert(0, str(PROJECT_DIR))
 
     def test_rendered_dashboard_ships_profile_toggle_markup(self):
+        from served import with_assets
+
         from nwdash.ui import dashboard_html
-        html = dashboard_html()
+        html = with_assets(dashboard_html())
         for token in (
             'id="emailProfileCards"',
             "email-profile-cards",

@@ -15,6 +15,7 @@ import unittest
 from http import HTTPStatus
 
 from e2e_server import AppServer
+from served import with_assets
 
 from nwdash.server import LOGIN_REQUIRED_HEADER, upstream_auth_failure
 from nwdash.ui import admin_page_html, dashboard_html
@@ -59,10 +60,10 @@ class TestUpstreamAuthFailure(unittest.TestCase):
 
 class TestDashboardReadsTheMarker(unittest.TestCase):
     def test_fetch_wrapper_checks_the_header_the_server_sends(self):
-        self.assertIn(f'resp.headers.get("{LOGIN_REQUIRED_HEADER}") === "required"', dashboard_html())
+        self.assertIn(f'resp.headers.get("{LOGIN_REQUIRED_HEADER}") === "required"', with_assets(dashboard_html()))
 
     def test_admin_console_checks_the_header_the_server_sends(self):
-        self.assertIn(f'r.headers.get("{LOGIN_REQUIRED_HEADER}") !== "required"', admin_page_html())
+        self.assertIn(f'r.headers.get("{LOGIN_REQUIRED_HEADER}") !== "required"', with_assets(admin_page_html()))
 
 
 class TestWhoAnswers401(unittest.TestCase):

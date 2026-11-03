@@ -109,9 +109,12 @@ from .snapshots import (
     snapshots_to_csv,
 )
 from .ui import (
+    ASSET_CACHE_CONTROL,
     FAVICON_SVG,
-    NETWORKER_LOGO_PATH,
+    NETWORKER_LOGO,
+    NETWORKER_LOGO_TYPE,
     admin_page_html,
+    asset_response,
     dashboard_html,
     login_page_html,
     read_only_view_html,
@@ -195,13 +198,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body: bytes,
         content_type: str,
         extra_headers: dict[str, str] | None = None,
+        cache_control: str = "",
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store, max-age=0")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Expires", "0")
+        if cache_control:
+            # A linked asset (ui.asset_response): its URL changes with its bytes.
+            self.send_header("Cache-Control", cache_control)
+        else:
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
         self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
@@ -597,11 +605,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if path == "/favicon.ico":
                 self._send_bytes(HTTPStatus.OK, FAVICON_SVG, "image/svg+xml")
                 return
+            # The CSS, JS and logo the pages link (review F10). Open, as the
+            # admin console links them before it signs in; they are the shipped
+            # code, the same for everyone. Exact URLs from a fixed table.
+            asset = asset_response(path)
+            if asset is not None:
+                body, content_type = asset
+                self._send_bytes(HTTPStatus.OK, body, content_type, cache_control=ASSET_CACHE_CONTROL)
+                return
             if path == "/networker-logo.png":
-                if NETWORKER_LOGO_PATH.exists():
-                    self._send_bytes(HTTPStatus.OK, NETWORKER_LOGO_PATH.read_bytes(), "image/png")
-                else:
-                    self._send_bytes(HTTPStatus.OK, FAVICON_SVG, "image/svg+xml")
+                self._send_bytes(HTTPStatus.OK, NETWORKER_LOGO, NETWORKER_LOGO_TYPE)
                 return
             if path == "/api/health":
                 self._send_json(

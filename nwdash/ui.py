@@ -5,6 +5,7 @@ Split from networker_dashboard.py (v2.5.0); behavior unchanged.
 from __future__ import annotations
 
 import base64
+import hashlib
 from pathlib import Path
 
 from .config import THEME_PALETTES
@@ -30,18 +31,69 @@ def _load_asset(name: str) -> str:
     return (_ASSETS / name).read_text(encoding="utf-8")
 
 
-_APP_CSS = _load_asset("app.css")
-_APP_JS = _load_asset("app.js")
+# ── Linked assets (review F10) ──────────────────────────────────────────────
+# The pages link their CSS, JS and logo instead of inlining them, so a browser
+# fetches each once and caches it. Each URL names a hash of the bytes it serves:
+# an upgrade, or any edited asset, is a new URL, so a cached copy is never
+# stale. The routes are this table of exact URLs, filled here at import;
+# nothing maps a requested path onto a file.
+ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_ASSET_TYPES = {
+    "css": "text/css; charset=utf-8",
+    "js": "text/javascript; charset=utf-8",
+    "png": "image/png",
+    "svg": "image/svg+xml",
+}
+_ASSET_ROUTES: dict[str, tuple[bytes, str]] = {}
+
+
+def _asset_url(name: str, body: str | bytes) -> str:
+    """Serve body at a URL naming its content hash, and return that URL."""
+    data = body.encode("utf-8") if isinstance(body, str) else body
+    stem, ext = name.rsplit(".", 1)
+    url = f"/assets/{stem}.{hashlib.sha256(data).hexdigest()[:16]}.{ext}"
+    _ASSET_ROUTES[url] = (data, _ASSET_TYPES[ext])
+    return url
+
+
+def asset_response(path: str) -> tuple[bytes, str] | None:
+    """The body and content type of a linked asset's URL; None for any other path."""
+    return _ASSET_ROUTES.get(path)
+
+
+def _load_logo() -> tuple[bytes, str]:
+    """The logo and its extension: assets/networker-logo.png beside the app when
+    there is one, else the embedded PNG, else the favicon. Read at import, so
+    an unreadable file must not raise."""
+    try:
+        return NETWORKER_LOGO_PATH.read_bytes(), "png"
+    except OSError:
+        pass
+    encoded = NETWORKER_LOGO_PNG_BASE64.strip()
+    if encoded:
+        return base64.b64decode(encoded), "png"
+    return FAVICON_SVG, "svg"
+
+
+NETWORKER_LOGO, _LOGO_EXT = _load_logo()
+NETWORKER_LOGO_TYPE = _ASSET_TYPES[_LOGO_EXT]
+_LOGO_URL = _asset_url(f"networker-logo.{_LOGO_EXT}", NETWORKER_LOGO)
+# Email reports still inline the logo: a mail has no server to fetch it from.
+_LOGO_DATA_URI = f"data:{NETWORKER_LOGO_TYPE};base64,{base64.b64encode(NETWORKER_LOGO).decode('ascii')}"
+
+_APP_CSS_URL = _asset_url("app.css", _load_asset("app.css").replace("__NETWORKER_LOGO_SRC__", _LOGO_URL))
+_APP_JS_URL = _asset_url("app.js", _load_asset("app.js"))
 # The four designs (Daylight, Aurora, Command, DEDB Navy), the sidebar and the
 # glow-flow motion: shared by the dashboard and the admin console.
-_DESIGN_CSS = _load_asset("design.css")
-_DESIGN_JS = _load_asset("design.js")
+_DESIGN_CSS_URL = _asset_url("design.css", _load_asset("design.css"))
+_DESIGN_JS_URL = _asset_url("design.js", _load_asset("design.js"))
 HTML_PAGE = (
     _load_asset("dashboard.html")
-    .replace("__APP_CSS__", _APP_CSS)
-    .replace("__DESIGN_CSS__", _DESIGN_CSS)
-    .replace("__DESIGN_JS__", _DESIGN_JS)
-    .replace("__APP_JS__", _APP_JS)
+    .replace("__APP_CSS__", _APP_CSS_URL)
+    .replace("__DESIGN_CSS__", _DESIGN_CSS_URL)
+    .replace("__DESIGN_JS__", _DESIGN_JS_URL)
+    .replace("__APP_JS__", _APP_JS_URL)
+    .replace("__NETWORKER_LOGO_SRC__", _LOGO_URL)
 )
 def _admin_theme_css() -> str:
     """The theme variables app.css defines, generated for /admin from
@@ -83,10 +135,11 @@ _ADMIN_TOPBAR = {
 _ADMIN_PAGE = (
     _load_asset("admin.html")
     .replace("__ADMIN_THEME_CSS__", _admin_theme_css())
-    .replace("__DESIGN_CSS__", _DESIGN_CSS)
-    .replace("__ADMIN_CSS__", _load_asset("admin.css"))
-    .replace("__DESIGN_JS__", _DESIGN_JS)
-    .replace("__ADMIN_JS__", _load_asset("admin.js"))
+    .replace("__DESIGN_CSS__", _DESIGN_CSS_URL)
+    .replace("__ADMIN_CSS__", _asset_url("admin.css", _load_asset("admin.css")))
+    .replace("__DESIGN_JS__", _DESIGN_JS_URL)
+    .replace("__ADMIN_JS__", _asset_url("admin.js", _load_asset("admin.js")))
+    .replace("__NETWORKER_LOGO_SRC__", _LOGO_URL)
 )
 _LOGIN_HTML = _load_asset("login.html")
 _VIEW_TEMPLATE = _load_asset("view.html")
@@ -163,41 +216,32 @@ def _tv_theme_css() -> str:
     return "\n".join(blocks)
 
 
-_TV_CSS = _load_asset("tv.css").replace("/*__TV_THEME_CSS__*/", _tv_theme_css())
-_TV_JS = _load_asset("tv.js")
+_TV_CSS_URL = _asset_url("tv.css", _load_asset("tv.css").replace("/*__TV_THEME_CSS__*/", _tv_theme_css()))
 _TV_PAGE = (
     _load_asset("tv.html")
-    .replace("__TV_CSS__", _TV_CSS)
-    .replace("__TV_JS__", _TV_JS)
+    .replace("__TV_CSS__", _TV_CSS_URL)
+    .replace("__TV_JS__", _asset_url("tv.js", _load_asset("tv.js")))
+    .replace("__NETWORKER_LOGO_SRC__", _LOGO_URL)
 )
 
 
 def networker_logo_src() -> str:
-    if NETWORKER_LOGO_PATH.exists():
-        try:
-            encoded = base64.b64encode(NETWORKER_LOGO_PATH.read_bytes()).decode("ascii")
-            return f"data:image/png;base64,{encoded}"
-        except OSError:
-            pass
-    encoded = NETWORKER_LOGO_PNG_BASE64.strip()
-    if encoded:
-        return f"data:image/png;base64,{encoded}"
-    encoded = base64.b64encode(FAVICON_SVG).decode("ascii")
-    return f"data:image/svg+xml;base64,{encoded}"
+    """The logo as a data: URI, for email reports."""
+    return _LOGO_DATA_URI
 
 
 def dashboard_html() -> str:
-    return HTML_PAGE.replace("__NETWORKER_LOGO_SRC__", networker_logo_src())
+    return HTML_PAGE
 
 
 def admin_page_html() -> str:
     """The admin console served at /admin; it signs in and gates itself."""
-    return _ADMIN_PAGE.replace("__NETWORKER_LOGO_SRC__", networker_logo_src())
+    return _ADMIN_PAGE
 
 
 def tv_page_html() -> str:
     """TV wall-display page served at /tv (auth-gated exactly like /)."""
-    return _TV_PAGE.replace("__NETWORKER_LOGO_SRC__", networker_logo_src())
+    return _TV_PAGE
 
 
 

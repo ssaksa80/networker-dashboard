@@ -1,17 +1,19 @@
 """Embedded HTML pages keep their security-relevant client wiring."""
 import unittest
 
+from served import with_assets
+
 from nwdash.ui import dashboard_html, login_page_html, read_only_view_html
 
 
 class TestDashboardHtml(unittest.TestCase):
     def test_contains_csrf_header_wiring(self):
-        self.assertIn("X-CSRF-Token", dashboard_html())
+        self.assertIn("X-CSRF-Token", with_assets(dashboard_html()))
 
     def test_logout_button_ends_the_server_session(self):
         # Review S6: the Logout button only reset the page and never told the
         # server, so the session cookie stayed valid.
-        html = dashboard_html()
+        html = with_assets(dashboard_html())
         handler = html[html.index('getElementById("logoutBtn").addEventListener'):]
         handler = handler[:handler.index("\n    });")]  # the listener's own close, not fetch()'s
         self.assertIn('fetch("/api/logout"', handler)
@@ -19,16 +21,16 @@ class TestDashboardHtml(unittest.TestCase):
         self.assertLess(handler.index("/api/logout"), handler.index("resetDashboard()"))
 
     def test_contains_verify_tls_checkbox(self):
-        self.assertIn("asVerifyTls", dashboard_html())
+        self.assertIn("asVerifyTls", with_assets(dashboard_html()))
 
     def test_logo_placeholder_replaced(self):
-        self.assertNotIn("__NETWORKER_LOGO_SRC__", dashboard_html())
+        self.assertNotIn("__NETWORKER_LOGO_SRC__", with_assets(dashboard_html()))
 
     def test_contains_email_profile_wiring(self):
         """Email Alert Automation modal ships the saved-profiles CARD list
         (v2.7.0: cards + ON/OFF toggles replaced the select/Load/Delete bar)
         and the client-side calls for the profile CRUD + toggle actions."""
-        html = dashboard_html()
+        html = with_assets(dashboard_html())
         for marker in (
             "emailProfileCards",
             "emailProfileName",
@@ -49,7 +51,7 @@ class TestDashboardHtml(unittest.TestCase):
         """Popup UX pass: one shared Escape handler closes the topmost open
         popup, the account menu closes on outside click, modal panels are
         CSS-resizable, and the job drawer ships a pointer-drag width handle."""
-        html = dashboard_html()
+        html = with_assets(dashboard_html())
         for marker in (
             "closeTopmostPopup",
             "closeCollapsiblePanel",

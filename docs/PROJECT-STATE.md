@@ -36,6 +36,21 @@ extraction (SHA-256 against the prior revision).
   `__SHARE_TOKEN__`, `__NETWORKER_LOGO_SRC__`). Edit the assets, not
   Python strings. `.gitattributes` pins them to LF; the loader uses
   universal-newline decoding so served bytes are checkout-invariant.
+- **The dashboard, admin console and TV pages link their CSS, JS and logo**
+  (review F10; the dashboard was 1.4 MB with the logo inlined five times, and
+  is now 41 KB). The CSS/JS markers become `/assets/<name>.<hash>.<ext>` URLs,
+  the hash being the first 16 hex characters of the SHA-256 of the bytes served,
+  so an upgrade or any edited asset is a new URL and the year-long
+  `immutable` cache never serves a stale file. `ui.asset_response` answers
+  only the exact URLs in the table `ui.py` fills at import; nothing maps a path
+  onto a file. The routes need no sign-in: the admin console links them before
+  it signs in, and they are the shipped code, the same for everyone (the login
+  and share pages link nothing). The admin console's theme CSS stays inline:
+  it must come before `design.css`. Email reports keep the logo as a data: URI
+  (`networker_logo_src()`), since a mail has no server to fetch it from. The
+  logo is read once at import: `assets\networker-logo.png` beside the app if
+  present, else the PNG embedded in `ui.py`. Tests read a page through
+  `tests/served.py`'s `with_assets()`, which puts the linked files back.
 - Five deliberate function-level imports break circular module edges;
   each is commented at the import site. Don't "clean them up" into
   top-level imports. (The sessions→emailer edge was removed when session
@@ -253,7 +268,8 @@ send cannot pair the old password with the new server.
   file is fatal under `$ErrorActionPreference = 'Stop'`, so anything that
   runs before elevation uses `Get-NwdashPathState`.
 - The dev TLS certificate in `.certs/` is self-signed; browsers warn
-  once. Upload your CA's certificate on the admin console's TLS tab, or
+  once, and Chrome and Edge do not cache the linked CSS, JS and logo from a
+  site whose certificate they don't trust, so every load fetches them. Upload your CA's certificate on the admin console's TLS tab, or
   provide `--cert`/`--key`, for production.
 - Headless-browser screenshot rendering (email reports) needs a local
   Chrome or Edge; on some managed hosts Edge silently refuses
