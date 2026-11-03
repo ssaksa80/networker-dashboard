@@ -271,6 +271,11 @@ has not gone out, and the schedule was armed before that time. An alert check
 keeps its saved time, and runs at once when that passed while the service was
 down.
 
+The scheduler tick starts a schedule's run only when none of that schedule's
+is still going (`_claim_run`, released when the run's thread ends; review
+C20). A run slower than its interval, such as a large jobs database or a
+NetWorker timeout, is never started a second time beside itself.
+
 When live backup job data is missing, a report only accepts a cached
 dashboard of its own range (`summary.range`, checked by
 `models.dashboard_covers_range` in `stale_dashboard_from_cache` and in the

@@ -553,11 +553,43 @@ def schedule_alert_automation(automation: AlertAutomation, failed: bool = False)
 AUTOMATION_TICK_SECONDS = 30
 
 
+# Schedules with a run in progress, by automation id (review C20). Pushing
+# next_run_at forward holds the next tick off for one interval only, so a build
+# slower than that (a large jobs database, a NetWorker timeout) used to start a
+# second run of the same schedule beside the first: two emails for one alert,
+# and two runs racing on its signature and next run.
+_RUNS_IN_FLIGHT: set[str] = set()
+_RUNS_IN_FLIGHT_LOCK = threading.Lock()
+
+
+def _claim_run(automation_id: str) -> bool:
+    """Mark the schedule's run as started; False when one still is."""
+    with _RUNS_IN_FLIGHT_LOCK:
+        if automation_id in _RUNS_IN_FLIGHT:
+            return False
+        _RUNS_IN_FLIGHT.add(automation_id)
+        return True
+
+
+def _release_run(automation_id: str) -> None:
+    with _RUNS_IN_FLIGHT_LOCK:
+        _RUNS_IN_FLIGHT.discard(automation_id)
+
+
 def _fire_automation_async(automation_id: str) -> None:
-    threading.Thread(
-        target=run_alert_automation, args=(automation_id,),
-        name=f"automation-fire-{automation_id[:12]}", daemon=True,
-    ).start()
+    """Run a schedule claimed with _claim_run on its own thread, which releases
+    the claim when the run ends."""
+    def _run() -> None:
+        try:
+            run_alert_automation(automation_id)
+        finally:
+            _release_run(automation_id)
+
+    try:
+        threading.Thread(target=_run, name=f"automation-fire-{automation_id[:12]}", daemon=True).start()
+    except RuntimeError:
+        _release_run(automation_id)
+        raise
 
 
 def automation_scheduler_tick() -> None:
@@ -570,6 +602,9 @@ def automation_scheduler_tick() -> None:
     for key, automation in _automation_items_snapshot():
         nxt = float(getattr(automation, "next_run_at", 0) or 0)
         if nxt and now >= nxt:
+            if not _claim_run(key):
+                debug_log(f"automation id={key} is still running; not started again")
+                continue
             # Push next_run_at forward to avoid a double-fire while this run is in
             # flight; run_alert_automation reschedules the real next time when done.
             automation.next_run_at = now + max(60, automation.interval_minutes * 60)
