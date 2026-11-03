@@ -147,7 +147,15 @@ unticked keeps that setting; an older profile without one goes back to
 connecting with the certificate check off. The firewall rule stays as the last
 install set it.
 
-**Gates:** GATES-PENDING
+**Gates:** GitHub Actions (lint, unit tests on 3.12.10 and 3.14, installer
+tests, secret scan) run on the release PR. ruff 0.17.2 and the full 585-test
+suite run **locally** on Windows: green on Python 3.13 and on this bundle's
+embedded Python 3.12.10. On 3.14 the tests pass, and one test class's
+temporary folder can't be removed afterwards on this machine, as on `main`.
+The installer tests pass under Windows PowerShell 5.1. The bundle was booted
+in the installed layout on its own runtime and served the dashboard, admin
+console, TV page and their files. `-Upgrade` has not yet run on a test host.
+The automated gates use no real NetWorker server.
 
 ---
 
