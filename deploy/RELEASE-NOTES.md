@@ -19,6 +19,155 @@ under which bump) is [`../RELEASING.md`](../RELEASING.md).
 
 ---
 
+## v3.3.0 — reports that say when data is missing, safer reinstalls, and security fixes
+
+Minor tier: reports and the dashboard now say when job history failed or covers
+less than the range, a plain reinstall keeps the service's settings, and the
+review's Medium security findings are fixed. Nothing under `data\` changes
+format, and URLs and the service command line are the same.
+[`RELEASING.md`](../RELEASING.md) lists a changed default that alters existing
+installs under MAJOR. One change here can stop something working: a connection
+profile with no Verify TLS setting now checks the NetWorker certificate. Only a
+profile added by hand or through the API can lack the setting, and it is fixed
+in the dashboard in a minute, with nothing lost, so it ships as a minor with the
+notes below. `Setup-NWDash.cmd -Rollback` restores v3.2.0.
+
+### Before you upgrade
+
+- **A connection profile with no Verify TLS setting now checks the NetWorker
+  certificate.** The dashboard and the admin console always save the setting,
+  so this concerns only a profile added to `data\profiles.json` by hand or
+  saved through the API without it. Such a profile connected with its saved
+  password and the certificate check off; it now counts as Verify TLS on. If
+  the dashboard host doesn't trust that NetWorker server's certificate,
+  Connect with the profile fails verification. Select the profile, untick
+  **Verify TLS**, type the password and save it: the profile then keeps that
+  choice.
+- **Use this release's `Setup-NWDash.cmd`.** It no longer downloads a newer
+  release on its own; it says when one exists. Add `-Update` to download it,
+  and the download is used only if its SHA-256 matches both GitHub's digest and
+  the release's **Bundle SHA-256** line. Older copies of the script still
+  download unasked and unchecked. A bundle zip with an entry outside its folder
+  is refused before anything is unpacked.
+- **A new install asks for the dashboard password.** When no password is
+  stored yet, run `Setup-NWDash.cmd` without `-AuthPassword` and type the
+  password when the installer asks, after UAC (hidden, typed twice).
+  Double-clicking `Setup-NWDash.cmd` now works instead of being refused.
+  `-Upgrade`, and an install over one that already has a password
+  (`data\auth.json`), keep that password and don't ask. `-AuthPassword` still
+  works for an unattended
+  install from an elevated prompt. Given in a non-elevated prompt, it is asked
+  for again in the elevated window, because passwords no longer cross UAC.
+  `-ServicePassword` works the same way.
+- **A reinstall keeps the service's settings, and opens fewer networks.**
+  - Running the installer without `-Upgrade` on an existing install used to
+    rebuild the service from that command line alone, dropping its port, bind,
+    allow-list, account and `-AllowUnauthenticated`. Whatever the command line
+    leaves out is now kept, and `-Check` lists it. To drop a bind pin, pass
+    `-BindHost 0.0.0.0`.
+  - A service that logs on as a named account needs `-ServicePassword` on a
+    reinstall, because Windows never gives the password back. Without it the
+    installer stops before changing anything and says what to pass, or to use
+    `-Upgrade`. LocalSystem and `NT AUTHORITY\` accounts need none.
+  - An install now opens the port on Domain and Private networks only, where it
+    used to open every network. `-FirewallProfile Any` opens Public networks
+    too. `-Upgrade` and `-Rollback` never touch the rule, so an upgraded host
+    keeps its rule until its next install without `-Upgrade`. A host on a
+    network Windows classifies as Public then stops being reachable there; the
+    install log and `-Check` name each such network and how to open it.
+
+### Fixes
+
+- **A failed job-history fetch no longer looks like a quiet day.** In NWUI
+  mode, when NetWorker's jobs database couldn't be fetched (its size cap, a
+  timeout, a password that couldn't be read), the dashboard and the daily email
+  showed zero completed jobs, a 0% SLA and health OK. The SLA now shows N/A,
+  health is a warning at best, and the daily email has a **Data incomplete**
+  banner with NetWorker's error.
+- **Reports say what period their data covers.** NetWorker often keeps only a
+  few days of jobs, so Last Week or Last Month could cover far less. Every
+  email report has a **Data covers** row, a shorter range gets a **Shorter than
+  requested** banner, and the dashboard's notice bar says the same.
+- **Every save set counts, and "latest" means newest** (NWUI mode). Two save
+  sets of one client started in the same second counted as one, so a failure
+  beside a success could vanish. Jobs were sorted by day of the month, so the
+  Jobs table, Server Protection and a policy's last run could show an older
+  job.
+- **A 1% CPU reading no longer shows as 100% and Critical.**
+- **Saves get through files held by antivirus or a backup agent.** Sessions,
+  schedules and email settings could be lost without a word. A save now
+  retries for about 1.5 seconds, and one that still fails is in the log as
+  `could not save <file>`. Two settings files can no longer be left cut short.
+- **Pages load faster.** The dashboard page was 1.4 MB on every load, with the
+  logo inlined five times. Its CSS, JS and logo, and the admin console's and
+  TV's, are now separate files the browser caches, with new URLs at each
+  upgrade. `/networker-logo.png` now serves the real logo.
+- **Live updates don't wait for a slow viewer.** One viewer that stopped
+  reading could hold up a Connect or a refresh for about 30 seconds.
+- **An expired share link says so**, instead of showing a dashboard of zeros
+  and fetching it every minute. The page no longer prints the link's token.
+- **`-Rollback` uses up the backup it restores.** A second `-Rollback` used to
+  restore nothing; it now goes one backup further back. A backup without the
+  app or its runtime is refused before the service is stopped, and
+  `-Check -Rollback` shows the same verdict. Empty backup folders left by
+  earlier rollbacks are skipped, and the next `-Upgrade` removes them.
+
+### Security
+
+- **The dashboard password never enters the service's environment.** The
+  installer stores only its salted hash in `data\auth.json`, and the bootstrap
+  shows `********` instead of the password. `-Upgrade` removes a plaintext
+  `DASHBOARD_AUTH_PASSWORD` that an earlier failed install left in the service
+  environment. On such installs, a password changed in the admin console now
+  survives a restart.
+- **With an allow-list (`--allowed-hosts`), each NetWorker address is looked up
+  once**, checked and connected to. A name could resolve to an allowed address
+  when checked and to another when connecting.
+- **Regenerate revokes the link on screen** even after the session changed (a
+  reconnect, an automatic re-login). The old link used to stay valid for 24
+  hours.
+- A request with a malformed CSRF token gets an error answer, not a reset
+  connection.
+
+### Support notes
+
+- **"Connected with warnings" in NWUI mode** when `/nwrestapi` can't be
+  reached is intended: without the job history the dashboard can't know the
+  range was healthy. When the SLA isn't measured, the plain-text **Backup SLA**
+  row reads `N/A (0 met / 0 total)`.
+- Alert schedules don't yet look at missing history or short coverage.
+- A viewer that falls 8 updates behind during a burst is dropped and reconnects
+  within 15 seconds; its page's own refresh fills in anything it missed.
+- A password with a space or a double quote is split by `cmd.exe` when typed on
+  `Setup-NWDash.cmd`'s command line. Let the installer ask for it instead.
+- `-ServicePassword` still reaches `nssm.exe`'s command line once, when the
+  installer sets the service account.
+- With an allow-list (`--allowed-hosts`), a request through a proxy and the WMI
+  health check still look the NetWorker name up on their own: the proxy and
+  PowerShell resolve it.
+- The pages' CSS, JS and logo under `/assets/` are served without sign-in. They
+  are the shipped code, the same on every install, and hold no data.
+- Reload any dashboard, admin console or TV tab that was open during the
+  upgrade, so it picks up the new page.
+
+### Rollback
+
+Run `Setup-NWDash.cmd -Rollback` from an elevated prompt. It restores v3.2.0,
+with its faults. Saved data stays as it is. A profile saved with Verify TLS
+unticked keeps that setting; a profile without one goes back to connecting
+with the certificate check off. The firewall rule stays as the last
+install set it.
+
+**Gates:** GitHub Actions (lint, unit tests on 3.12.10 and 3.14, installer
+tests, secret scan) run on the release PR. ruff 0.17.2 and the full 585-test
+suite run **locally** on Windows: green on Python 3.13, 3.14 and this
+bundle's embedded Python 3.12.10. The installer tests pass under Windows PowerShell 5.1. The bundle was booted
+in the installed layout on its own runtime and served the dashboard, admin
+console, TV page and their files. `-Upgrade` has not yet run on a test host.
+The automated gates use no real NetWorker server.
+
+---
+
 ## v3.2.0 — choose a daily report's range, a locked install folder, and safer upgrades
 
 Minor tier: a new range control for daily reports, the install folder locked
