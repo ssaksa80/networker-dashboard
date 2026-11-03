@@ -72,6 +72,7 @@ from .restapi import (
     stringify,
     strip_query_param,
     timestamp,
+    with_failure_messages,
 )
 from .wmi_health import unavailable_server_health
 
@@ -729,6 +730,35 @@ def nwui_rest_fallback_configs(config: ApiConfig) -> list[ApiConfig]:
     return candidates
 
 
+def nwui_failure_records(
+    config: ApiConfig,
+    version: str,
+    headers: dict[str, str],
+    context: ssl.SSLContext,
+    removed_fields: set[str],
+) -> list[Any]:
+    """The jobs database's completionStatus:"Failed" records with their
+    `message`, the failure text the bulk history query leaves out (review
+    C9). Optional: on any error the history goes without it."""
+    path = dashboard_endpoints(config)["failedJobs"]
+    for field in removed_fields:
+        path = remove_rest_field_from_path(path, field)
+    endpoint_host = authc_header_value(config.rest_api_host, config.rest_api_port)
+    try:
+        data = fetch_json(
+            api_base_url_for_version(config, version) + path,
+            headers,
+            max(config.timeout_seconds, 120),
+            context,
+            f"nwuiFallback:failedJobs:{endpoint_host}:{version}",
+            max_bytes=MAX_JOBS_RESPONSE_BYTES,
+        )
+    except RestApiError as exc:
+        debug_log(f"NWUI failed-job text unavailable host={endpoint_host} version={version} error={exc.message}")
+        return []
+    return collection_from(data, "jobs")
+
+
 def nwui_rest_fallback_items(
     config: ApiConfig,
     target: str,
@@ -797,6 +827,11 @@ def nwui_rest_fallback_items(
                         if retained is not None:
                             retained["oldestStart"] = oldest_job_start(items)
                         in_window = [job for job in items if job_in_report_window(job, config)]
+                        if any(is_failed_job(job) for job in in_window):
+                            in_window = with_failure_messages(
+                                in_window,
+                                nwui_failure_records(fallback_config, version, headers, context, removed_fields),
+                            )
                         items = [rest_job_as_nwui_action(job) for job in sort_jobs(in_window)]
                     return items, f"https://{endpoint_host}/nwrestapi/{version}{compact_path_for_log(path)}"
                 except RestApiError as exc:
