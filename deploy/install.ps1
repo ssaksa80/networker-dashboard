@@ -76,7 +76,10 @@ function Get-NwdashLauncherArgs {
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
 # What this command line sets. Captured here: a dot-sourced block sees none.
-$givenParams = @($PSBoundParameters.Keys)
+# A password Setup-NWDash.cmd handed over in the environment, or one the
+# elevated run asks for again (-Prompt<name>), counts as given.
+$givenParams = @($PSBoundParameters.Keys) + $givenSecrets
+$givenParams += @($script:NwdashSecretParams | Where-Object { "Prompt$_" -in $givenParams })
 
 # ---- an existing service: keep what this command line leaves out (review O2) ----
 # A plain install over the installed service used to rebuild it from this

@@ -6,8 +6,9 @@
 # runs the REAL install.ps1 in a child process: its top (from the launcher
 # helper to the elevation step) and its fresh-install block, against a temp
 # folder, as an elevated run would. Only the service side is faked: Get-Service,
-# the account query, nssm, the folder lock, the firewall, the start and the
-# health probe. Anything else that would reach this machine throws. Run:
+# the account query, nssm, the folder lock, the firewall, the start, the
+# health probe, and storing or asking for a password. Anything else that would
+# reach this machine throws. Run:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File deploy\test\reinstall-carry.test.ps1
 param(
   [string]$RunIn = '',
@@ -23,7 +24,9 @@ param(
   [string]$AllowedHosts = '',
   [switch]$AllowUnauthenticated,
   [string]$FirewallProfile = '',
-  [switch]$Check
+  [switch]$Check,
+  [switch]$PromptAuthPassword,
+  [switch]$PromptServicePassword
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\..\lib\common.ps1"
@@ -90,6 +93,9 @@ if ($RunIn) {
   function Start-NwdashServiceVerified { Write-Call 'START'; $true }
   function Test-NwdashHealth { $true }
   function Start-Sleep { }
+  # The password side (review S9): what is stored, and what is asked for.
+  function Set-NwdashAuthPassword { param([string]$InstallDir, [string]$Python, [string]$Password) Write-Call "AUTH-PASSWORD $Password" }
+  function Read-NwdashSecret { param([string]$Label, [switch]$Twice) Write-Call "ASKED $Label"; 'typed-secret' }
   # Nothing here may reach the machine. A path that does fails the case.
   foreach ($f in 'Stop-Process', 'Start-Process', 'New-NetFirewallRule', 'Remove-NetFirewallRule', 'Stop-ScheduledTask', 'Unregister-ScheduledTask', 'Start-Service', 'Stop-Service') {
     Set-Item -Path "function:$f" -Value ([scriptblock]::Create("throw 'test reached $f'"))
@@ -111,6 +117,8 @@ if ($RunIn) {
   $top = Set-Line $top "`$readNssm = if ((Get-NwdashPathState -Path `$NssmSrc) -eq 'present') { `$NssmSrc } else { Join-Path `$InstallDir 'nssm.exe' }" '$readNssm = ${function:Invoke-FakeNssm}'
   $fresh = Set-Line (Get-Block '# ---- fresh install' '') '$nssm = "$InstallDir\nssm.exe"' '$nssm = ${function:Invoke-FakeNssm}'
 
+  # The real hand-over from Setup-NWDash.cmd: a password in the environment.
+  . ([scriptblock]::Create((Get-Block '# Setup-NWDash.cmd hands the passwords over' '$Bundle = Split-Path')))
   . ([scriptblock]::Create($top))
   # A real run asks for elevation here; a non-elevated one stops at it.
   if (-not $script:asAdmin) { Write-Host 'REACHED-ELEVATION'; exit 42 }
@@ -222,9 +230,8 @@ try {
   Assert ($run.Code -eq 0) "$case : exits 0"
   Assert ((Get-Set $run 'AppParameters') -eq 'nssm set | NetWorkerDashboard | AppParameters | networker_dashboard.py --port 9555 --bind 192.0.2.10 --no-launch') "$case : the given port wins, the bind is kept"
   $sets = @(Get-Set $run 'AppEnvironmentExtra')
-  Assert ($sets.Count -eq 2) "$case : the environment is set for the first boot, then again without the password"
-  Assert ($sets[0] -eq 'nssm set | NetWorkerDashboard | AppEnvironmentExtra | NWDASH_EXTRA=kept;DASHBOARD_ALLOWED_HOSTS=203.0.113.0/24;DASHBOARD_AUTH_PASSWORD=test-pass-123;DASHBOARD_ALLOW_UNAUTHENTICATED=1') "$case : first boot: the given allow-list and password, the rest kept"
-  Assert ($sets[1] -eq 'nssm set | NetWorkerDashboard | AppEnvironmentExtra | NWDASH_EXTRA=kept;DASHBOARD_ALLOWED_HOSTS=203.0.113.0/24;DASHBOARD_ALLOW_UNAUTHENTICATED=1') "$case : after it, the password goes and everything else stays"
+  Assert ($sets.Count -eq 1 -and $sets[0] -eq 'nssm set | NetWorkerDashboard | AppEnvironmentExtra | NWDASH_EXTRA=kept;DASHBOARD_ALLOWED_HOSTS=203.0.113.0/24;DASHBOARD_ALLOW_UNAUTHENTICATED=1') "$case : the environment is set once: the given allow-list, the rest kept, no password"
+  Assert ($run.Calls -contains 'AUTH-PASSWORD test-pass-123') "$case : the given password is stored in data\auth.json"
 
   $case = 'a named account and no -ServicePassword'
   $d = New-Fixture -StoredPassword
@@ -240,6 +247,21 @@ try {
   Assert ($run.Code -eq 0) "$case : exits 0"
   Assert ((Get-Set $run 'ObjectName') -eq "nssm set | NetWorkerDashboard | ObjectName | $script:Me | test-secret") "$case : the service logs on as the same account"
   Assert ((Get-Set $run 'AppParameters') -like '*--port 9443 --no-launch') "$case : and keeps its port"
+
+  $case = 'a named account, its password handed over by Setup-NWDash.cmd'
+  $d = New-Fixture -StoredPassword
+  $env:NWDASH_SETUP_SERVICE_PASSWORD = 'test-secret'
+  try { $run = Invoke-Install $d @('-LiveShape', 'named', '-AsAdmin') }
+  finally { Remove-Item Env:\NWDASH_SETUP_SERVICE_PASSWORD -ErrorAction SilentlyContinue }
+  Assert ($run.Code -eq 0) "$case : exits 0"
+  Assert ((Get-Set $run 'ObjectName') -eq "nssm set | NetWorkerDashboard | ObjectName | $script:Me | test-secret") "$case : the service logs on as the same account"
+
+  $case = 'a named account, its password asked for again after UAC'
+  $d = New-Fixture -StoredPassword
+  $run = Invoke-Install $d @('-LiveShape', 'named', '-AsAdmin', '-PromptServicePassword')
+  Assert ($run.Code -eq 0) "$case : exits 0"
+  Assert ($run.Calls -contains "ASKED Password for $script:Me") "$case : asks for it"
+  Assert ((Get-Set $run 'ObjectName') -eq "nssm set | NetWorkerDashboard | ObjectName | $script:Me | typed-secret") "$case : the service logs on as the same account"
 
   $case = 'settings that cannot be read, elevated'
   $d = New-Fixture -StoredPassword

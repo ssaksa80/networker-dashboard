@@ -152,8 +152,10 @@ class TestPasswordsStayOffTheRecord(unittest.TestCase):
         cls.fresh = cls.install[cls.install.index("# ---- fresh install"):]
 
     def test_the_service_env_never_gets_the_password(self):
-        self.assertNotIn("DASHBOARD_AUTH_PASSWORD=$AuthPassword", self.install)
-        self.assertNotIn("DASHBOARD_AUTH_PASSWORD=", self.common)
+        # No value is ever written after the name. The name alone may appear:
+        # a reinstall and an upgrade drop a password an older install left.
+        for text in (self.install, self.common):
+            self.assertNotRegex(text, r"DASHBOARD_AUTH_PASSWORD=\$")
 
     def test_the_hash_is_stored_under_the_lock_before_the_first_start(self):
         stored = self.fresh.index("Set-NwdashAuthPassword -InstallDir $InstallDir")
@@ -166,7 +168,9 @@ class TestPasswordsStayOffTheRecord(unittest.TestCase):
     def test_the_relaunch_carries_no_password(self):
         elevation = self.install[self.install.index("# ---- elevation"):self.install.index("# ---- uninstall")]
         self.assertIn("Get-NwdashRelaunchArgs -Bound $PSBoundParameters -Given $givenSecrets", elevation)
-        self.assertNotIn("$PSBoundParameters.Keys", self.install)
+        # Only Get-NwdashRelaunchArgs builds the relaunch. The reinstall reads
+        # $PSBoundParameters.Keys earlier for the names given, not the values.
+        self.assertNotIn("$PSBoundParameters.Keys", elevation)
 
     def test_the_bootstrap_and_installer_agree_on_the_hand_over(self):
         bootstrap = SETUP_CMD.read_text(encoding="utf-8")
