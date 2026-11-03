@@ -14,7 +14,7 @@ import re
 import socket
 import ssl
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -94,16 +94,35 @@ def report_window(config: ApiConfig) -> tuple[float, float, str]:
 
 
 def in_report_window(value: Any, config: ApiConfig) -> bool:
+    """Whether a time falls in the report window. Windows are half-open,
+    [start, end), so a job that ends at midnight is in one daily report, not
+    two (review C23)."""
     ts = timestamp(value)
     start_ts, end_ts, _ = report_window(config)
-    return bool(ts and start_ts <= ts <= end_ts)
+    return bool(ts and start_ts <= ts < end_ts)
 
 
 def in_report_range(value: Any, report_range: str) -> bool:
     ts = timestamp(value)
     end_ts = time.time()
     start_ts = end_ts - (report_range_days(report_range) * 24 * 60 * 60)
-    return bool(ts and start_ts <= ts <= end_ts)
+    return bool(ts and start_ts <= ts < end_ts)
+
+
+def job_report_time(job: Any) -> float:
+    """When a job counts for a report window, as epoch seconds (review C7): a
+    finished job when it ended, so a backup that starts in one daily window
+    and fails in the next is in the next one's report; a job still running,
+    or one with no end time, when it started."""
+    started = timestamp(first_value(job, "startTime", "started", "start"))
+    ended = timestamp(first_value(job, "endTime", "completionTime"))
+    if ended and classify_job(job) not in ACTIVE:
+        return ended
+    return started
+
+
+def job_in_report_window(job: Any, config: ApiConfig) -> bool:
+    return in_report_window(job_report_time(job), config)
 
 
 # A retained job set whose oldest job starts more than this after the requested
@@ -291,10 +310,12 @@ def endpoint(path: str, query: dict[str, str] | None = None) -> str:
 # from the small, completionStatus:"Failed"-filtered failedJobs query below.
 #
 # `state` tells a running job from a finished one: a job that is still running
-# has no completion status yet (review C5).
+# has no completion status yet (review C5). A finished job belongs to the
+# report window it ended in, so `endTime` too (review C7).
 JOB_QUERY_FIELDS = (
     "clientHostname",
     "startTime",
+    "endTime",
     "completionStatus",
     "state",
     "name",
@@ -310,7 +331,7 @@ def dashboard_endpoints(config: ApiConfig | None = None) -> dict[str, str]:
     # CANNOT be applied server-side (a startTime>=... query is rejected with
     # HTTP 400). The jobs database is naturally bounded by NetWorker's completed-
     # job retention, and the exact report window is enforced client-side by
-    # in_report_window(). `config` is accepted for signature stability.
+    # job_in_report_window(). `config` is accepted for signature stability.
     # The job id joins a failure's text from the failed query below to its
     # job in the full list.
     job_fields = ",".join((*JOB_QUERY_FIELDS, "id"))
@@ -882,27 +903,25 @@ def timestamp(value: Any) -> float:
         numeric = float(text)
         return numeric / 1000 if numeric > 100000000000 else numeric
 
+    # A time with no UTC offset is local wall-clock time, as the custom date
+    # window is, not UTC (review C23). datetime.timestamp() reads a naive
+    # time as local.
     normalized = text.replace("Z", "+00:00")
     try:
-        dt = datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.timestamp()
-    except ValueError:
+        return datetime.fromisoformat(normalized).timestamp()
+    except (ValueError, OSError, OverflowError):
         pass
 
+    # Also accepts a ctime-style "Thu Oct 15 13:00:00 2026", which has no zone.
     try:
-        dt = email.utils.parsedate_to_datetime(text)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.timestamp()
-    except (TypeError, ValueError, IndexError):
+        return email.utils.parsedate_to_datetime(text).timestamp()
+    except (TypeError, ValueError, IndexError, OSError, OverflowError):
         pass
 
     for fmt in ("%a %b %d %H:%M:%S %Y", "%Y-%m-%d %H:%M:%S"):
         try:
-            return datetime.strptime(text, fmt).replace(tzinfo=UTC).timestamp()
-        except ValueError:
+            return datetime.strptime(text, fmt).timestamp()
+        except (ValueError, OSError, OverflowError):
             continue
     return 0.0
 
@@ -1313,10 +1332,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
     # far back the report can see.
     retained_jobs = collection_from(raw_results.get("jobs"), "jobs")
     coverage = report_coverage(start_ts, end_ts, oldest_job_start(retained_jobs))
-    jobs = [
-        job for job in sort_jobs(retained_jobs)
-        if in_report_window(first_value(job, "startTime", "started", "start"), config)
-    ]
+    jobs = [job for job in sort_jobs(retained_jobs) if job_in_report_window(job, config)]
     failed_records = collection_from(raw_results.get("failedJobs"), "jobs")
     clone_jobs = [job for job in jobs if is_clone_job(job)]
     other_jobs = [job for job in jobs if not is_clone_job(job)]
@@ -1332,7 +1348,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
     else:
         failed_jobs = [
             job for job in sort_jobs(failed_records)
-            if in_report_window(first_value(job, "startTime", "started", "start"), config)
+            if job_in_report_window(job, config)
             and not is_clone_job(job)
             and not is_recovery_job(job)
         ]

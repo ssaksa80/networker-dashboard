@@ -45,7 +45,6 @@ from .restapi import (
     fetch_json,
     first_value,
     format_duration_seconds,
-    in_report_window,
     invalid_rest_query_field,
     is_clone_job,
     is_failed_job,
@@ -54,6 +53,8 @@ from .restapi import (
     is_running_job,
     is_success_job,
     job_history_endpoint,
+    job_in_report_window,
+    job_report_time,
     load_server_health_nwui,
     maintenance_backup_status,
     networker_log_category,
@@ -266,17 +267,20 @@ def monitoring_payload(
 
 
 def item_in_report_window(item: Any, start_ts: float | None, end_ts: float | None) -> bool:
+    """Whether an NWUI item falls in [start_ts, end_ts): a finished job by
+    when it ended (review C7), anything else by its own time."""
     if start_ts is None and end_ts is None:
         return True
     if not isinstance(item, dict):
         return True
-    value = first_value(item, "startTime", "started", "start", "timestamp", "time", "createdTime", "lastRunTime")
-    item_ts = timestamp(value)
+    item_ts = job_report_time(item) or timestamp(
+        first_value(item, "timestamp", "time", "createdTime", "lastRunTime")
+    )
     if not item_ts:
         return True
     if start_ts is not None and item_ts < start_ts:
         return False
-    return not (end_ts is not None and item_ts > end_ts)
+    return not (end_ts is not None and item_ts >= end_ts)
 
 
 def filter_items_to_report_window(items: list[Any], start_ts: float | None, end_ts: float | None) -> list[Any]:
@@ -746,11 +750,7 @@ def nwui_rest_fallback_items(
                         # and converting the whole set wastes CPU on a busy server.
                         if retained is not None:
                             retained["oldestStart"] = oldest_job_start(items)
-                        in_window = [
-                            job
-                            for job in items
-                            if in_report_window(first_value(job, "startTime", "started", "start"), config)
-                        ]
+                        in_window = [job for job in items if job_in_report_window(job, config)]
                         items = [rest_job_as_nwui_action(job) for job in sort_jobs(in_window)]
                     return items, f"https://{endpoint_host}/nwrestapi/{version}{compact_path_for_log(path)}"
                 except RestApiError as exc:
