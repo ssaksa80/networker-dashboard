@@ -424,6 +424,47 @@ process.stdout.write(JSON.stringify(out));
         self.assertEqual((self.result["on"], self.result["off"]), (True, False))
 
 
+@unittest.skipIf(NODE is None, "node is not on PATH; skipping app.js logic tests")
+class TestRegenerateNamesTheLinkItReplaces(unittest.TestCase):
+    """Review S12: Regenerate overwrote the page's only copy of the old token
+    and never told the server, so a link made for an earlier session lived on."""
+
+    @classmethod
+    def setUpClass(cls):
+        source = _extract(r"let currentShareToken = null;\n") + _extract(
+            r"async function doGenerateShareToken\(\) \{.*?\n    \}\n")
+        script = r"""
+const element = () => ({textContent: "", value: "", disabled: false, classList: {add() {}, remove() {}}});
+const [generateShareToken, shareModalStatus, shareUrlInput, shareTokenSection, revokeShareToken] =
+  [element(), element(), element(), element(), element()];
+const location = {origin: "https://dashboard.example.test"};
+const sent = [];
+let issued = 0;
+const fetch = async (_path, init) => {
+  sent.push(JSON.parse(init.body));
+  issued += 1;
+  return {ok: true, json: async () => ({ok: true, token: "token-" + issued})};
+};
+let sessionId = "session-before";
+""" + source + r"""
+(async () => {
+  await doGenerateShareToken();
+  sessionId = "session-after";  // a reconnect or re-login between the two clicks
+  await doGenerateShareToken();
+  process.stdout.write(JSON.stringify({sent, shown: shareUrlInput.value}));
+})();
+"""
+        cls.result = _run_node(script)
+
+    def test_the_first_link_replaces_nothing(self):
+        self.assertFalse(self.result["sent"][0].get("replaces"))
+
+    def test_regenerate_sends_the_link_on_screen(self):
+        self.assertEqual(self.result["sent"][1],
+                         {"sessionId": "session-after", "action": "create", "replaces": "token-1"})
+        self.assertEqual(self.result["shown"], "https://dashboard.example.test/view/token-2")
+
+
 @unittest.skipIf(NODE is None, "node is not on PATH; skipping admin.js logic tests")
 class TestAdminEmailTabReportRange(unittest.TestCase):
     """The admin Email tab's real load and save, against a fake server. It used

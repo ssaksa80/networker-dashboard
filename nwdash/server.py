@@ -991,6 +991,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     session_id = str(payload.get("sessionId") or "").strip()
                     if not session_id or not _session_exists(session_id):
                         raise BadRequest("Valid session ID required to create share link.")
+                    # Regenerate names the link it replaces, which may belong to
+                    # an earlier session (a reconnect, a re-login): left alone it
+                    # stayed valid for 24 h while the page lost its token (S12).
+                    replaces = str(payload.get("replaces") or "").strip()
+                    if replaces and revoke_share_token(replaces):
+                        self._audit("Share link revoked", item=f"{replaces[:4]}…{replaces[-4:]}", old="active", new="replaced")
                     token = create_share_token(session_id)
                     self._audit("Share link created", item=f"{token[:4]}…{token[-4:]}", field="expires", new="in 24 hours")
                     self._send_json(HTTPStatus.OK, {"ok": True, "token": token})

@@ -2539,7 +2539,9 @@
         const resp = await fetch("/api/share", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({sessionId, action: "create"}),
+          // Regenerate revokes the link on screen in the same request, even
+          // when it was made for an earlier session.
+          body: JSON.stringify({sessionId, action: "create", replaces: currentShareToken || ""}),
           cache: "no-store",
         });
         const data = await resp.json();
