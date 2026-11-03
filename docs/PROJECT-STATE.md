@@ -253,6 +253,17 @@ never uses, or writes back, the range the dashboard was last viewed with:
 range changes are still remembered on the session, because the shared
 view refreshes on the session's range.
 
+A daily report whose run fails (no session, no backup job data, an SMTP
+error) is tried again after 5, 15 and 30 minutes, then hourly, until it is
+sent or its day ends (review C6). A retry never runs past midnight, where it
+would send the next day's report early and under that day's date. Each
+schedule's `next_run_at`, `last_run` and `last_result` are saved in
+`automations.json`. At boot, `resume_alert_automation` sends a daily report
+still owed today at the first scheduler tick: its send time has passed, today's
+has not gone out, and the schedule was armed before that time. An alert check
+keeps its saved time, and runs at once when that passed while the service was
+down.
+
 When live backup job data is missing, a report only accepts a cached
 dashboard of its own range (`summary.range`, checked by
 `models.dashboard_covers_range` in `stale_dashboard_from_cache` and in the

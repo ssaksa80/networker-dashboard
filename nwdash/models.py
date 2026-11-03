@@ -101,6 +101,8 @@ class AlertAutomation:
     last_signature: str = ""
     timer: threading.Timer | None = None
     next_run_at: float = 0.0  # epoch seconds; driven by the scheduler loop
+    # Runs that failed in a row; spaces out a daily report's retries (review C6).
+    failures: int = 0
     # Name of the saved email profile this schedule was armed FROM (empty for
     # schedules armed directly from the form). Persisted and restored so a
     # profile's ON/OFF state — which is DERIVED from whether a matching

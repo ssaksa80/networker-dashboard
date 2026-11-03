@@ -487,24 +487,57 @@ def _record_identity_send(automation: AlertAutomation, signature: str) -> None:
         _LAST_SENT_BY_IDENTITY[automation_identity_of(automation)] = (str(signature or ""), time.time())
 
 
+def _daily_report_time_today(report_time: str, now: datetime) -> datetime:
+    hour, minute = (int(part) for part in report_time.split(":", 1))
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
 def seconds_until_daily_report(report_time: str, now: datetime | None = None) -> float:
     now = now or datetime.now().astimezone()
-    hour, minute = (int(part) for part in report_time.split(":", 1))
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    target = _daily_report_time_today(report_time, now)
     if target <= now:
         target += timedelta(days=1)
     return max(1.0, (target - now).total_seconds())
 
 
-def schedule_alert_automation(automation: AlertAutomation) -> None:
+# A daily report whose run fails is tried again after these waits, the last one
+# repeating, until it is sent or its day is over (review C6). It used to wait
+# for the next day's send time.
+DAILY_REPORT_RETRY_SECONDS = (300, 900, 1800, 3600)
+
+
+def daily_report_owed(automation: AlertAutomation, now: datetime | None = None) -> bool:
+    """True from today's send time until midnight while today's report has not
+    gone out: after a failed run, or a restart over the send time. A schedule
+    armed after today's send time owes nothing before tomorrow's."""
+    now = now or datetime.now().astimezone()
+    send_time = _daily_report_time_today(automation.report_time, now)
+    if now < send_time or send_time.timestamp() < automation.created_at:
+        return False
+    return not _daily_report_sent_on(automation, now)
+
+
+def _daily_report_delay(automation: AlertAutomation, failed: bool) -> float:
+    now = datetime.now().astimezone()
+    regular = seconds_until_daily_report(automation.report_time, now)
+    if not failed or not daily_report_owed(automation, now):
+        return regular
+    wait = DAILY_REPORT_RETRY_SECONDS[min(max(automation.failures, 1), len(DAILY_REPORT_RETRY_SECONDS)) - 1]
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    # A retry after midnight would send the new day's report early, under its date.
+    return wait if wait < (midnight - now).total_seconds() else regular
+
+
+def schedule_alert_automation(automation: AlertAutomation, failed: bool = False) -> None:
     """Compute the automation's next fire time. A single background scheduler
     loop (automation_scheduler_loop) drives the actual firing — far more robust
     than a per-automation long-lived threading.Timer, which could be lost on
-    restart, drift, or fail silently."""
+    restart, drift, or fail silently. failed: the run that just ended did not
+    get through, so a daily report still owed today is retried soon."""
     if _get_automation(automation.automation_id) is None:
         return
     delay = (
-        seconds_until_daily_report(automation.report_time)
+        _daily_report_delay(automation, failed)
         if automation.schedule_type == "daily_report"
         else automation.interval_minutes * 60
     )
@@ -577,6 +610,10 @@ def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
         "digest": automation.digest,
         "connection": automation.connection if isinstance(automation.connection, dict) else {},
         "profile_name": automation.profile_name,
+        # Run state, so a restart neither loses a due run nor resets the clock (review C6).
+        "next_run_at": automation.next_run_at,
+        "last_run": automation.last_run,
+        "last_result": automation.last_result,
     }
 
 
@@ -733,6 +770,23 @@ def _reconcile_config_driven_automations() -> tuple[int, int]:
     return dropped, synced
 
 
+def resume_alert_automation(automation: AlertAutomation, saved_next_run_at: float) -> None:
+    """Pick a restored schedule up where the last process left it (review C6).
+    A daily report still owed today runs at the next tick; one that is not
+    waits for its next send time. An alert check keeps its saved time, and runs
+    at once when that passed while the service was down; a restart used to
+    push it a whole interval away."""
+    if automation.schedule_type == "daily_report":
+        if daily_report_owed(automation):
+            automation.next_run_at = time.time()
+            LOG.info(f"Email automation {automation.automation_id}: today's daily report was missed; sending it now.")
+            return
+    elif saved_next_run_at > 0:
+        automation.next_run_at = min(saved_next_run_at, time.time() + automation.interval_minutes * 60)
+        return
+    schedule_alert_automation(automation)
+
+
 def restore_automations_from_disk() -> int:
     """Recreate and reschedule ALL automations saved by a previous run —
     regardless of whether their dashboard session still exists. Sessions are
@@ -782,9 +836,11 @@ def restore_automations_from_disk() -> int:
                 quiet_end=str(rec.get("quiet_end") or ""),
                 digest=bool(rec.get("digest", True)),
                 profile_name=str(rec.get("profile_name") or ""),
+                last_run=float(rec.get("last_run") or 0.0),
+                last_result=str(rec.get("last_result") or "Scheduled"),
             )
             _put_automation(automation.automation_id, automation)
-            schedule_alert_automation(automation)
+            resume_alert_automation(automation, float(rec.get("next_run_at") or 0.0))
             restored += 1
         except (TypeError, ValueError, KeyError) as exc:
             dropped += 1
@@ -843,6 +899,11 @@ def _daily_report_signature(dashboard: dict[str, Any]) -> str:
     summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
     window = f"{summary.get('range') or ''}|{summary.get('rangeLabel') or ''}"
     return f"daily:{datetime.now().astimezone().date().isoformat()}:{window}"
+
+
+def _daily_report_sent_on(automation: AlertAutomation, day: datetime) -> bool:
+    """Whether the schedule's last daily report went out on day's local date."""
+    return automation.last_signature.startswith(f"daily:{day.date().isoformat()}:")
 
 
 def alert_email_subject(severity: str, digest: bool = True) -> str:
@@ -927,11 +988,13 @@ def run_alert_automation(automation_id: str) -> None:
         f"run_alert_automation start id={automation_id} type={automation.schedule_type} "
         f"session={automation.session_id[:8]}… recipients={len(automation.recipients)}"
     )
+    failed = False
     try:
         if not automation.enabled:
             automation.last_result = "Paused"
             return
         if not _ensure_automation_session(automation):
+            failed = True
             return  # run skipped; finally-block reschedules the next attempt
         # A daily report always covers its own range, never whatever range the
         # dashboard was last viewed with, and building it leaves that view alone.
@@ -975,6 +1038,7 @@ def run_alert_automation(automation_id: str) -> None:
                 automation.last_result = (
                     f"Duplicate suppressed (same alert already sent at {duplicate_sent_at})"
                 )
+                automation.last_signature = new_signature  # today's went out, from its twin
                 automation.last_run = time.time()
                 return
             plain, html_body, attachments = scheduled_dashboard_email_payload(dashboard)
@@ -1028,15 +1092,18 @@ def run_alert_automation(automation_id: str) -> None:
             automation.last_result = f"No matching alert at {generated_at()}"
         automation.last_run = time.time()
     except SmtpDeliveryError as exc:
+        failed = True
         automation.last_result = f"SMTP failed at {exc.stage}: {exc.detail}"
         LOG.warning(f"Scheduled email automation {automation_id} SMTP failure: {exc.stage}: {exc.detail}")
     except Exception as exc:  # noqa: BLE001
+        failed = True
         automation.last_result = f"Alert automation failed: {exc}"
         LOG.warning(f"Scheduled email automation {automation_id} failed: {safe_log_text(exc, 300)}")
     finally:
         debug_log(f"run_alert_automation done id={automation_id} result={safe_log_text(automation.last_result, 200)}")
+        automation.failures = automation.failures + 1 if failed else 0
         # Recompute the next fire time (the scheduler loop drives the actual run).
-        schedule_alert_automation(automation)
+        schedule_alert_automation(automation, failed)
         persist_automations()
 
 
