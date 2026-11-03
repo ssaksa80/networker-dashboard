@@ -587,6 +587,34 @@ def job_history_notice(dashboard: dict[str, Any]) -> str:
     return JOB_HISTORY_UNAVAILABLE
 
 
+def dashboard_coverage(dashboard: dict[str, Any]) -> dict[str, Any]:
+    """The covered window the collector recorded (restapi.report_coverage), or {}."""
+    summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
+    coverage = summary.get("coverage")
+    return coverage if isinstance(coverage, dict) else {}
+
+
+def coverage_notice(dashboard: dict[str, Any]) -> str:
+    """What a page or report must say when NetWorker's jobs database does not
+    reach back to the start of the requested range, or "" when it does. Its
+    retention is often a few days, so "Last Month" can quietly mean "since
+    Tuesday" (review C13)."""
+    coverage = dashboard_coverage(dashboard)
+    if not coverage.get("short"):
+        return ""
+    summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
+    label = str(summary.get("rangeLabel") or "the requested range")
+    if not coverage.get("start"):
+        return (
+            f"NetWorker's job database holds no jobs before {coverage.get('oldestJob')}, "
+            f"so none of {label} is covered."
+        )
+    return (
+        f"{label} was requested, but NetWorker's job database only holds jobs from "
+        f"{coverage['start']}, so this report covers {coverage['start']} to {coverage.get('end')}."
+    )
+
+
 def dashboard_covers_range(dashboard: dict[str, Any], report_range: str | None) -> bool:
     """True when the dashboard was built for report_range; None accepts any."""
     if report_range is None:

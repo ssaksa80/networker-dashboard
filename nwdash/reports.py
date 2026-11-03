@@ -23,7 +23,7 @@ from .config import (
     debug_log,
     safe_log_text,
 )
-from .models import generated_at, job_history_notice
+from .models import coverage_notice, dashboard_coverage, generated_at, job_history_notice
 from .snapshots import report_theme_palette
 from .ui import networker_logo_src
 
@@ -79,6 +79,17 @@ def dashboard_report_rows(dashboard: dict[str, Any]) -> list[tuple[str, str]]:
     notice = str(dashboard.get("reportNotice") or "").strip()
     if notice:
         rows.insert(1, ("Report notice", safe_log_text(notice, 420)))
+    coverage = dashboard_coverage(dashboard)
+    if coverage.get("end"):
+        covered = (
+            f"{coverage['start']} to {coverage['end']}"
+            if coverage.get("start")
+            else f"Nothing: the oldest job NetWorker holds is from {coverage.get('oldestJob')}"
+        )
+        rows.insert(1, ("Data covers", covered))
+    short_range = coverage_notice(dashboard)
+    if short_range:
+        rows.insert(1, ("Shorter than requested", short_range))
     history_notice = job_history_notice(dashboard)
     if history_notice:
         rows.insert(1, ("Job history", history_notice))
@@ -209,15 +220,27 @@ def report_sla_text(summary: dict[str, Any]) -> str:
     return f"{report_decimal(summary.get('slaPercent'), 2)}%" if report_sla_available(summary) else "N/A"
 
 
-def report_warning_banner(text: str, palette: dict[str, str]) -> str:
-    """A full-width amber banner for an email; empty when there is nothing to say."""
-    if not text:
-        return ""
+def report_data_warnings(dashboard: dict[str, Any]) -> list[tuple[str, str]]:
+    """(heading, text) for each way the report's job data falls short of what
+    its label says: a failed history fetch (C10), a range NetWorker's jobs
+    database does not reach back to (C13)."""
+    warnings = []
+    history_notice = job_history_notice(dashboard)
+    if history_notice:
+        warnings.append(("Data incomplete", history_notice))
+    short_range = coverage_notice(dashboard)
+    if short_range:
+        warnings.append(("Shorter than requested", short_range))
+    return warnings
+
+
+def report_warning_banner(heading: str, text: str, palette: dict[str, str]) -> str:
+    """A full-width amber banner for an email."""
     return (
         f'<div style="margin:0 0 14px;background:{palette["surface"]};border:1px solid {palette["amber"]};'
         f'border-left:6px solid {palette["amber"]};border-radius:8px;padding:12px 14px;'
         f'font-size:13px;line-height:1.4;color:{palette["ink"]};">'
-        f'<strong style="color:{palette["amber"]};">Data incomplete:</strong> {html_lib.escape(text)}'
+        f'<strong style="color:{palette["amber"]};">{html_lib.escape(heading)}:</strong> {html_lib.escape(text)}'
         '</div>'
     )
 
@@ -345,7 +368,7 @@ def report_status_model(dashboard: dict[str, Any]) -> dict[str, Any]:
         "sla_met": sla_met,
         "sla_missed": sla_missed,
         "sla_text": report_sla_text(summary),
-        "history_notice": job_history_notice(dashboard),
+        "data_warnings": report_data_warnings(dashboard),
         "range_label": range_label,
         "generated": generated,
         "backup_server": str(target.get("backupServer") or "--"),
@@ -475,10 +498,9 @@ def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
         ],
         f'{model["sla_total"]:,} jobs',
     )
-    history_warning = (
-        f'<div class="data-warning"><strong>Data incomplete:</strong> {html_lib.escape(model["history_notice"])}</div>'
-        if model["history_notice"]
-        else ""
+    data_warnings = "".join(
+        f'<div class="data-warning"><strong>{html_lib.escape(heading)}:</strong> {html_lib.escape(text)}</div>'
+        for heading, text in model["data_warnings"]
     )
     metrics = "".join(
         [
@@ -565,7 +587,7 @@ def dashboard_snapshot_html(dashboard: dict[str, Any]) -> str:
 </head>
 <body>
   <main class="snapshot">
-    {history_warning}
+    {data_warnings}
     <section class="top-grid">
       <article class="card brand-card">
         <div class="brand-top">
@@ -749,6 +771,9 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
         f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Running clone jobs <strong style="float:right;color:{palette["ink"]};">{report_int(summary.get("cloneRunning")):,}</strong></div>'
         f'<div style="font-size:12px;padding:6px 0;color:{palette["ink"]};">Clone sessions <strong style="float:right;color:{palette["ink"]};">{report_int(summary.get("cloneSessionTotal")):,}</strong></div>'
     )
+    data_banners = "".join(
+        report_warning_banner(heading, text, palette) for heading, text in report_data_warnings(dashboard)
+    )
     snapshot_block = ""
     if snapshot_cid:
         escaped_cid = html_lib.escape(snapshot_cid, quote=True)
@@ -763,7 +788,7 @@ def dashboard_report_email(dashboard: dict[str, Any], snapshot_cid: str = "") ->
 <html>
   <body style="margin:0;padding:0;background:{palette["bg"]};font-family:Aptos,Arial,Segoe UI,sans-serif;color:{palette["ink"]};">
     <div style="padding:18px;background:{palette["bg"]};">
-      {report_warning_banner(job_history_notice(dashboard), palette)}
+      {data_banners}
       {snapshot_block}
       <table role="presentation" style="width:100%;min-width:1680px;border-collapse:collapse;">
         <tr>

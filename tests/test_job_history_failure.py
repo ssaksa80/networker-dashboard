@@ -71,7 +71,7 @@ def _build_nwui(config, history):
     def fetch_history(_config, _context):
         if isinstance(history, Exception):
             raise history
-        return [dict(item) for item in history], "https://nw.example.com:9090/nwrestapi/v3/global/jobs", False
+        return [dict(item) for item in history], "https://nw.example.com:9090/nwrestapi/v3/global/jobs", False, 0.0
 
     with mock.patch.object(nwui, "nwui_login", return_value=({"Authorization": "Bearer t"}, {"status": "ok"})), \
             mock.patch.object(nwui, "nwui_monitoring_all_pages", side_effect=monitoring), \

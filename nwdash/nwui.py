@@ -54,9 +54,11 @@ from .restapi import (
     networker_log_category,
     networker_log_row,
     nwui_api_base_url,
+    oldest_job_start,
     origin_url,
     read_limited,
     remove_rest_field_from_path,
+    report_coverage,
     report_window,
     sort_jobs,
     ssl_context_for_api,
@@ -382,7 +384,7 @@ def nwui_monitoring_all_pages(
 # caching, every dashboard build — for every restored session and the shared
 # refresh loop — re-downloads and re-parses it, starving the request workers
 # and causing unrelated endpoints to time out. Cache keyed by server+range.
-_JOBS_HISTORY_CACHE: dict[tuple[Any, ...], tuple[float, list[Any], str]] = {}
+_JOBS_HISTORY_CACHE: dict[tuple[Any, ...], tuple[float, list[Any], str, float]] = {}
 _JOBS_HISTORY_LOCK = threading.Lock()
 JOBS_HISTORY_TTL_SECONDS = 180
 JOBS_HISTORY_CACHE_MAX = 16
@@ -390,10 +392,11 @@ JOBS_HISTORY_CACHE_MAX = 16
 
 def cached_nwui_job_history(
     config: ApiConfig, context: ssl.SSLContext
-) -> tuple[list[Any], str, bool]:
-    """Return (items, path, from_cache) for the NetWorker completed-job history,
-    served from a process-wide short-TTL cache shared across sessions and the
-    shared refresh loop."""
+) -> tuple[list[Any], str, bool, float]:
+    """Return (items, path, from_cache, oldest_start) for the NetWorker
+    completed-job history, served from a process-wide short-TTL cache shared
+    across sessions and the shared refresh loop. oldest_start is the oldest job
+    the jobs database still holds (0 when unknown), for report_coverage."""
     key = (
         str(config.backup_server_host or "").lower(),
         int(config.backup_server_port or 0),
@@ -408,16 +411,18 @@ def cached_nwui_job_history(
     with _JOBS_HISTORY_LOCK:
         entry = _JOBS_HISTORY_CACHE.get(key)
         if entry and now - entry[0] < JOBS_HISTORY_TTL_SECONDS:
-            return entry[1], entry[2], True
-    items, path = nwui_rest_fallback_items(config, "actions", context)
+            return entry[1], entry[2], True, entry[3]
+    retained: dict[str, float] = {}
+    items, path = nwui_rest_fallback_items(config, "actions", context, retained=retained)
+    oldest_start = retained.get("oldestStart", 0.0)
     with _JOBS_HISTORY_LOCK:
-        _JOBS_HISTORY_CACHE[key] = (now, items, path)
+        _JOBS_HISTORY_CACHE[key] = (now, items, path, oldest_start)
         if len(_JOBS_HISTORY_CACHE) > JOBS_HISTORY_CACHE_MAX:
             for old_key in sorted(
                 _JOBS_HISTORY_CACHE, key=lambda k: _JOBS_HISTORY_CACHE[k][0]
             )[:-JOBS_HISTORY_CACHE_MAX]:
                 _JOBS_HISTORY_CACHE.pop(old_key, None)
-    return items, path, False
+    return items, path, False, oldest_start
 
 
 def cmd_flag_value(command: str, flag: str) -> str:
@@ -689,7 +694,11 @@ def nwui_rest_fallback_items(
     config: ApiConfig,
     target: str,
     context: ssl.SSLContext,
+    retained: dict[str, float] | None = None,
 ) -> tuple[list[Any], str]:
+    """Items for `target` from the REST API. For "actions", `retained` (when
+    given) receives "oldestStart": the oldest job in the whole jobs database,
+    before the report-window filter."""
     if not config.password:
         raise RestApiError(502, "Direct REST fallback needs the current login password; reconnect to refresh this source.")
     paths = dashboard_endpoints(config)
@@ -746,6 +755,8 @@ def nwui_rest_fallback_items(
                         # check), then sort and project only the survivors. The
                         # jobs DB can hold tens of thousands of records; sorting
                         # and converting the whole set wastes CPU on a busy server.
+                        if retained is not None:
+                            retained["oldestStart"] = oldest_job_start(items)
                         in_window = [
                             job
                             for job in items
@@ -1181,8 +1192,9 @@ def build_dashboard_nwui(
     history_action_count = 0
     history_from_cache = False
     history_available = False
+    oldest_retained = 0.0
     try:
-        rest_history, history_path, history_from_cache = cached_nwui_job_history(config, context)
+        rest_history, history_path, history_from_cache, oldest_retained = cached_nwui_job_history(config, context)
         # Keep only completed/terminal runs (succeeded/failed/warning) from
         # the jobs DB. This drops running/queued (the live monitor already
         # provides those) and status-less records (empty completionStatus),
@@ -1364,6 +1376,7 @@ def build_dashboard_nwui(
             "rangeLabel": range_label,
             "health": health,
             "historyAvailable": history_available,
+            "coverage": report_coverage(start_ts, end_ts, oldest_retained),
         }),
         "serverHealth": server_health,
         "serverProtectionJob": maintenance_backup,

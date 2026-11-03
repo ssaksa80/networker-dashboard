@@ -229,6 +229,15 @@ the dashboard, the TV view and the email say the counts are incomplete, and
 C10). The live dashboard still loads. `slaAvailable` is also false when there
 was no job to measure.
 
+`/global/jobs` has no server-side time filter, so both modes download the whole
+retained jobs database and trim it to the window. Its oldest job, taken before
+that trim (and cached with the NWUI history), is how far back a report can see:
+`summary.coverage` (`restapi.report_coverage`) holds the window actually
+covered, and `short` is true when the oldest job is more than an hour after the
+requested start. The email always lists "Data covers"; a short range gets a
+"Shorter than requested" banner there, in the snapshot and on the dashboard
+(review C13). The periodic-reports design is the real fix for long ranges.
+
 Saving email settings (the admin Email tab, the dialog's Save
 configuration) writes `email_config.json`, then runs
 `_reconcile_config_driven_automations`, the same pass as a restart, so

@@ -103,6 +103,43 @@ def in_report_range(value: Any, report_range: str) -> bool:
     return bool(ts and start_ts <= ts <= end_ts)
 
 
+# A retained job set whose oldest job starts more than this after the requested
+# start does not reach back that far: the report covers less than its label.
+COVERAGE_SLACK_SECONDS = 60 * 60
+
+
+def oldest_job_start(jobs: list[Any]) -> float:
+    """The earliest start time among jobs, as epoch seconds; 0 with none."""
+    starts = [timestamp(first_value(job, "startTime", "started", "start")) for job in jobs]
+    return min((ts for ts in starts if ts), default=0.0)
+
+
+def report_coverage(start_ts: float, end_ts: float, oldest_retained: float) -> dict[str, Any]:
+    """The window a report's job data actually covers (review C13).
+
+    NetWorker's jobs database keeps only its retention period, often a few
+    days, so "Last Week" or "Last Month" can cover far less than it says.
+    `oldest_retained` is the oldest job in the whole retained set (before the
+    window filter); 0 means it is unknown, and nothing is flagged. A window
+    that ends before the oldest retained job is not covered at all: its start
+    is then empty.
+    """
+    short = bool(oldest_retained) and oldest_retained > start_ts + COVERAGE_SLACK_SECONDS
+    if not short:
+        covered_start = display_datetime(start_ts)
+    elif oldest_retained < end_ts:
+        covered_start = display_datetime(oldest_retained)
+    else:
+        covered_start = ""
+    return {
+        "requestedStart": display_datetime(start_ts),
+        "start": covered_start,
+        "end": display_datetime(end_ts),
+        "oldestJob": display_datetime(oldest_retained) if oldest_retained else "",
+        "short": short,
+    }
+
+
 def display_datetime(value: Any) -> str:
     ts = timestamp(value)
     if ts:
@@ -1179,9 +1216,13 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         sources["jobs"]["userMessage"] = JOB_HISTORY_UNAVAILABLE
 
     clients = collection_from(raw_results.get("clients"), "clients")
-    _, _, range_label = report_window(config)
+    start_ts, end_ts, range_label = report_window(config)
+    # /global/jobs is the whole retained jobs database; its oldest job is how
+    # far back the report can see.
+    retained_jobs = collection_from(raw_results.get("jobs"), "jobs")
+    coverage = report_coverage(start_ts, end_ts, oldest_job_start(retained_jobs))
     jobs = [
-        job for job in sort_jobs(collection_from(raw_results.get("jobs"), "jobs"))
+        job for job in sort_jobs(retained_jobs)
         if in_report_window(first_value(job, "startTime", "started", "start"), config)
     ]
     failed_jobs_from_query = [
@@ -1237,6 +1278,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "rangeLabel": range_label,
         "health": health,
         "historyAvailable": history_available,
+        "coverage": coverage,
     })
 
     tables = {

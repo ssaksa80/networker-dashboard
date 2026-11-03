@@ -843,6 +843,18 @@
       ].join("");
     }
 
+    // NetWorker's job database keeps only its retention period, so a long range
+    // can cover far less than its label (review C13). Worded as models.coverage_notice.
+    function coverageNotice(summary) {
+      const coverage = summary?.coverage;
+      if (!coverage?.short) return "";
+      const label = summary.rangeLabel || "the requested range";
+      if (!coverage.start) {
+        return `NetWorker's job database holds no jobs before ${coverage.oldestJob}, so none of ${label} is covered.`;
+      }
+      return `${label} was requested, but NetWorker's job database only holds jobs from ${coverage.start}, so this report covers ${coverage.start} to ${coverage.end}.`;
+    }
+
     function sourceNeedsVisibleWarning(item) {
       return item && !item.ok && item.displayWarning !== false && item.severity !== "info";
     }
@@ -939,20 +951,22 @@
       const host = data.target?.restApiBase || data.target?.backupServerBase || form.restApiHost?.value || "";
       const rl   = data.summary?.rangeLabel || "";
       updateCollapsedBar(host, rl);
-      const rangeLabel = data.summary?.rangeLabel ? ` - ${data.summary.rangeLabel}` : "";
+      const coverage = data.summary?.coverage;
+      const rangeLabel = (data.summary?.rangeLabel ? ` - ${data.summary.rangeLabel}` : "")
+        + (coverage?.short ? (coverage.start ? ` (data from ${coverage.start})` : " (no data)") : "");
       generatedAt.textContent = data.generatedAt ? `Updated ${data.generatedAt}${rangeLabel}` : `Updated now${rangeLabel}`;
 
       const failedSources = Object.values(data.sources || {}).filter((item) => sourceNeedsVisibleWarning(item));
+      let message = "";
       if (data.stale && data.reportNotice) {
-        notice.textContent = data.reportNotice;
-        notice.classList.add("show");
+        message = data.reportNotice;
       } else if (failedSources.length) {
-        notice.textContent = `Backup data loaded with ${failedSources.length} source warning(s): ${failedSourceSummary(data.sources)}`;
-        notice.classList.add("show");
-      } else {
-        notice.textContent = "";
-        notice.classList.remove("show");
+        message = `Backup data loaded with ${failedSources.length} source warning(s): ${failedSourceSummary(data.sources)}`;
       }
+      const shortRange = coverageNotice(data.summary);
+      if (shortRange) message = message ? `${message} ${shortRange}` : shortRange;
+      notice.textContent = message;
+      notice.classList.toggle("show", Boolean(message));
 
       const health = data.summary?.health || "unknown";
       if (data.stale) setStatus("Using cached dashboard", "warn");
