@@ -48,7 +48,7 @@ One Python process, standard library only (plus the bundled optional
 | Windows Server (2019/2022) | Target host. Nothing needs preinstalling — Python and nssm ship in the bundle |
 | The two release assets | `Setup-NWDash.cmd` + `nwdash-bundle-<ver>-win-x64.zip`, side by side; SHA-256 in the release notes |
 | NetWorker reachability | The host must reach the NetWorker server's REST API (and/or NWUI on 9090 for older servers) |
-| Dashboard password | Chosen up front; passed once as `-AuthPassword` (stored as a salted PBKDF2 hash, plaintext then removed from the service env) |
+| Dashboard password | Chosen up front; typed when the installer asks after UAC, or `-AuthPassword` for an unattended install from an elevated prompt (stored only as a salted PBKDF2 hash, never in the service env) |
 | Service account | Optional (`-ServiceAccount CORP\svc-nwdash`); default LocalSystem. Needed only if WMI health or SMTP require a domain identity |
 | TLS certificate | Optional PEM cert+key for the dashboard's own HTTPS; default is a self-signed cert generated on first boot |
 | Free HTTPS port | Default **8443**; co-tenant hosts additionally need a dedicated IP for `-BindHost` (see §3) |
@@ -69,11 +69,16 @@ One Python process, standard library only (plus the bundled optional
 3. Install (elevated; UAC is requested automatically):
 
    ```
-   Setup-NWDash.cmd -AuthPassword <pw> [-Port 8443] [-BindHost <ip>] [-AllowedHosts <cidrs>]
+   Setup-NWDash.cmd [-Port 8443] [-BindHost <ip>] [-AllowedHosts <cidrs>]
    ```
 
+   After UAC it asks for the dashboard password (hidden, typed twice). For an
+   unattended install, run it from an elevated prompt with `-AuthPassword <pw>`.
+
    On an air-gapped host add `-NoUpdate` (skips the GitHub latest-release
-   check; the check is fail-soft either way).
+   check; the check is fail-soft either way). A connected host downloads a
+   newer release only with `-Update`, and uses it only if its SHA-256 matches
+   the release.
 
 4. The installer migrates any **legacy scheduled-task install** automatically
    (task removed, service registered, `data\` untouched), opens the firewall
@@ -121,9 +126,10 @@ guarantees it is re-enabled on every exit path.
 
 **Upgrade** (config + data preserved; see `INSTALL.md` §7 for full detail):
 
-1. Place the new bundle next to `Setup-NWDash.cmd` (connected hosts:
-   the bootstrap self-fetches the newest release when `gh`/`GITHUB_TOKEN` is
-   available).
+1. Place the new bundle next to `Setup-NWDash.cmd` (connected hosts: add
+   `-Update` in step 3 and the bootstrap fetches the newest release when
+   `gh`/`GITHUB_TOKEN` is available, using it only if its SHA-256 matches the
+   release).
 2. Verify the zip's SHA-256 against the release notes.
 3. Run `Setup-NWDash.cmd -Upgrade` from an elevated prompt.
 4. It backs up app+runtime to `backups\<ver>-<timestamp>\`, swaps, restarts,

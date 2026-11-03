@@ -8,6 +8,7 @@ import base64
 import concurrent.futures
 import email.utils
 import html as html_lib
+import http.client
 import json
 import re
 import socket
@@ -17,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPSHandler, OpenerDirector, Request, build_opener
 
 from .config import (
     APP_VERSION,
@@ -30,6 +31,7 @@ from .config import (
     debug_log,
 )
 from .models import JOB_HISTORY_UNAVAILABLE, ApiConfig, BadRequest, RestApiError, generated_at
+from .profiles import connect_allowed
 from .wmi_health import load_server_health_wmi, server_health_from_payload, unavailable_server_health
 
 
@@ -371,6 +373,37 @@ def ssl_context_for_api(verify_tls: bool) -> ssl.SSLContext:
     return ssl._create_unverified_context()
 
 
+class _AllowListHTTPSConnection(http.client.HTTPSConnection):
+    """Dials through profiles.connect_allowed (review S8). TLS still gets the
+    name, for SNI and the certificate check, and the Host header comes from
+    the URL, so the server sees the same request as before."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = self._connect_allowed
+
+    def _connect_allowed(self, address: tuple[str, int], timeout: Any, source_address: Any = None) -> socket.socket:
+        if self._tunnel_host:
+            # Through a proxy, `address` is the proxy, and the proxy looks the name up.
+            return socket.create_connection(address, timeout, source_address)
+        return connect_allowed(address, timeout, source_address)
+
+
+class AllowListHTTPSHandler(HTTPSHandler):
+    def __init__(self, context: ssl.SSLContext) -> None:
+        super().__init__(context=context)
+        self._allow_list_context = context
+
+    def https_open(self, req: Request) -> Any:
+        return self.do_open(_AllowListHTTPSConnection, req, context=self._allow_list_context)
+
+
+def api_opener(context: ssl.SSLContext, *handlers: Any) -> OpenerDirector:
+    """The opener for every request to a NetWorker server: `handlers`, plus
+    HTTPS that only dials addresses the allow-list approved."""
+    return build_opener(*handlers, AllowListHTTPSHandler(context))
+
+
 def read_limited(response: Any, limit: int) -> bytes:
     data = response.read(limit + 1)
     if len(data) > limit:
@@ -502,7 +535,7 @@ def fetch_json(
     started = time.monotonic()
     debug_log(f"REST GET start source={label} url={compact_url_for_log(url)} timeout={timeout}s")
     try:
-        with urlopen(request, timeout=timeout, context=context) as response:
+        with api_opener(context).open(request, timeout=timeout) as response:
             try:
                 raw = read_limited(response, max_bytes)
             except RestApiError:

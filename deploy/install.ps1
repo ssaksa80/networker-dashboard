@@ -26,7 +26,7 @@
   [string]$BindHost = '',            # pin ONE interface (a server IP); empty = all interfaces
   [string]$ServiceAccount,           # e.g. CORP\svc-nwdash (empty = LocalSystem)
   [string]$ServicePassword,
-  [string]$AuthPassword = '',        # dashboard password; app stores a salted hash, then the plaintext is removed from the service env
+  [string]$AuthPassword = '',        # dashboard password; stored as a salted hash in data\auth.json (omit it to be asked)
   [string]$AllowedHosts = '',        # comma-separated NetWorker host allow-list
   [switch]$AllowUnauthenticated,     # run with NO dashboard password on a network bind (isolated networks only)
   [switch]$Check,                    # dry-run: print the resolved plan, change nothing
@@ -36,12 +36,25 @@
   [switch]$Purge,
   [switch]$NoFirewall,
   [string]$FirewallProfile = '',     # networks the inbound rule opens: Domain, Private, Public or Any (empty = Domain,Private)
-  [switch]$Elevated                  # internal: marks the post-UAC relaunch
+  [switch]$Elevated,                 # internal: marks the post-UAC relaunch
+  [switch]$PromptAuthPassword,       # internal: -AuthPassword was given before UAC; ask for it again
+  [switch]$PromptServicePassword     # internal: the same for -ServicePassword
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . "$Here\lib\common.ps1"
+
+# Setup-NWDash.cmd hands the passwords over in the environment rather than on
+# this script's command line (review S9). Take them, then clear them. The
+# bootstrap looks for the name NWDASH_SETUP_AUTH_PASSWORD in this file to know
+# that this installer reads them; without it, it passes them as arguments.
+foreach ($name in $script:NwdashSecretParams) {
+  $value = [Environment]::GetEnvironmentVariable($script:NwdashSetupEnv[$name], 'Process')
+  if ($value -and -not (Get-Variable -Name $name -ValueOnly)) { Set-Variable -Name $name -Value $value }
+  [Environment]::SetEnvironmentVariable($script:NwdashSetupEnv[$name], $null, 'Process')
+}
+$givenSecrets = @($script:NwdashSecretParams | Where-Object { Get-Variable -Name $_ -ValueOnly })
 
 $Bundle = Split-Path -Parent $Here          # <bundle>\deploy\install.ps1 -> <bundle>
 $AppSrc = Join-Path $Bundle 'app'
@@ -95,9 +108,9 @@ $allowUnauth = $AllowUnauthenticated.IsPresent -or ($carry -and $carry.AllowUnau
 # 'denied' is an answer here: the elevated run can read the file and decide. So
 # is a service whose settings this run could not read.
 $authFile = Get-NwdashPathState -Path (Join-Path $InstallDir 'data\auth.json')
-$authPlan = Get-NwdashAuthPlan -PasswordGiven ([bool]$AuthPassword) `
+$authPlan = Get-NwdashAuthPlan -PasswordGiven ([bool]$AuthPassword -or $PromptAuthPassword.IsPresent) `
   -PasswordStored ($authFile -eq 'present') -PasswordUnknown (($authFile -eq 'denied') -or $liveUnread) `
-  -BindHost $BindHost -AllowUnauthenticated $allowUnauth
+  -BindHost $BindHost -AllowUnauthenticated $allowUnauth -CanPrompt (Test-NwdashCanPrompt)
 
 # A folder this must not lock: refused for a new install, warned about for an
 # existing one, which keeps working as it is.
@@ -139,12 +152,13 @@ if ($Check) {
     }
   }
   $authLine = switch ($authPlan) {
-    'password'        { 'set on first boot (salted hash), then removed from the service env' }
+    'password'        { 'stored as a salted hash in data\auth.json before the first start (asked for after UAC when not elevated)' }
+    'prompt'          { 'asked for (hidden, typed twice) before anything changes, then stored as a salted hash' }
     'stored'          { 'already set (data\auth.json is kept)' }
     'unknown'         { 'not known - data\ is locked; run -Check from an elevated prompt to see it (a real run decides after UAC)' }
     'loopback'        { 'none - loopback bind, reachable from this host only' }
     'unauthenticated' { 'NONE (-AllowUnauthenticated) - anyone who can reach the port controls the dashboard' }
-    default           { 'NONE - an install would be REFUSED: pass -AuthPassword (or -AllowUnauthenticated)' }
+    default           { 'NONE - an install would be REFUSED: run it interactively to be asked, pass -AuthPassword, or -AllowUnauthenticated' }
   }
   Write-NwdashLog "  auth password  : $authLine"
   Write-NwdashLog "  allowed hosts  : $(if ($AllowedHosts) { $AllowedHosts } else { '(unrestricted)' })"
@@ -179,8 +193,9 @@ if ($Check) {
 # the old install was already removed. -Upgrade decides from the live service.
 if ($authPlan -eq 'refused' -and -not ($Upgrade -or $Rollback -or $Uninstall)) {
   Stop-Nwdash ("no dashboard password: the service would listen on $(if ($BindHost) { $BindHost } else { 'all interfaces' }) " +
-    "port $Port with no login, and the app refuses to start that way. Nothing was changed. Re-run with " +
-    '-AuthPassword <password> (recommended), -BindHost 127.0.0.1 for access from this host only, or ' +
+    "port $Port with no login, and the app refuses to start that way. Nothing was changed. Re-run it " +
+    'interactively to be asked for a password (recommended), with -AuthPassword <password> from an elevated prompt, ' +
+    '-BindHost 127.0.0.1 for access from this host only, or ' +
     '-AllowUnauthenticated to accept that anyone who can reach the port can read backup data and change the configuration.')
 }
 
@@ -205,14 +220,12 @@ if (-not $isAdmin) {
   if ($Elevated) { Stop-Nwdash 'still not elevated after the UAC relaunch - elevation was declined. Re-run from an Administrator prompt.' }
   Write-NwdashLog 'requesting administrator privileges (UAC)...'
   # Rebuild the full argument list so the elevated child runs the SAME plan
-  # (DEDB's elevate-without-args gotcha: the child silently used defaults).
-  $fwd = @()
-  foreach ($k in $PSBoundParameters.Keys) {
-    $v = $PSBoundParameters[$k]
-    if ($v -is [switch] -or $v -is [bool]) { if ($v) { $fwd += "-$k" } }
-    else { $fwd += "-$k"; $fwd += "`"$v`"" }
+  # (DEDB's elevate-without-args gotcha: the child silently used defaults),
+  # except the passwords: those are asked for again in the elevated window.
+  $fwd = Get-NwdashRelaunchArgs -Bound $PSBoundParameters -Given $givenSecrets
+  if ($givenSecrets.Count) {
+    Write-NwdashLog "passwords are not passed across UAC: type the $(($givenSecrets | ForEach-Object { $_ -replace 'Password$', ' password' }) -join ' and ') again in the elevated window"
   }
-  $fwd += '-Elevated'
   try {
     $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"") + $fwd)
     exit $p.ExitCode
@@ -282,13 +295,24 @@ if ($Upgrade -or $Rollback) {
     $liveEnv = ''
     try { $liveEnv = ConvertFrom-NwdashNssmOutput -Raw (& $nssm get $SvcName AppEnvironmentExtra 2>$null) } catch { $liveEnv = '' }
     $envLines = @($liveEnv -split "`r?`n" | Where-Object { $_ })
+    # Older installers left the plaintext DASHBOARD_AUTH_PASSWORD in the service
+    # env when their health gate failed, where local users can read it and the
+    # app re-applies it at every start (review S9). The hash in data\auth.json
+    # is what counts; drop the plaintext when that is there.
+    $plainLines = @($envLines | Where-Object { $_ -like 'DASHBOARD_AUTH_PASSWORD=*' })
+    if ($plainLines.Count -and (Test-Path (Join-Path $InstallDir 'data\auth.json'))) {
+      $envLines = @($envLines | Where-Object { $_ -notlike 'DASHBOARD_AUTH_PASSWORD=*' })
+      if ($envLines.Count) { & $nssm set $SvcName AppEnvironmentExtra $envLines | Out-Null }
+      else { & $nssm reset $SvcName AppEnvironmentExtra 2>$null | Out-Null }
+      Write-NwdashLog 'service env: removed a plaintext DASHBOARD_AUTH_PASSWORD an earlier install left behind (data\auth.json keeps the password)'
+    }
     $upgradePlan = Get-NwdashAuthPlan -PasswordGiven $false `
       -PasswordStored (Test-Path (Join-Path $InstallDir 'data\auth.json')) -BindHost $liveBind `
       -AllowUnauthenticated ($AllowUnauthenticated.IsPresent -or ($envLines -contains $script:NwdashAllowUnauthEnv))
     if ($upgradePlan -eq 'refused') {
       Stop-Nwdash ("the installed service has no dashboard password and listens on $(if ($liveBind) { $liveBind } else { 'all interfaces' }) " +
         "port $livePort; $BundleVersion refuses to start that way, so nothing was changed. Set a password with a normal " +
-        'install and -AuthPassword <password> (it keeps the service settings and data\), ' +
+        'install, which asks for one and keeps the service settings and data\, ' +
         'or re-run -Upgrade -AllowUnauthenticated to keep running without one.')
     }
     if ($upgradePlan -eq 'unauthenticated' -and -not ($envLines -contains $script:NwdashAllowUnauthEnv)) {
@@ -444,6 +468,13 @@ if (-not (Test-Path $AppSrc)) { Stop-Nwdash 'app\ not found in the bundle - run 
 if (-not (Test-Path "$PySrc\python.exe")) { Stop-Nwdash "bundled python not found at $PySrc\python.exe" }
 if (-not (Test-Path $NssmSrc)) { Stop-Nwdash "bundled nssm.exe not found at $NssmSrc" }
 
+# Passwords are asked for here, in the elevated window, before anything changes.
+if ($PromptAuthPassword -or $authPlan -eq 'prompt') {
+  $AuthPassword = Read-NwdashSecret -Label 'Dashboard password' -Twice
+  $authPlan = 'password'
+}
+if ($PromptServicePassword) { $ServicePassword = Read-NwdashSecret -Label "Password for $ServiceAccount" }
+
 Write-NwdashLog "installing NetWorker Dashboard $BundleVersion to $InstallDir"
 
 # 1/6 migrate: stop + unregister the legacy scheduled task; data\ and .certs\
@@ -498,6 +529,13 @@ New-Item -ItemType Directory -Force "$InstallDir\logs" | Out-Null
 Write-NwdashLog '[2/6] restricting folder permissions'
 try { Set-NwdashInstallAcl -InstallDir $InstallDir -ServiceSid $serviceSid }
 catch { Stop-Nwdash "could not restrict the install folder: $($_.Exception.Message)" }
+# The installer stores the hash itself, under the lock, so the plaintext never
+# reaches the service's environment (review S9).
+if ($AuthPassword) {
+  Write-NwdashLog '[2/6] storing the dashboard password (salted hash in data\auth.json)'
+  try { Set-NwdashAuthPassword -InstallDir $InstallDir -Python "$InstallDir\runtime\python\python.exe" -Password $AuthPassword }
+  catch { Stop-Nwdash $_.Exception.Message }
+}
 
 # 3/6 service
 Write-NwdashLog "[3/6] installing NSSM service $SvcName"
@@ -515,15 +553,12 @@ $launcherArgs = Get-NwdashLauncherArgs -P $Port -B $BindHost
 & $nssm set $SvcName Description 'Dell NetWorker backup and recovery status dashboard (HTTPS)' | Out-Null
 if ($ServiceAccount) { & $nssm set $SvcName ObjectName $ServiceAccount $ServicePassword | Out-Null }
 
-# Service environment: the app reads DASHBOARD_AUTH_PASSWORD once at boot and
-# persists a salted PBKDF2 hash in data\auth.json; the plaintext is REMOVED
-# from the service env right after the first healthy boot (below), so it never
-# stays in the registry. DASHBOARD_ALLOWED_HOSTS is not a secret and persists,
-# as does whatever else a reinstall kept from the service it replaced.
+# Service environment: no secrets. The dashboard password is already in
+# data\auth.json (step 2). DASHBOARD_ALLOWED_HOSTS is not a secret and
+# persists, as does whatever else a reinstall kept from the service it replaced.
 $envExtra = @()
 if ($carry) { $envExtra += $carry.Env }
 if ($AllowedHosts) { $envExtra += "DASHBOARD_ALLOWED_HOSTS=$AllowedHosts" }
-if ($AuthPassword) { $envExtra += "DASHBOARD_AUTH_PASSWORD=$AuthPassword" }
 if ($authPlan -eq 'unauthenticated' -or ($carry -and $carry.AllowUnauthenticated)) { $envExtra += $script:NwdashAllowUnauthEnv }
 if ($authPlan -eq 'unauthenticated') {
   Write-NwdashWarn "installing WITHOUT a dashboard password (-AllowUnauthenticated): anyone who can reach port $Port can read backup data and change the configuration"
@@ -560,17 +595,6 @@ if (-not $ok) {
   Write-NwdashWarn 'health check failed; recent service logs:'
   Show-NwdashFailureLog -InstallDir $InstallDir -ProbeUrl $health
   Stop-Nwdash 'service did not become healthy'
-}
-
-# The app has persisted the salted hash by now - remove the plaintext password
-# from the service environment and keep everything else in it.
-if ($AuthPassword) {
-  $keepEnv = @($envExtra | Where-Object { $_ -notlike 'DASHBOARD_AUTH_PASSWORD=*' })
-  try {
-    if ($keepEnv.Count) { & $nssm set $SvcName AppEnvironmentExtra $keepEnv | Out-Null }
-    else { & $nssm reset $SvcName AppEnvironmentExtra 2>$null | Out-Null }
-    Write-NwdashLog 'auth password applied (salted hash stored); plaintext removed from the service env'
-  } catch { Write-NwdashWarn 'could not clear DASHBOARD_AUTH_PASSWORD from the service env - clear it manually (nssm reset NetWorkerDashboard AppEnvironmentExtra)' }
 }
 
 $urlHost = if ($BindHost) { $BindHost } else { 'localhost' }

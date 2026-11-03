@@ -814,6 +814,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.request_id = uuid.uuid4().hex[:8]
         self._body_consumed = False  # one handler instance serves many keep-alive requests
+        # The gates read client headers before the routes' own try. An error
+        # there escaped to socketserver, which dropped the connection without
+        # an answer (review S11). Every POST now gets one.
+        try:
+            self._post_routes()
+        except Exception:
+            ref = getattr(self, "request_id", "-")
+            LOG.exception("do_POST unhandled error", extra={"request_id": ref})
+            try:
+                self._drain_request_body()
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Internal error (ref {ref}).")
+            except Exception as exc2:  # noqa: BLE001 — headers may already be sent
+                LOG.debug(f"failed to send error response (ref {ref}): {exc2}")
+
+    def _post_routes(self) -> None:
         path = urlparse(self.path).path
         # Cross-site gate for EVERY POST, with or without a password. The CSRF
         # token below exists only when auth is on, so without these a page the
@@ -997,6 +1012,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     session_id = str(payload.get("sessionId") or "").strip()
                     if not session_id or not _session_exists(session_id):
                         raise BadRequest("Valid session ID required to create share link.")
+                    # Regenerate names the link it replaces, which may belong to
+                    # an earlier session (a reconnect, a re-login): left alone it
+                    # stayed valid for 24 h while the page lost its token (S12).
+                    replaces = str(payload.get("replaces") or "").strip()
+                    if replaces and revoke_share_token(replaces):
+                        self._audit("Share link revoked", item=f"{replaces[:4]}…{replaces[-4:]}", old="active", new="replaced")
                     token = create_share_token(session_id)
                     self._audit("Share link created", item=f"{token[:4]}…{token[-4:]}", field="expires", new="in 24 hours")
                     self._send_json(HTTPStatus.OK, {"ok": True, "token": token})

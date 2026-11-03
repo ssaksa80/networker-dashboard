@@ -167,12 +167,18 @@ class TestProfileHostBinding(ProfileFixtureMixin, unittest.TestCase):
         with self.assertRaises(BadRequest):
             profiles_mod._resolve_profile_password(_payload(backupServerHost="attacker.example"))
 
-    def test_profile_without_verify_tls_is_not_held_to_one(self):
-        """Profiles saved before verifyTls existed must keep working."""
+    def test_profile_without_verify_tls_is_held_to_verifying(self):
+        """Review S7: a profile saved before verifyTls existed was not bound to
+        it, so a request could send its stored password with verification off.
+        A missing key now reads as on, like everywhere else."""
         stored = {k: v for k, v in STORED_PROFILE.items() if k != "verifyTls"}
         self.use_profiles({"prod-nw": dict(stored, _enc_password="enc:v2:stub")})
-        result = profiles_mod._resolve_profile_password(_payload(verifyTls=False))
+        with self.assertRaises(BadRequest) as ctx:
+            profiles_mod._resolve_profile_password(_payload(verifyTls=False))
+        self.assertIn("Verify TLS", str(ctx.exception))
+        result = profiles_mod._resolve_profile_password(_payload(verifyTls=True))
         self.assertEqual(result["password"], "prod-secret")
+        self.assertIs(result["verifyTls"], True)
 
 
 class TestResaveKeepsSecretsBound(ProfileFixtureMixin, unittest.TestCase):

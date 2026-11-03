@@ -13,6 +13,7 @@ from http import HTTPStatus
 from http.client import HTTPException
 from http.cookiejar import CookieJar
 from typing import Any
+from urllib.request import HTTPCookieProcessor
 
 from . import config as _cfg
 from .config import (
@@ -43,6 +44,7 @@ from .models import (
 from .nwui import build_dashboard_nwui, nwui_login, refresh_server_protection_job_nwui
 from .profiles import _host_allowed, _normalize_host
 from .restapi import (
+    api_opener,
     build_dashboard_rest,
     build_headers,
     load_server_health_nwui,
@@ -102,15 +104,11 @@ def reauthenticate_dashboard_session(session: DashboardSession, config: ApiConfi
         return False
 
     context = ssl_context_for_api(config.verify_tls)
-    import urllib.request as _urllib_request
 
     try:
         if config.api_mode in ("auto", "nwui", ""):
             cookie_jar = CookieJar()
-            opener = _urllib_request.build_opener(
-                _urllib_request.HTTPCookieProcessor(cookie_jar),
-                _urllib_request.HTTPSHandler(context=context),
-            )
+            opener = api_opener(context, HTTPCookieProcessor(cookie_jar))
             auth_headers, _ = nwui_login(replace(config, password=password), opener)
             session.cookie_jar = cookie_jar
             session.auth_headers = dict(auth_headers)
@@ -179,8 +177,6 @@ def _restore_session_record(session_id: str, rec: dict[str, Any], now: float) ->
     recreate_session_from_snapshot (an automation's connection snapshot).
     Raises on login/network failure; returns False for unusable records.
     """
-    import urllib.request as _urllib_request
-
     enc_pw = str(rec.get("encrypted_networker_password") or "")
     password = decrypt_process_secret(enc_pw)
     if not password:
@@ -218,10 +214,7 @@ def _restore_session_record(session_id: str, rec: dict[str, Any], now: float) ->
 
     context = ssl_context_for_api(config.verify_tls)
     cookie_jar = CookieJar()
-    opener = _urllib_request.build_opener(
-        _urllib_request.HTTPCookieProcessor(cookie_jar),
-        _urllib_request.HTTPSHandler(context=context),
-    )
+    opener = api_opener(context, HTTPCookieProcessor(cookie_jar))
     auth_headers, _ = nwui_login(config, opener)
 
     _put_session(session_id, DashboardSession(

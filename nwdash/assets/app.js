@@ -2561,7 +2561,9 @@
         const resp = await fetch("/api/share", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({sessionId, action: "create"}),
+          // Regenerate revokes the link on screen in the same request, even
+          // when it was made for an earlier session.
+          body: JSON.stringify({sessionId, action: "create", replaces: currentShareToken || ""}),
           cache: "no-store",
         });
         const data = await resp.json();
@@ -2708,7 +2710,7 @@
       form.timeoutSeconds.value   = profile.timeoutSeconds   || "30";
       form.useWmiHealth.checked   = !!profile.useWmiHealth;
       form.wmiUsername.value      = profile.wmiUsername      || "";
-      form.verifyTls.checked      = !!profile.verifyTls;
+      form.verifyTls.checked      = profile.verifyTls !== false;  // unset (older profiles) = verify
       form.useAuthcHeader.checked = profile.useAuthcHeader !== false;
       // "(saved)" means server has encrypted password — keep as-is; getPayload() sends sentinel
       form.password.value    = profile.password    || "";

@@ -176,6 +176,13 @@ class TestCsrfToken(LoginSessionsMixin, unittest.TestCase):
         self.assertFalse(auth._verify_csrf_token("", token))
         self.assertFalse(auth._verify_csrf_token(cookie, "bogus-token"))
 
+    def test_non_ascii_values_are_refused_not_raised(self):
+        """Review S11: compare_digest raises TypeError on a non-ASCII str."""
+        cookie = auth._make_auth_cookie()
+        token = auth._make_csrf_token(cookie)
+        self.assertFalse(auth._verify_csrf_token(cookie, "tökén"))
+        self.assertFalse(auth._verify_csrf_token("päyload.sig", token))
+
 
 if __name__ == "__main__":
     unittest.main()
