@@ -72,6 +72,7 @@ $shipFiles = @(
   'nwdash\emailer.py',
   'nwdash\fileio.py',
   'nwdash\fsacl.py',
+  'nwdash\job_status.py',
   'nwdash\main.py',
   'nwdash\models.py',
   'nwdash\nwui.py',

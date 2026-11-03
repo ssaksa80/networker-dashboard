@@ -12,6 +12,7 @@ MODULES = [
     "nwdash.models",
     "nwdash.profiles",
     "nwdash.wmi_health",
+    "nwdash.job_status",
     "nwdash.restapi",
     "nwdash.nwui",
     "nwdash.sessions",

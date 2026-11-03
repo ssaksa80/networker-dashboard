@@ -18,6 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request
 
 from . import config as _cfg
+from . import job_status
 from .config import (
     API_VERSION_CANDIDATES,
     APP_VERSION,
@@ -46,9 +47,10 @@ from .restapi import (
     format_duration_seconds,
     in_report_window,
     invalid_rest_query_field,
-    is_active_job,
     is_clone_job,
     is_failed_job,
+    is_queued_job,
+    is_running_job,
     is_success_job,
     job_history_endpoint,
     load_server_health_nwui,
@@ -448,48 +450,11 @@ def parse_nwui_time(value: Any) -> str:
 
 
 def normalize_nwui_status(value: Any, failed_sessions: int = 0) -> str:
-    raw = str(value or "unknown").strip().lower().replace(" ", "_")
-    mapping = {
-        "completed": "succeeded",
-        "success": "succeeded",
-        "successful": "succeeded",
-        "ok": "succeeded",
-        "done": "succeeded",
-        "finished": "succeeded",
-        "in_progress": "running",
-        "active": "running",
-        "started": "running",
-        "waiting": "queued",
-        "pending": "queued",
-        "scheduled": "queued",
-        "error": "failed",
-        "aborted": "failed",
-        "failure": "failed",
-        "warnings": "warning",
-        "interrupted": "warning",
-        "missed": "warning",
-        "missedtheschedule": "warning",
-        "missed_the_schedule": "warning",
-        "skipped": "warning",
-        "never_started": "warning",
-        "notstarted": "warning",
-    }
-    status = mapping.get(raw, raw)
-    if status not in ("succeeded", "failed", "warning", "running", "queued"):
-        if "succ" in raw or "complet" in raw:
-            status = "succeeded"
-        elif "fail" in raw or "error" in raw or "abort" in raw:
-            status = "failed"
-        elif "warn" in raw or "miss" in raw or "skip" in raw or "interrupt" in raw:
-            status = "warning"
-        elif "run" in raw or "progress" in raw:
-            status = "running"
-        elif "wait" in raw or "pend" in raw or "queue" in raw:
-            status = "queued"
-        else:
-            status = raw or "unknown"
-    if status == "succeeded" and failed_sessions > 0:
-        return "warning"
+    """The job_status outcome of an NWUI status, the classifier REST mode uses
+    too (review C5). A success with failed sessions is a warning."""
+    status = job_status.classify_status(value)
+    if status == job_status.SUCCEEDED and failed_sessions > 0:
+        return job_status.WARNING
     return status
 
 
@@ -599,11 +564,10 @@ def project_nwui_recovery(item: Any) -> dict[str, str]:
 
 def rest_job_as_nwui_action(job: Any) -> dict[str, Any]:
     status = status_text(job)
-    status_lower = status.lower()
     success = 1 if is_success_job(job) else 0
     failed = 1 if is_failed_job(job) else 0
-    running = 1 if is_active_job(job) and "queue" not in status_lower else 0
-    waiting = 1 if "queue" in status_lower or "wait" in status_lower or "pending" in status_lower else 0
+    running = 1 if is_running_job(job) else 0
+    waiting = 1 if is_queued_job(job) else 0
     return {
         # The NetWorker job id, under a name the NWUI feed never uses: the
         # history merge keys on it (review C1).
