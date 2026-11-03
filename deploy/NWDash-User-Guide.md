@@ -90,6 +90,8 @@ dashboard data on the dashboard host (nothing is sent anywhere).
 - **Compare growth** shows Before/After cards with a delta pill per metric —
   what changed between two snapshots.
 - **Snapshot History** lists every stored snapshot; auto-save can be toggled.
+  Auto-save stores each finished day, midnight to midnight, under that day's
+  date, soon after it ends.
 - **Export CSV** downloads the snapshot series.
 
 ---

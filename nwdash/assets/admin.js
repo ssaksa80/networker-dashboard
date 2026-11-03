@@ -795,7 +795,7 @@
       }
       $("#snAuto").addEventListener("click", async (e) => {
         const on = e.currentTarget.getAttribute("aria-checked") !== "true";
-        try { const r = await post("/api/snapshots", {action: "auto-config", enabled: on}); toast(on ? "Automatic snapshot on." + (r.result === "saved" ? " Today's is saved." : "") : "Automatic snapshot off."); loadSnapshots(); } catch (err) { fail(err); }
+        try { const r = await post("/api/snapshots", {action: "auto-config", enabled: on}); toast(on ? "Automatic snapshot on." + (r.result === "saved" ? " Yesterday's is saved." : "") : "Automatic snapshot off."); loadSnapshots(); } catch (err) { fail(err); }
       });
       $("#snNow").addEventListener("click", async () => {
         try { const r = await post("/api/snapshots", {action: "save"}); toast(r.message || "Snapshot saved."); loadSnapshots(true); } catch (e) { fail(e); }
