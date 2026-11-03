@@ -308,6 +308,17 @@ server, the save's response warns that schedules cannot log in. Sends work
 from a copy taken with the password (`_smtp_send_view`), so a save during a
 send cannot pair the old password with the new server.
 
+The automatic snapshot (`snapshots._auto_snapshot_once`, every 10 minutes and
+when it is switched on) stores yesterday, the last whole calendar day, under
+that day's date (review C18). It builds the day itself as a custom range,
+midnight to midnight, in the shared session with `remember_range=False`, and
+keeps the build only when it is fresh: HTTP 200, `ok`, not a `stale` fallback,
+and with backup job data. It never copies the shared dashboard, whose range is
+whatever its viewer picked and which can be hours old. The build runs outside
+`SNAPSHOTS_LOCK`; the check that decides and the save take the lock once, so a
+snapshot saved meanwhile, by hand or by another run, is kept. A snapshot saved
+by hand is still the dashboard on screen, under the date of the save.
+
 ## Operational gotchas
 
 - `data/.session_key` and `data/.auth_key` are DPAPI-protected per
