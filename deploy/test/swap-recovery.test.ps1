@@ -127,7 +127,10 @@ function Add-SpentBackup([string]$Dir, [string]$Name) {
 }
 
 # Every file under $Root with its content, apart from backups\ and data\.
+# Get-ChildItem gives long paths, and TEMP can be a short one (C:\Users\RUNNER~1
+# on CI), so the root is resolved the same way before it is cut off.
 function Get-Tree([string]$Root, [switch]$All) {
+  $Root = (Get-Item -LiteralPath $Root).FullName
   $rows = foreach ($f in @(Get-ChildItem -Recurse -File -Force $Root | Sort-Object FullName)) {
     $rel = $f.FullName.Substring($Root.Length)
     if ($All -or $rel -notmatch '^\\(backups|data)\\') { "$rel = $(Get-Content -Raw $f.FullName)" }
