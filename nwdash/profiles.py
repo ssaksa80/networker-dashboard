@@ -348,16 +348,17 @@ def _normalize_host(host: str) -> str:
     return (host or "").strip().lower().strip("[]")
 
 
-def _resolve_ips(host: str) -> set[str]:
+def _resolve_ips(host: str) -> list[str]:
+    """Every address `host` resolves to, in the resolver's order of preference."""
     try:
         infos = socket.getaddrinfo(host, None)
     except (socket.gaierror, OSError, UnicodeError):
-        return set()
-    ips: set[str] = set()
+        return []
+    ips: list[str] = []
     for info in infos:
         sockaddr = info[4]
-        if sockaddr and sockaddr[0]:
-            ips.add(sockaddr[0])
+        if sockaddr and sockaddr[0] and sockaddr[0] not in ips:
+            ips.append(sockaddr[0])
     return ips
 
 
@@ -393,24 +394,70 @@ def _ip_in_networks(ip: str) -> bool:
     return any(addr in net for net in ALLOWED_NETWORKS)
 
 
-def _host_allowed(host: str) -> bool:
-    if not _cfg.ALLOWLIST_ENABLED:
-        return True
+def _allowed_ips(host: str) -> list[str]:
+    """The addresses the allow-list lets `host` be reached at right now: a
+    literal IP in an allowed network, or everything an allow-listed name
+    resolves to, provided every one of those is pinned or in an allowed
+    network. Empty when the host is not allowed."""
     h = _normalize_host(host)
     if not h:
-        return False
+        return []
     try:
         literal_ip = ipaddress.ip_address(h)
     except ValueError:
         literal_ip = None
     if literal_ip is not None:
-        return _ip_in_networks(h)
+        return [h] if _ip_in_networks(h) else []
     if h not in ALLOWED_HOST_NAMES:
-        return False
+        return []
     resolved = _resolve_ips(h)
-    if not resolved:
-        return False
-    return all(ip in ALLOWED_PINNED_IPS or _ip_in_networks(ip) for ip in resolved)
+    if not all(ip in ALLOWED_PINNED_IPS or _ip_in_networks(ip) for ip in resolved):
+        return []
+    return resolved
+
+
+def _host_allowed(host: str) -> bool:
+    if not _cfg.ALLOWLIST_ENABLED:
+        return True
+    return bool(_allowed_ips(host))
+
+
+class HostNotAllowed(OSError):
+    """Raised when connecting, so urllib reports it like any other network error."""
+
+
+def connect_allowed(
+    address: tuple[str, int],
+    timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+    source_address: Any = None,
+) -> socket.socket:
+    """socket.create_connection, with the allow-list applied to the address
+    actually dialled (review S8).
+
+    Checking a name and then letting urllib look it up again leaves a gap: a
+    DNS answer that changes in between (rebinding) sends the request, and the
+    NetWorker credential in it, to a host the allow-list never approved. Here
+    the one lookup that is checked is the one that is connected to. The caller
+    still passes the name to TLS, so SNI and the certificate check are unchanged.
+    """
+    host, port = address
+    if not _cfg.ALLOWLIST_ENABLED:
+        return socket.create_connection(address, timeout, source_address)
+    ips = _allowed_ips(host)
+    if not ips:
+        LOG.warning(
+            "refused to connect to %s: not on the allow-list at connect time",
+            safe_log_text(host, 120),
+            extra={"event": "allowlist_connect_refused"},
+        )
+        raise HostNotAllowed(f"Host '{host}' is not in the configured allow-list.")
+    errors: list[OSError] = []
+    for ip in ips:
+        try:
+            return socket.create_connection((ip, port), timeout, source_address)
+        except OSError as exc:
+            errors.append(exc)
+    raise errors[-1]
 
 
 def _assert_host_allowed(config: ApiConfig) -> None:

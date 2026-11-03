@@ -15,7 +15,7 @@ from datetime import datetime
 from http.cookiejar import CookieJar
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request
+from urllib.request import HTTPCookieProcessor, Request
 
 from . import config as _cfg
 from .config import (
@@ -31,6 +31,7 @@ from .models import ApiConfig, RestApiError, generated_at
 from .restapi import (
     add_sla_summary,
     api_base_url_for_version,
+    api_opener,
     authc_header_value,
     build_headers,
     clean_networker_job_message,
@@ -984,12 +985,7 @@ def refresh_server_protection_job_nwui(
     previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     context = ssl_context_for_api(config.verify_tls)
-    import urllib.request as _urllib_request
-
-    opener = _urllib_request.build_opener(
-        _urllib_request.HTTPCookieProcessor(cookie_jar),
-        _urllib_request.HTTPSHandler(context=context),
-    )
+    opener = api_opener(context, HTTPCookieProcessor(cookie_jar))
     now = time.time()
     lookback_start = now - (7 * 24 * 60 * 60)
     try:
@@ -1041,15 +1037,8 @@ def build_dashboard_nwui(
         f"verifyTls={config.verify_tls} timeout={config.timeout_seconds}s"
     )
 
-    # urllib opener does not accept an SSL context directly through build_opener;
-    # use a custom HTTPS handler by installing the context into requests below.
-    import urllib.request as _urllib_request
-
     cookie_jar = cookie_jar or CookieJar()
-    opener = _urllib_request.build_opener(
-        _urllib_request.HTTPCookieProcessor(cookie_jar),
-        _urllib_request.HTTPSHandler(context=context),
-    )
+    opener = api_opener(context, HTTPCookieProcessor(cookie_jar))
 
     should_login = auth_headers is None
     login_info: dict[str, Any] = {"status": "reused", "hasToken": bool(auth_headers)}
