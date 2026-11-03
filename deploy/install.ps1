@@ -3,7 +3,8 @@
 # deploy\install.ps1 and trimmed to this app (no SQL, no patch tier).
 #
 #   deploy\install.ps1                          fresh install / migrate from the
-#                                               legacy scheduled-task install
+#                                               legacy scheduled-task install /
+#                                               reinstall (keeps what is not given)
 #   deploy\install.ps1 -Check                   dry-run: print the resolved plan
 #   deploy\install.ps1 -Upgrade                 swap app + runtime, keep config
 #   deploy\install.ps1 -Rollback                restore the newest backup
@@ -59,14 +60,43 @@ function Get-NwdashLauncherArgs {
   return "$a --no-launch"
 }
 
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+# What this command line sets. Captured here: a dot-sourced block sees none.
+$givenParams = @($PSBoundParameters.Keys)
+
+# ---- an existing service: keep what this command line leaves out (review O2) ----
+# A plain install over the installed service used to rebuild it from this
+# command line alone, dropping its port, bind, allow-list, account and
+# -AllowUnauthenticated. Read them as -Upgrade does, before anything below uses
+# them and before elevation, so -Check shows them and a refusal changes nothing.
+# Any nssm.exe can read the service; the bundle's own also finds one installed
+# under another -InstallDir.
+$carry = $null; $liveUnread = $false
+if (-not ($Upgrade -or $Rollback -or $Uninstall) -and (Get-Service -Name $SvcName -ErrorAction SilentlyContinue)) {
+  $readNssm = if ((Get-NwdashPathState -Path $NssmSrc) -eq 'present') { $NssmSrc } else { Join-Path $InstallDir 'nssm.exe' }
+  $live = Read-NwdashLiveService -Nssm $readNssm
+  if ($live) {
+    $carry = Get-NwdashCarryOver -Live $live -Given $givenParams -Port $Port -BindHost $BindHost `
+      -ServiceAccount $ServiceAccount -AllowedHosts $AllowedHosts
+    $Port = $carry.Port; $BindHost = $carry.BindHost; $ServiceAccount = $carry.ServiceAccount; $AllowedHosts = $carry.AllowedHosts
+  } elseif ($isAdmin -and -not $Check) {
+    Stop-Nwdash ("a $SvcName service is installed, but its settings could not be read, so a reinstall would drop them. " +
+      'Nothing was changed. Use -Upgrade to update it, or -Uninstall first to start over.')
+  } else {
+    $liveUnread = $true   # the elevated run reads them again, and decides
+  }
+}
+$allowUnauth = $AllowUnauthenticated.IsPresent -or ($carry -and $carry.AllowUnauthenticated)
+
 # Dashboard password plan for a fresh install (an upgrade decides from the live
 # service, below). data\ survives reinstalls, so a stored hash counts. data\ is
 # locked on an existing install and this line also runs before elevation, so
-# 'denied' is an answer here: the elevated run can read the file and decide.
+# 'denied' is an answer here: the elevated run can read the file and decide. So
+# is a service whose settings this run could not read.
 $authFile = Get-NwdashPathState -Path (Join-Path $InstallDir 'data\auth.json')
 $authPlan = Get-NwdashAuthPlan -PasswordGiven ([bool]$AuthPassword) `
-  -PasswordStored ($authFile -eq 'present') -PasswordUnknown ($authFile -eq 'denied') `
-  -BindHost $BindHost -AllowUnauthenticated $AllowUnauthenticated.IsPresent
+  -PasswordStored ($authFile -eq 'present') -PasswordUnknown (($authFile -eq 'denied') -or $liveUnread) `
+  -BindHost $BindHost -AllowUnauthenticated $allowUnauth
 
 # A folder this must not lock: refused for a new install, warned about for an
 # existing one, which keeps working as it is.
@@ -80,7 +110,7 @@ if ($Check) {
   $mode = if ($Uninstall) { 'uninstall' + $(if ($Purge) { ' (purge)' } else { ' (keep data)' }) }
           elseif ($Rollback) { 'rollback (newest backup)' }
           elseif ($Upgrade) { 'upgrade (config + data preserved)' }
-          elseif ($svc) { 'REINSTALL over the existing service' }
+          elseif ($svc) { 'reinstall over the existing service (keeps its settings unless given here)' }
           elseif ($task) { 'fresh install + MIGRATE from the legacy scheduled task' }
           elseif ($existing) { 'fresh install over existing files (data kept)' }
           else { 'fresh install' }
@@ -115,6 +145,12 @@ if ($Check) {
     catch { Write-NwdashLog "  permissions    : $($_.Exception.Message) - an install would be REFUSED" }
   }
   Write-NwdashLog "  existing state : service=$(if ($svc) { "$($svc.Status)" } else { 'none' }) task=$(if ($task) { 'present (will be migrated)' } else { 'none' }) files=$(if ($existing) { 'present' } else { 'none' })"
+  if ($carry) {
+    Write-NwdashLog "  kept from it   : $(if ($carry.Kept) { $carry.Kept -join ', ' } else { 'nothing' })"
+    if ($carry.Problem) { Write-NwdashLog "  REFUSED        : $($carry.Problem)" }
+  } elseif ($liveUnread) {
+    Write-NwdashLog '  kept from it   : not known - the service settings could not be read; run -Check from an elevated prompt to see them'
+  }
   Write-NwdashLog "  backups        : $InstallDir\backups\<version>-<timestamp>\{app,runtime} (keep 3 newest)"
   Write-NwdashLog '  never touched  : data\, .certs\, logs\, backups\'
   $names = @(Get-NwdashBackups -InstallDir $InstallDir)
@@ -132,6 +168,9 @@ if ($authPlan -eq 'refused' -and -not ($Upgrade -or $Rollback -or $Uninstall)) {
     '-AllowUnauthenticated to accept that anyone who can reach the port can read backup data and change the configuration.')
 }
 
+# A service account a reinstall cannot keep is refused before anything changes.
+if ($carry -and $carry.Problem) { Stop-Nwdash $carry.Problem }
+
 # The same goes for the folder lock: a typo in -ServiceAccount or a folder that
 # must not be locked is refused here, not after the old install is gone.
 if (-not ($Upgrade -or $Rollback -or $Uninstall)) {
@@ -141,7 +180,6 @@ if (-not ($Upgrade -or $Rollback -or $Uninstall)) {
 }
 
 # ---- elevation (everything below changes service/firewall/files) ----
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
 if (-not $isAdmin) {
   if ($Elevated) { Stop-Nwdash 'still not elevated after the UAC relaunch - elevation was declined. Re-run from an Administrator prompt.' }
   Write-NwdashLog 'requesting administrator privileges (UAC)...'
@@ -229,7 +267,7 @@ if ($Upgrade -or $Rollback) {
     if ($upgradePlan -eq 'refused') {
       Stop-Nwdash ("the installed service has no dashboard password and listens on $(if ($liveBind) { $liveBind } else { 'all interfaces' }) " +
         "port $livePort; $BundleVersion refuses to start that way, so nothing was changed. Set a password with a normal " +
-        "install (-AuthPassword <password> -Port $livePort$(if ($liveBind) { " -BindHost $liveBind" }); data\ is kept), " +
+        'install and -AuthPassword <password> (it keeps the service settings and data\), ' +
         'or re-run -Upgrade -AllowUnauthenticated to keep running without one.')
     }
     if ($upgradePlan -eq 'unauthenticated' -and -not ($envLines -contains $script:NwdashAllowUnauthEnv)) {
@@ -389,7 +427,10 @@ if ($task) {
 # Stop any running instance (service-managed instances live under InstallDir;
 # hand-started ones are matched by command line, as the old setup did).
 $svc = Get-Service -Name $SvcName -ErrorAction SilentlyContinue
-if ($svc) { Write-NwdashLog "removing existing $SvcName service for a clean reinstall"; Remove-NwdashService -InstallDir $InstallDir }
+if ($svc) {
+  if ($carry) { Write-NwdashLog "keeping the existing service settings: $(if ($carry.Kept) { $carry.Kept -join ', ' } else { 'none set' })" }
+  Write-NwdashLog "removing existing $SvcName service for a clean reinstall"; Remove-NwdashService -InstallDir $InstallDir
+}
 $killed = 0
 Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='py.exe'" -ErrorAction SilentlyContinue |
   Where-Object { $_.CommandLine -match 'networker_dashboard\.py' } |
@@ -445,12 +486,14 @@ if ($ServiceAccount) { & $nssm set $SvcName ObjectName $ServiceAccount $ServiceP
 # Service environment: the app reads DASHBOARD_AUTH_PASSWORD once at boot and
 # persists a salted PBKDF2 hash in data\auth.json; the plaintext is REMOVED
 # from the service env right after the first healthy boot (below), so it never
-# stays in the registry. DASHBOARD_ALLOWED_HOSTS is not a secret and persists.
+# stays in the registry. DASHBOARD_ALLOWED_HOSTS is not a secret and persists,
+# as does whatever else a reinstall kept from the service it replaced.
 $envExtra = @()
+if ($carry) { $envExtra += $carry.Env }
 if ($AllowedHosts) { $envExtra += "DASHBOARD_ALLOWED_HOSTS=$AllowedHosts" }
 if ($AuthPassword) { $envExtra += "DASHBOARD_AUTH_PASSWORD=$AuthPassword" }
+if ($authPlan -eq 'unauthenticated' -or ($carry -and $carry.AllowUnauthenticated)) { $envExtra += $script:NwdashAllowUnauthEnv }
 if ($authPlan -eq 'unauthenticated') {
-  $envExtra += $script:NwdashAllowUnauthEnv
   Write-NwdashWarn "installing WITHOUT a dashboard password (-AllowUnauthenticated): anyone who can reach port $Port can read backup data and change the configuration"
 }
 if ($envExtra.Count) { & $nssm set $SvcName AppEnvironmentExtra $envExtra | Out-Null }
@@ -488,10 +531,9 @@ if (-not $ok) {
 }
 
 # The app has persisted the salted hash by now - remove the plaintext password
-# from the service environment (keep the non-secret allow-list).
+# from the service environment and keep everything else in it.
 if ($AuthPassword) {
-  $keepEnv = @()
-  if ($AllowedHosts) { $keepEnv += "DASHBOARD_ALLOWED_HOSTS=$AllowedHosts" }
+  $keepEnv = @($envExtra | Where-Object { $_ -notlike 'DASHBOARD_AUTH_PASSWORD=*' })
   try {
     if ($keepEnv.Count) { & $nssm set $SvcName AppEnvironmentExtra $keepEnv | Out-Null }
     else { & $nssm reset $SvcName AppEnvironmentExtra 2>$null | Out-Null }

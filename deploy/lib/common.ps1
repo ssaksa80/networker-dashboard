@@ -667,6 +667,101 @@ function Get-NwdashAuthPlan {
   return 'refused'
 }
 
+# ---- reinstall over an existing service (review O2) ----
+
+# The settings the installed service runs with, read through nssm as -Upgrade
+# reads them: its launcher command line, its extra environment (one variable per
+# line) and the account it logs on as. Any nssm.exe can read the service, so the
+# caller may pass the bundle's own; -Nssm may also be a scriptblock. $null when
+# the command line cannot be read (no nssm, not this app, or a run that may not
+# query the service): a reinstall must not guess what it would drop. Never throws.
+function Read-NwdashLiveService {
+  param(
+    $Nssm = '',
+    [string]$Name = $script:NwdashServiceName,
+    [scriptblock]$NssmGet = $null,     # ($setting) -> raw `nssm get` output
+    [scriptblock]$GetService = $null   # passed to Read-NwdashServiceAccount
+  )
+  $nssmGet = if ($NssmGet) { $NssmGet } else { { param($setting) & $Nssm get $Name $setting 2>$null } }
+  $params = ''
+  try { $params = ConvertFrom-NwdashNssmOutput -Raw (& $nssmGet 'AppParameters') } catch { $params = '' }
+  if ($params -notmatch 'networker_dashboard\.py') { return $null }
+  $envText = ''
+  try { $envText = ConvertFrom-NwdashNssmOutput -Raw (& $nssmGet 'AppEnvironmentExtra') } catch { $envText = '' }
+  return [pscustomobject]@{
+    Parameters = $params.Trim()
+    Env        = @($envText -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    Account    = (Read-NwdashServiceAccount -Name $Name -GetService $GetService)
+  }
+}
+
+# What a plain install over the installed service runs with. It used to rebuild
+# the service from its own command line alone, so re-running it to change one
+# thing dropped the port, bind, allow-list, account and -AllowUnauthenticated the
+# service had (review O2). Now whatever $Given (the names in $PSBoundParameters)
+# leaves out comes from $Live (Read-NwdashLiveService).
+#
+# The environment is kept whole, with two exceptions: -AllowedHosts replaces the
+# allow-list, and a DASHBOARD_AUTH_PASSWORD that an install failed to clear is
+# dropped, because the app would set the password from it at every start and
+# undo a change made in the admin console. Env holds the lines the installer does
+# not manage itself; AllowedHosts and AllowUnauthenticated carry the other two.
+#
+# Windows never gives a service account's password back, so an account that
+# needs one is kept only with -ServicePassword. Otherwise Problem says why the
+# install must stop, before it changes anything. Kept lists what was carried, for
+# the log. Pure + testable.
+function Get-NwdashCarryOver {
+  param(
+    [Parameter(Mandatory)]$Live,
+    [string[]]$Given = @(),
+    [int]$Port = 8443,
+    [string]$BindHost = '',
+    [string]$ServiceAccount = '',
+    [string]$AllowedHosts = ''
+  )
+  $out = [pscustomobject]@{
+    Port = $Port; BindHost = $BindHost; ServiceAccount = $ServiceAccount; AllowedHosts = $AllowedHosts
+    AllowUnauthenticated = $false; Env = @(); Kept = @(); Problem = ''
+  }
+  $liveArgs = Get-NwdashServiceArgs -Parameters $Live.Parameters -DefaultPort $Port
+  if ('Port' -notin $Given) { $out.Port = $liveArgs.Port; $out.Kept += "port $($liveArgs.Port)" }
+  if ('BindHost' -notin $Given) {
+    $out.BindHost = $liveArgs.Bind
+    if ($liveArgs.Bind) { $out.Kept += "bind $($liveArgs.Bind)" }
+  }
+  foreach ($line in @($Live.Env)) {
+    $value = $line.Substring($line.IndexOf('=') + 1)
+    if ($line -like 'DASHBOARD_ALLOWED_HOSTS=*') {
+      if ('AllowedHosts' -notin $Given -and $value) { $out.AllowedHosts = $value; $out.Kept += "allowed hosts $value" }
+    } elseif ($line -like 'DASHBOARD_ALLOW_UNAUTHENTICATED=*') {
+      # The app honours exactly 1 (nwdash/main.py); anything else meant no.
+      if ($value.Trim() -eq '1') { $out.AllowUnauthenticated = $true; $out.Kept += '-AllowUnauthenticated' }
+    } elseif ($line -notlike 'DASHBOARD_AUTH_PASSWORD=*') {
+      $out.Env += $line
+    }
+  }
+  if ($out.Env.Count) { $out.Kept += "$($out.Env.Count) other environment variable(s)" }
+  if ('ServiceAccount' -notin $Given) {
+    $account = "$($Live.Account)".Trim()
+    if (-not $account) {
+      $out.Problem = 'could not read the account the installed service logs on as, so a reinstall cannot keep it. ' +
+        'Nothing was changed. Re-run with -ServiceAccount <account> (and -ServicePassword), or use -Upgrade, which keeps the service as it is.'
+    } elseif ($account -in @('LocalSystem', '.\LocalSystem', 'NT AUTHORITY\SYSTEM')) {
+      $out.ServiceAccount = ''   # nssm's default, nothing to set
+      $out.Kept += 'account LocalSystem'
+    } elseif ($account -like 'NT AUTHORITY\*' -or 'ServicePassword' -in $Given) {
+      $out.ServiceAccount = $account
+      $out.Kept += "account $account"
+    } else {
+      $out.Problem = "the installed service logs on as $account, and Windows does not give a service account's password back, " +
+        'so a reinstall cannot keep that account by itself. Nothing was changed. Re-run with -ServicePassword <its password> to keep it, ' +
+        'or -ServiceAccount <account> -ServicePassword <password> to change it, or use -Upgrade, which keeps the service as it is.'
+    }
+  }
+  return $out
+}
+
 # ---- folder permissions ----
 
 # An install folder must not inherit from C:\: Users can read there on every

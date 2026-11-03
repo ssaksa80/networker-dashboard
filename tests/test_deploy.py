@@ -153,7 +153,7 @@ class TestFolderLock(unittest.TestCase):
         under EAP=Stop: every non-elevated run would die before the UAC prompt."""
         self.assertNotIn("Test-Path (Join-Path $InstallDir 'data", self.before_elevation)
         self.assertIn("Get-NwdashPathState -Path (Join-Path $InstallDir 'data\\auth.json')", self.before_elevation)
-        self.assertIn("-PasswordUnknown ($authFile -eq 'denied')", self.before_elevation)
+        self.assertIn("-PasswordUnknown (($authFile -eq 'denied') -or $liveUnread)", self.before_elevation)
 
     def test_a_bad_target_or_account_is_refused_before_elevation(self):
         self.assertIn("if ($aclProblem) { Stop-Nwdash", self.before_elevation)
@@ -182,7 +182,8 @@ class TestFolderLock(unittest.TestCase):
         self.assertIn("Reset-NwdashAppAcl -InstallDir $InstallDir", restore)
 
     def test_new_scripts_stay_ascii(self):
-        for path in (DEPLOY / "install.ps1", DEPLOY / "lib" / "common.ps1", DEPLOY / "test" / "folder-acl.test.ps1"):
+        for path in (DEPLOY / "install.ps1", DEPLOY / "lib" / "common.ps1", DEPLOY / "test" / "folder-acl.test.ps1",
+                     DEPLOY / "test" / "reinstall-carry.test.ps1"):
             self.assertTrue(path.read_bytes().isascii(), f"{path.name} must stay ASCII for Windows PowerShell 5.1")
 
     def test_the_lock_does_not_use_set_acl(self):
@@ -201,6 +202,36 @@ class TestFolderLock(unittest.TestCase):
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
              str(DEPLOY / "test" / "folder-acl.test.ps1")],
             capture_output=True, text=True, timeout=300, check=False, env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class TestReinstallKeepsSettings(unittest.TestCase):
+    """A plain install over the installed service keeps what its command line
+    leaves out (review O2). deploy/test/reinstall-carry.test.ps1 covers what is
+    kept; these cover where it is read."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.install = (DEPLOY / "install.ps1").read_text(encoding="utf-8")
+
+    def test_the_settings_are_read_before_anything_uses_them(self):
+        read = self.install.index("$live = Read-NwdashLiveService")
+        self.assertLess(read, self.install.index("$authPlan = Get-NwdashAuthPlan"))
+        self.assertLess(read, self.install.index("if ($Check) {"))
+        self.assertLess(self.install.index("if ($carry -and $carry.Problem) { Stop-Nwdash"), self.install.index("# ---- elevation"))
+
+    def test_the_old_service_is_removed_only_after_they_are_kept(self):
+        fresh = self.install[self.install.index("# ---- fresh install"):]
+        self.assertLess(fresh.index("keeping the existing service settings"), fresh.index("Remove-NwdashService"))
+        self.assertIn("$envExtra += $carry.Env", fresh)
+
+    @unittest.skipUnless(shutil.which("powershell"), "Windows PowerShell not available")
+    def test_reinstall_powershell_tests_pass(self):
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(DEPLOY / "test" / "reinstall-carry.test.ps1")],
+            capture_output=True, text=True, timeout=300, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

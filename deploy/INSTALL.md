@@ -147,7 +147,7 @@ It ends with a **health gate**: the install only reports OK once
 `https://<host>:<port>/api/health` answers.
 
 ```
-Setup-NWDash.cmd                              fresh install / migrate legacy
+Setup-NWDash.cmd                              fresh install / migrate legacy / reinstall
 Setup-NWDash.cmd -Check                       dry-run: print the plan only
 Setup-NWDash.cmd -Upgrade                     upgrade (config + data kept)
 Setup-NWDash.cmd -Rollback                    restore the newest backup
@@ -216,7 +216,8 @@ What this means day to day:
   up readable by users. A folder outside the install keeps whatever permissions
   you gave it: restrict it yourself, and let the service account write there.
 - **Changing the service account** is safe: re-run the install with
-  `-ServiceAccount <account>` (and `-ServicePassword`). The keys are bound to
+  `-ServiceAccount <account>` (and `-ServicePassword`; see
+  [Re-running the install](#re-running-the-install)). The keys are bound to
   this machine, not to an account, and the new account gets the row above.
 - **`-InstallDir`** must be a folder of its own: a drive root, or a system folder
   such as `C:\Windows`, is refused before anything changes. An existing install
@@ -258,6 +259,33 @@ password on an isolated network anyway, pass `-AllowUnauthenticated`: the
 installer then sets `DASHBOARD_ALLOW_UNAUTHENTICATED=1` in the service
 environment, and anyone who can reach the port can read backup data and change
 the configuration.
+
+### Re-running the install
+
+Running `Setup-NWDash.cmd` without `-Upgrade` on a host where the
+`NetWorkerDashboard` service already exists reinstalls the service. Anything the
+command line leaves out is taken from the installed service, read the way
+`-Upgrade` reads it:
+
+- the port and the `-BindHost` pin;
+- the service environment, including the `-AllowedHosts` allow-list, the
+  `-AllowUnauthenticated` setting and any variable added by hand. A
+  `DASHBOARD_AUTH_PASSWORD` left there by an earlier install is dropped, because
+  the app would reset the password from it at every start;
+- the account the service logs on as.
+
+What you pass wins, so a re-run changes only what you name. For example,
+`Setup-NWDash.cmd -AuthPassword <password>` adds a password and keeps the rest.
+To un-pin the bind, pass `-BindHost 0.0.0.0`. `-Check` lists what would be kept.
+The install log names it too, before the old service is removed.
+
+Windows never gives a service account's password back. A service that logs on
+as a named account (not LocalSystem, LocalService or NetworkService) is
+reinstalled only with `-ServicePassword <its password>`, or with
+`-ServiceAccount` and `-ServicePassword` for another account. Without them the
+installer stops before it changes anything. It also stops if the service's
+settings cannot be read. To update the app and keep the service exactly as it
+is, use [`-Upgrade`](#7-upgrade).
 
 ### Legacy scheduled-task migration
 
