@@ -186,6 +186,17 @@ def snapshot_history_all() -> dict[str, Any]:
     return {"ok": True, "dates": dates, "history": history, "slaHistory": sla_history}
 
 
+# A spreadsheet runs a cell that starts with one of these as a formula, so an
+# exported text cell that does gets a leading ', which shows it as text (review
+# C15). Notes are typed by any signed-in user.
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_text_cell(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return "'" + text if text.startswith(CSV_FORMULA_PREFIXES) else text
+
+
 def snapshots_to_csv() -> str:
     import io as _io
     snapshots = load_dashboard_snapshots()
@@ -195,19 +206,20 @@ def snapshots_to_csv() -> str:
     buf.write(",".join(headers) + "\n")
 
     def _esc(v: str) -> str:
-        if "," in v or '"' in v or "\n" in v:
+        if "," in v or '"' in v or "\n" in v or "\r" in v:
             return '"' + v.replace('"', '""') + '"'
         return v
 
     for date in sorted(snapshots.keys(), reverse=True):
         snap = snapshots[date]
         m = snap.get("metrics", {})
+        # The numbers are written by str() and cannot start a formula.
         row = [
-            date,
-            snap.get("server", ""),
+            csv_text_cell(date),
+            csv_text_cell(snap.get("server", "")),
             str(snap.get("slaPercent", "")),
-            snap.get("health", ""),
-            snap.get("annotation", ""),
+            csv_text_cell(snap.get("health", "")),
+            csv_text_cell(snap.get("annotation", "")),
         ] + [str(snapshot_int(m.get(k))) for k in metric_keys]
         buf.write(",".join(_esc(v) for v in row) + "\n")
     return buf.getvalue()
