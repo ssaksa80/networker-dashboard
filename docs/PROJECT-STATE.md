@@ -235,6 +235,13 @@ sign a restart would lose the change. The audit log's rotation and the
 certificate swap retry their replaces the same way. Save new files in `data/`
 through it too.
 
+`automations.json` is written from the live registry, so `persist_automations`
+holds `_AUTOMATIONS_FILE_LOCK` from reading the registry to the replace (review
+C19). Without it, two saves could land out of order, and the older one would
+bring back a schedule just stopped. Every change to a schedule is saved,
+pausing and resuming included. An unreadable file at boot is logged, and no
+schedule is restored.
+
 Email automations are deliberately **decoupled from dashboard sessions**
 (v2.5.x fix for "schedules vanish after restart"): a missing session
 never cancels a schedule. At fire time the automation reuses the live

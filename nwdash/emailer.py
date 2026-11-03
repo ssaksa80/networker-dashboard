@@ -617,20 +617,31 @@ def _automation_to_dict(automation: AlertAutomation) -> dict[str, Any]:
     }
 
 
+# One save of automations.json at a time (review C19). A save writes the
+# registry as it stood when that save began, so two at once could land out of
+# order and the older one would bring back a schedule just stopped or changed.
+_AUTOMATIONS_FILE_LOCK = threading.Lock()
+
+
 def persist_automations() -> None:
     """Write scheduled automations to disk so they survive a restart. Without a
     stable encryption key the SMTP password cannot be persisted safely, so we
-    skip persistence entirely (matches the session-persistence policy)."""
+    skip persistence entirely (matches the session-persistence policy). A
+    failure is logged once, and the schedules stay armed until a restart."""
     if not WMI_CIPHER:
         return
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        records = {key: _automation_to_dict(a) for key, a in _automation_items_snapshot()}
-        atomic_write_text(AUTOMATIONS_FILE, json.dumps(records, separators=(",", ":")))
-    except OSError:
-        pass  # logged by atomic_write_text; the schedules stay armed until a restart
-    except (TypeError, ValueError) as exc:
-        LOG.warning(f"could not save {AUTOMATIONS_FILE.name}: {exc}", extra={"event": "file_write_failed"})
+    with _AUTOMATIONS_FILE_LOCK:
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            records = {key: _automation_to_dict(a) for key, a in _automation_items_snapshot()}
+            text = json.dumps(records, separators=(",", ":"))
+        except (OSError, TypeError, ValueError) as exc:
+            LOG.warning(f"could not save {AUTOMATIONS_FILE.name}: {exc}", extra={"event": "file_write_failed"})
+            return
+        try:
+            atomic_write_text(AUTOMATIONS_FILE, text)
+        except OSError:
+            pass  # logged by atomic_write_text
 
 
 # A saved config re-aims a live schedule (_sync_automation_from_email_config)
@@ -798,7 +809,8 @@ def restore_automations_from_disk() -> int:
         return 0
     try:
         records = json.loads(AUTOMATIONS_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        LOG.warning(f"could not read {AUTOMATIONS_FILE.name}; no schedule restored: {exc}")
         return 0
     if not isinstance(records, dict):
         return 0
@@ -1259,6 +1271,7 @@ def handle_alert_automation(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         if not target:
             return HTTPStatus.OK, {"ok": True, "message": "No such schedule."}
         target.enabled = bool(payload.get("enabled"))
+        persist_automations()  # a pause used to end at the next restart (review C19)
         return HTTPStatus.OK, {
             "ok": True,
             "automationId": requested_id,
