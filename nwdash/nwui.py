@@ -49,6 +49,7 @@ from .restapi import (
     is_clone_job,
     is_failed_job,
     is_success_job,
+    job_history_endpoint,
     load_server_health_nwui,
     maintenance_backup_status,
     networker_log_category,
@@ -520,6 +521,8 @@ def project_nwui_job(item: Any) -> dict[str, Any]:
         "policy": str(item.get("policyName") or ""),
         "status": status,
         "started": start,
+        # `started` is the dd-mm-YYYY display string; order jobs by this.
+        "_started_ts": timestamp(item.get("startTime")),
         "duration": format_duration_seconds(duration_seconds),
         "message": clean_networker_job_message(
             first_value(item, "jobOutput", "message", "statusMessage", "errorMessage"),
@@ -596,6 +599,9 @@ def rest_job_as_nwui_action(job: Any) -> dict[str, Any]:
     running = 1 if is_active_job(job) and "queue" not in status_lower else 0
     waiting = 1 if "queue" in status_lower or "wait" in status_lower or "pending" in status_lower else 0
     return {
+        # The NetWorker job id, under a name the NWUI feed never uses: the
+        # history merge keys on it (review C1).
+        "restJobId": first_value(job, "id"),
         "startTime": first_value(job, "startTime", "started", "start"),
         "duration": first_value(job, "elapsedTime", "duration", "elapsed"),
         "status": status,
@@ -633,24 +639,41 @@ def action_dedup_key(item: Any) -> tuple[str, str, int] | None:
     return (workflow, action, start)
 
 
+def rest_job_key(item: Any) -> tuple[str, str] | None:
+    """Identity of a jobs-database record that carries its NetWorker job id."""
+    if not isinstance(item, dict) or item.get("restJobId") in (None, ""):
+        return None
+    return ("job", str(item["restJobId"]))
+
+
 def merge_action_history(live: list[Any], history: list[Any]) -> list[Any]:
     """Merge live monitoringactions (running set) with completed job history.
     When the same run appears in both, prefer the terminal (completed) record
-    over the live "running" one so finished jobs are counted correctly."""
-    by_key: dict[tuple[str, str, int], Any] = {}
+    over the live "running" one so finished jobs are counted correctly.
+
+    Jobs-database records are the same job only when their job ids match
+    (review C1). Several save sets of one client start in the same second, so
+    keying them on action_dedup_key kept one of them and a failure could
+    vanish. A live NWUI record has no job id: it still matches on
+    action_dedup_key, and pairs with one record only."""
+    by_key: dict[tuple[Any, ...], Any] = {}
     extras: list[Any] = []
     for item in live:
-        key = action_dedup_key(item)
+        key = rest_job_key(item) or action_dedup_key(item)
         if key is None:
             extras.append(item)
             continue
         by_key[key] = item
     for item in history:
-        key = action_dedup_key(item)
+        run_key = action_dedup_key(item)
+        key = rest_job_key(item) or run_key
         if key is None:
             extras.append(item)
             continue
         existing = by_key.get(key)
+        if existing is None and key != run_key and run_key in by_key:
+            existing = by_key.pop(run_key)
+            by_key[key] = existing
         if existing is None:
             by_key[key] = item
             continue
@@ -694,7 +717,7 @@ def nwui_rest_fallback_items(
         raise RestApiError(502, "Direct REST fallback needs the current login password; reconnect to refresh this source.")
     paths = dashboard_endpoints(config)
     source_name = "jobs" if target == "actions" else "policies"
-    original_path = paths["jobs" if target == "actions" else "policies"]
+    original_path = job_history_endpoint() if target == "actions" else paths["policies"]
     last_error: RestApiError | None = None
     attempts: list[str] = []
     for fallback_config in nwui_rest_fallback_configs(config):
@@ -912,18 +935,26 @@ def build_nwui_clients(jobs: list[dict[str, Any]]) -> list[dict[str, str]]:
     return sorted(output, key=lambda item: item["hostname"])
 
 
+def newest_first(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Projected jobs by start time, newest first. Not by `started`: as a
+    dd-mm-YYYY string it put the highest day of the month first (review C2)."""
+    return sorted(jobs, key=lambda job: job.get("_started_ts") or 0, reverse=True)
+
+
 def build_nwui_policies(policy_items: list[Any], jobs: list[dict[str, Any]]) -> list[dict[str, str]]:
     stats: dict[str, dict[str, Any]] = {}
     for job in jobs:
         policy = job.get("policy") or ""
         if not policy:
             continue
-        row = stats.setdefault(policy, {"actions": 0, "workflows": set(), "last": "", "status": "unknown"})
+        row = stats.setdefault(policy, {"actions": 0, "workflows": set(), "last": "", "last_ts": -1.0, "status": "unknown"})
         row["actions"] += 1
         if job.get("_workflow"):
             row["workflows"].add(job["_workflow"])
-        if str(job.get("started") or "") > row["last"]:
+        started_ts = float(job.get("_started_ts") or 0)
+        if job.get("started") and started_ts > row["last_ts"]:
             row["last"] = str(job.get("started") or "")
+            row["last_ts"] = started_ts
             row["status"] = job.get("status") or "unknown"
 
     output = []
@@ -1002,7 +1033,7 @@ def refresh_server_protection_job_nwui(
             end_ts=now,
         )
         jobs = [job for job in (project_nwui_job(item) for item in items) if job]
-        jobs = sorted(jobs, key=lambda item: item.get("started") or "", reverse=True)
+        jobs = newest_first(jobs)
         status = maintenance_backup_status(jobs)
         if status.get("count"):
             status["_baseDetail"] = base_server_protection_detail(status.get("detail"))
@@ -1215,7 +1246,7 @@ def build_dashboard_nwui(
             }
 
     jobs = [job for job in (project_nwui_job(item) for item in raw_actions) if job]
-    jobs = sorted(jobs, key=lambda item: item.get("started") or "", reverse=True)
+    jobs = newest_first(jobs)
     clone_jobs = [job for job in jobs if is_clone_job(job)]
     backup_jobs = [job for job in jobs if not is_clone_job(job)]
     if _cfg.APP_DEBUG:
