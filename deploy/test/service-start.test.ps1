@@ -88,16 +88,34 @@ Assert ($script:ownerKills -contains 7777) 'Wait-NwdashCleanStop: kills the port
 
 # ---- backup name ordering (Get-NwdashBackups) ----
 $tmp = Join-Path $env:TEMP ("nwdash-baktest-" + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force "$tmp\backups\2.8.2-20260101-010101" | Out-Null
-New-Item -ItemType Directory -Force "$tmp\backups\2.8.1-20251231-235959" | Out-Null
-New-Item -ItemType Directory -Force "$tmp\backups\2.9.0-20260301-120000" | Out-Null
-New-Item -ItemType Directory -Force "$tmp\backups\undone-2.9.1-20260401-120000" | Out-Null
-New-Item -ItemType Directory -Force "$tmp\backups\not-a-backup" | Out-Null
+foreach ($n in '2.8.2-20260101-010101', '2.8.1-20251231-235959', '2.9.0-20260301-120000', 'undone-2.9.1-20260401-120000', 'not-a-backup') {
+  New-Item -ItemType Directory -Force "$tmp\backups\$n\app" | Out-Null
+  Set-Content "$tmp\backups\$n\app\networker_dashboard.py" $n
+}
+# Emptied by a restore: the folders stay, no file does (review O3).
+New-Item -ItemType Directory -Force "$tmp\backups\2.9.2-20260501-120000\app\nwdash", "$tmp\backups\2.9.2-20260501-120000\runtime" | Out-Null
 try {
   $names = @(Get-NwdashBackups -InstallDir $tmp)
-  Assert ($names.Count -eq 3) 'Get-NwdashBackups: only real backups listed (undone-* and junk excluded)'
-  Assert ($names[0] -eq '2.9.0-20260301-120000') 'Get-NwdashBackups: newest first (by timestamp)'
+  Assert ($names.Count -eq 3) 'Get-NwdashBackups: only real backups listed (undone-*, junk and spent excluded)'
+  Assert ($names[0] -eq '2.9.0-20260301-120000') 'Get-NwdashBackups: newest first (by timestamp), a newer spent one skipped'
   Assert ($names[2] -eq '2.8.1-20251231-235959') 'Get-NwdashBackups: oldest last'
+  $spent = @(Get-NwdashBackups -InstallDir $tmp -Spent)
+  Assert (($spent.Count -eq 1) -and ($spent[0] -eq '2.9.2-20260501-120000')) 'Get-NwdashBackups -Spent: lists only the emptied one'
+  Assert (-not (Test-NwdashBackupSpent -Path "$tmp\backups\no-such-folder")) 'Test-NwdashBackupSpent: a folder it cannot read is not spent'
+
+  Remove-NwdashSpentBackup -InstallDir $tmp -Name '2.9.0-20260301-120000'
+  Assert (Test-Path "$tmp\backups\2.9.0-20260301-120000\app\networker_dashboard.py") 'Remove-NwdashSpentBackup: a backup with files is kept'
+  Remove-NwdashSpentBackup -InstallDir $tmp -Name '2.9.2-20260501-120000'
+  Assert (-not (Test-Path "$tmp\backups\2.9.2-20260501-120000")) 'Remove-NwdashSpentBackup: a spent backup is removed'
+
+  # ---- what a -Rollback needs from its backup (Get-NwdashBackupProblem) ----
+  $bak = "$tmp\backups\2.8.2-20260101-010101"
+  Assert ((Get-NwdashBackupProblem -InstallDir $tmp -Name '2.8.2-20260101-010101') -eq 'app\nwdash\config.py, runtime\python\python.exe') 'Get-NwdashBackupProblem: names every missing part'
+  New-Item -ItemType Directory -Force "$bak\app\nwdash", "$bak\runtime\python" | Out-Null
+  Set-Content "$bak\app\nwdash\config.py" 'APP_VERSION = "2.8.2"'
+  Set-Content "$bak\runtime\python\python.exe" 'python'
+  Assert ((Get-NwdashBackupProblem -InstallDir $tmp -Name '2.8.2-20260101-010101') -eq '') 'Get-NwdashBackupProblem: a whole backup has none'
+  Assert ((Get-NwdashBackupProblem -InstallDir $tmp -Name 'no-such-backup') -eq 'app\networker_dashboard.py, app\nwdash\config.py, runtime\python\python.exe') 'Get-NwdashBackupProblem: a missing backup lacks everything'
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

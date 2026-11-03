@@ -380,16 +380,52 @@ function Get-NwdashInstalledVersion {
 # yyyyMMdd-HHmmss timestamp). Always returns an array. Name format:
 # <version>-<yyyyMMdd-HHmmss>, each containing app\ and runtime\. 'undone-*'
 # entries (the state a -Rollback moved ASIDE) are excluded so a second
-# -Rollback can never restore the build that was just rolled away from.
+# -Rollback can never restore the build that was just rolled away from. So are
+# spent backups (Test-NwdashBackupSpent): a restore moves a backup's files out,
+# and the empty folder would otherwise come first and give the next -Rollback
+# nothing to restore (review O3). -Spent lists only those, for the prune.
 function Get-NwdashBackups {
-  param([Parameter(Mandatory)][string]$InstallDir)
+  param([Parameter(Mandatory)][string]$InstallDir, [switch]$Spent)
   $dir = Join-Path $InstallDir 'backups'
   if (-not (Test-Path $dir)) { return @() }
   $items = Get-ChildItem -Path $dir -Directory -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match '-\d{8}-\d{6}$' -and $_.Name -notlike 'undone-*' } |
+    Where-Object { (Test-NwdashBackupSpent -Path $_.FullName) -eq $Spent.IsPresent } |
     Sort-Object { $_.Name -replace '^.*-(\d{8}-\d{6})$', '$1' } -Descending |
     ForEach-Object { $_.Name }
   return @($items)
+}
+
+# Does a backup folder hold no file at all? Then a restore has moved everything
+# back out (its build is the one in place, or the one a later rollback moved
+# aside), or the backup stopped before its first move. Nothing in it can be
+# restored and nothing is lost by removing it. A folder that cannot be read
+# all the way down is never spent.
+function Test-NwdashBackupSpent {
+  param([Parameter(Mandatory)][string]$Path)
+  $first = @(Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue -ErrorVariable unreadable |
+    Select-Object -First 1)
+  return (-not $first.Count -and -not $unreadable)
+}
+
+# Remove backups\<Name> when it is spent, so it neither lingers in backups\ nor
+# passes for a backup. Never throws.
+function Remove-NwdashSpentBackup {
+  param([Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$Name)
+  $dir = Join-Path $InstallDir "backups\$Name"
+  if (Test-NwdashBackupSpent -Path $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+# What a -Rollback to backups\<Name> would lack: '' when it holds the launcher,
+# the nwdash package and the interpreter, else the missing parts. The rollback
+# moves the live app out before it restores, so without them the service would
+# have nothing to run; install.ps1 refuses such a backup before the stop.
+function Get-NwdashBackupProblem {
+  param([Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$Name)
+  $root = Join-Path $InstallDir "backups\$Name"
+  $missing = @('app\networker_dashboard.py', 'app\nwdash\config.py', 'runtime\python\python.exe' |
+    Where-Object { -not [IO.File]::Exists((Join-Path $root $_)) })
+  return ($missing -join ', ')
 }
 
 # Move the current app payload + runtime\python into backups\<Name>\{app,runtime}.
@@ -440,9 +476,11 @@ function Restore-NwdashApp {
   catch { Write-NwdashWarn "restored files may keep the permissions of their backup ($($_.Exception.Message)). Run Setup-NWDash.cmd -Upgrade to fix them." }
 }
 
-# Prune backups beyond the newest $Keep.
+# Prune backups beyond the newest $Keep, and every spent one: a rollback from
+# before review O3 left its emptied backup behind.
 function Remove-OldNwdashBackups {
   param([Parameter(Mandatory)][string]$InstallDir, [int]$Keep = 3)
+  foreach ($n in @(Get-NwdashBackups -InstallDir $InstallDir -Spent)) { Remove-NwdashSpentBackup -InstallDir $InstallDir -Name $n }
   $names = @(Get-NwdashBackups -InstallDir $InstallDir)
   if ($names.Count -le $Keep) { return }
   foreach ($n in ($names | Select-Object -Skip $Keep)) {
@@ -604,10 +642,10 @@ function Start-NwdashServiceVerified {
 # the live app into ('' = nothing moved yet); $ReturnTo, on -Rollback once the
 # live app is out, is the backup whose files are in place by now: they go back
 # there, because the restore would delete them. The caller names both from what
-# it did, never from Get-NwdashBackups, whose newest entry can be an emptied
-# folder (review O3). A half-restored app must not run against data\, so when the
-# files cannot be put back the service stays stopped. Never throws: returns the
-# outcome for the caller's final error message.
+# it did, never from Get-NwdashBackups, which lists neither an undone-* backup
+# nor one the rollback has emptied (review O3). A half-restored app must not run
+# against data\, so when the files cannot be put back the service stays stopped.
+# Never throws: returns the outcome for the caller's final error message.
 function Undo-NwdashDeploy {
   param(
     [Parameter(Mandatory)][string]$InstallDir,
@@ -625,12 +663,8 @@ function Undo-NwdashDeploy {
       "Once nothing holds the files, move what is left in $InstallDir\backups\$Name back over the install folder " +
       "(app\* to its root, runtime\python to runtime\python), then run: Start-Service $script:NwdashServiceName"
   }
-  # This run made that folder and the restore emptied it. Left behind it would
-  # pass for the newest backup and stop the next -Rollback reaching a real one.
-  $spent = Join-Path $InstallDir "backups\$Name"
-  if ($Name -and -not @(Get-ChildItem -LiteralPath $spent -Recurse -File -Force -ErrorAction SilentlyContinue).Count) {
-    Remove-Item -LiteralPath $spent -Recurse -Force -ErrorAction SilentlyContinue
-  }
+  # This run made that folder and the restore emptied it.
+  if ($Name) { Remove-NwdashSpentBackup -InstallDir $InstallDir -Name $Name }
   if (-not (Wait-NwdashPortFree -Port $Port -TimeoutSec 20 -HostName $HostName)) {
     Write-NwdashWarn "port $Port still held after stop - starting anyway (app bind-retry will absorb it)"
   }

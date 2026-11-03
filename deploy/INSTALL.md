@@ -445,6 +445,20 @@ from before the lock does not reopen the install. A rollback that fails is
 undone the same way as an upgrade: the version you were running goes back, and
 the backup it was restoring gets its files back.
 
+The backup a rollback restores is used up: its files become the install and
+its emptied folder is removed, so a second `-Rollback` goes one backup further
+back, and with none left it says so and stops nothing. An emptied folder that
+a rollback by an earlier release left in `backups\` is skipped, and the next
+successful `-Upgrade` removes it.
+
+Before the service is stopped, the rollback checks that the backup holds the
+launcher (`networker_dashboard.py`), the `nwdash` package and
+`runtime\python\python.exe`. If any is missing it refuses, with the service
+still running and no file moved. The error names the folder and what it
+lacks; move that folder out of `backups\` and `-Rollback` reaches the one
+before it. `-Check -Rollback`, from an elevated prompt, shows which backup a
+rollback would use and whether it would be refused.
+
 ---
 
 ## 8. Uninstall
