@@ -9,6 +9,7 @@ import json
 import re
 import threading
 from datetime import datetime, timedelta
+from http import HTTPStatus
 from typing import Any
 
 from .config import (
@@ -17,6 +18,7 @@ from .config import (
     ALERT_AUTOMATION_MAX_INTERVAL_MINUTES,
     ALERT_AUTOMATION_MIN_INTERVAL_MINUTES,
     AUTO_SNAPSHOT_FILE,
+    CUSTOM_REPORT_RANGE,
     DAILY_REPORT_RANGE,
     DASHBOARD_SNAPSHOT_FILE,
     DATA_DIR,
@@ -36,7 +38,13 @@ from .config import (
     safe_log_text,
 )
 from .fileio import atomic_write_text
-from .models import SHARED_DASHBOARD_LOCK, SHARED_DASHBOARD_STATE, SHARED_REFRESH_STOP, BadRequest
+from .models import (
+    SHARED_DASHBOARD_LOCK,
+    SHARED_DASHBOARD_STATE,
+    SHARED_REFRESH_STOP,
+    BadRequest,
+    dashboard_backup_source_available,
+)
 from .profiles import SNAPSHOTS_LOCK, parse_port
 from .secrets import (
     decrypt_process_secret,
@@ -44,6 +52,7 @@ from .secrets import (
     encrypt_process_secret,
     encrypt_profile_secret,
 )
+from .sessions import build_dashboard_from_session
 
 
 def parse_email_recipients(value: Any) -> list[str]:
@@ -82,14 +91,18 @@ def snapshot_int(value: Any) -> int:
         return 0
 
 
-def dashboard_snapshot_record(dashboard: dict[str, Any], when: datetime | None = None) -> dict[str, Any]:
+def dashboard_snapshot_record(
+    dashboard: dict[str, Any], when: datetime | None = None, day: str = ""
+) -> dict[str, Any]:
+    """The stored row for a dashboard, saved at `when` (now) under `day`, the
+    date of the save unless the dashboard covers another one."""
     summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
     target = dashboard.get("target") if isinstance(dashboard.get("target"), dict) else {}
     health = dashboard.get("serverHealth") if isinstance(dashboard.get("serverHealth"), dict) else {}
     protection = dashboard.get("serverProtectionJob") if isinstance(dashboard.get("serverProtectionJob"), dict) else {}
     generated = when or datetime.now()
     return {
-        "date": snapshot_date_key(generated),
+        "date": day or snapshot_date_key(generated),
         "savedAt": generated.astimezone().isoformat(),
         "generatedAt": str(dashboard.get("generatedAt") or ""),
         "apiMode": str(target.get("apiMode") or ""),
@@ -126,10 +139,12 @@ def write_dashboard_snapshots(snapshots: dict[str, Any]) -> None:
         pass
 
 
-def save_dashboard_snapshot(dashboard: dict[str, Any], when: datetime | None = None) -> dict[str, Any]:
+def save_dashboard_snapshot(
+    dashboard: dict[str, Any], when: datetime | None = None, day: str = ""
+) -> dict[str, Any]:
     if not isinstance(dashboard, dict) or not dashboard.get("ok"):
         raise BadRequest("A successful dashboard result is required before saving a snapshot.")
-    record = dashboard_snapshot_record(dashboard, when)
+    record = dashboard_snapshot_record(dashboard, when, day)
     snapshots = load_dashboard_snapshots()
     snapshots[record["date"]] = record
     for old_date in sorted(snapshots)[:-180]:
@@ -289,25 +304,53 @@ def save_ui_theme(theme: str) -> str:
 
 
 def _auto_snapshot_once() -> str:
-    """Save today's snapshot if auto-save is on and not already captured.
-    Returns a status code for observability: disabled / exists / no-dashboard /
-    saved."""
+    """Save yesterday's snapshot, the last whole calendar day, if auto-save is
+    on and that day has none yet. Returns a status code for observability:
+    disabled / exists / no-dashboard / saved.
+
+    The shared dashboard is not snapshotted (review C18): it covers whatever
+    range its viewer picked, can be hours old after failed refreshes, and was
+    dated by the moment of the save. The day is built on its own instead, from
+    midnight to midnight in the shared session, and only a fresh build with
+    backup job data is kept, under the date it covers. The building happens
+    outside the snapshots lock; the check that decides and the save then take
+    it once, so a snapshot saved meanwhile (by hand, or by another run) is never
+    overwritten."""
     if not load_auto_snapshot_config():
         return "disabled"
-    today = snapshot_date_key()
+    day = datetime.now().date() - timedelta(days=1)
+    key = day.isoformat()
     with SNAPSHOTS_LOCK:
-        existing = load_dashboard_snapshots()
-    if today in existing:
-        debug_log(f"auto_snapshot: snapshot for {today} already exists; skipping")
-        return "exists"
+        if key in load_dashboard_snapshots():
+            debug_log(f"auto_snapshot: snapshot for {key} already exists; skipping")
+            return "exists"
     with SHARED_DASHBOARD_LOCK:
-        dashboard = dict(SHARED_DASHBOARD_STATE.get("dashboard") or {})
-    if not isinstance(dashboard, dict) or not dashboard.get("ok"):
-        debug_log("auto_snapshot: no shared dashboard available yet; will retry")
+        session_id = str(SHARED_DASHBOARD_STATE.get("sessionId") or "")
+    if not session_id:
+        debug_log("auto_snapshot: no shared dashboard session yet; will retry")
+        return "no-dashboard"
+    custom_day = day.strftime("%d-%m-%Y")
+    try:
+        status, dashboard = build_dashboard_from_session(
+            session_id, CUSTOM_REPORT_RANGE, custom_day, custom_day, remember_range=False
+        )
+    except Exception as exc:  # noqa: BLE001 — the next tick tries again; switching it on must not fail.
+        debug_log(f"auto_snapshot: building {key} failed: {safe_log_text(exc, 300)}; will retry")
+        return "no-dashboard"
+    if (
+        status != HTTPStatus.OK
+        or not dashboard.get("ok")
+        or dashboard.get("stale")
+        or not dashboard_backup_source_available(dashboard)
+    ):
+        debug_log(f"auto_snapshot: no fresh dashboard for {key} (HTTP {status}); will retry")
         return "no-dashboard"
     with SNAPSHOTS_LOCK:
-        save_dashboard_snapshot(dashboard)
-    debug_log(f"auto_snapshot: saved snapshot for {today}")
+        if key in load_dashboard_snapshots():
+            debug_log(f"auto_snapshot: snapshot for {key} was saved meanwhile; kept")
+            return "exists"
+        save_dashboard_snapshot(dashboard, day=key)
+    debug_log(f"auto_snapshot: saved snapshot for {key}")
     return "saved"
 
 

@@ -235,6 +235,13 @@ sign a restart would lose the change. The audit log's rotation and the
 certificate swap retry their replaces the same way. Save new files in `data/`
 through it too.
 
+`automations.json` is written from the live registry, so `persist_automations`
+holds `_AUTOMATIONS_FILE_LOCK` from reading the registry to the replace (review
+C19). Without it, two saves could land out of order, and the older one would
+bring back a schedule just stopped. Every change to a schedule is saved,
+pausing and resuming included. An unreadable file at boot is logged, and no
+schedule is restored.
+
 Email automations are deliberately **decoupled from dashboard sessions**
 (v2.5.x fix for "schedules vanish after restart"): a missing session
 never cancels a schedule. At fire time the automation reuses the live
@@ -252,6 +259,28 @@ never uses, or writes back, the range the dashboard was last viewed with:
 `build_dashboard_from_session(..., remember_range=False)`. Interactive
 range changes are still remembered on the session, because the shared
 view refreshes on the session's range.
+
+A daily report whose run fails (no session, no backup job data, an SMTP
+error) is tried again after 5, 15 and 30 minutes, then hourly, until it is
+sent or its day ends (review C6). A retry never runs past midnight, where it
+would send the next day's report early and under that day's date. Each
+schedule's `next_run_at`, `last_run` and `last_result` are saved in
+`automations.json`. At boot, `resume_alert_automation` sends a daily report
+still owed today at the first scheduler tick: its send time has passed, today's
+has not gone out, and the schedule was armed before that time. An alert check
+keeps its saved time, and runs at once when that passed while the service was
+down.
+
+A send time is found on the naive local wall clock (`datetime.now()`), and
+turned into an instant with `.timestamp()`, which uses that day's UTC offset
+(review C23, the next-run half). Never schedule from
+`datetime.now().astimezone()`: its offset is fixed at the moment it is read,
+so the morning after a DST change the report went out an hour early or late.
+
+The scheduler tick starts a schedule's run only when none of that schedule's
+is still going (`_claim_run`, released when the run's thread ends; review
+C20). A run slower than its interval, such as a large jobs database or a
+NetWorker timeout, is never started a second time beside itself.
 
 When live backup job data is missing, a report only accepts a cached
 dashboard of its own range (`summary.range`, checked by
@@ -296,6 +325,17 @@ password after a rotation on the same server. With none saved for the
 server, the save's response warns that schedules cannot log in. Sends work
 from a copy taken with the password (`_smtp_send_view`), so a save during a
 send cannot pair the old password with the new server.
+
+The automatic snapshot (`snapshots._auto_snapshot_once`, every 10 minutes and
+when it is switched on) stores yesterday, the last whole calendar day, under
+that day's date (review C18). It builds the day itself as a custom range,
+midnight to midnight, in the shared session with `remember_range=False`, and
+keeps the build only when it is fresh: HTTP 200, `ok`, not a `stale` fallback,
+and with backup job data. It never copies the shared dashboard, whose range is
+whatever its viewer picked and which can be hours old. The build runs outside
+`SNAPSHOTS_LOCK`; the check that decides and the save take the lock once, so a
+snapshot saved meanwhile, by hand or by another run, is kept. A snapshot saved
+by hand is still the dashboard on screen, under the date of the save.
 
 ## Operational gotchas
 

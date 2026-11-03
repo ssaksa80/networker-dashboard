@@ -2048,8 +2048,8 @@
           showToast("Auto-snapshot disabled");
         } else {
           const messages = {
-            saved: "Auto-snapshot enabled — snapshot saved now",
-            exists: "Auto-snapshot enabled — today already captured",
+            saved: "Auto-snapshot enabled — yesterday's snapshot saved",
+            exists: "Auto-snapshot enabled — yesterday already captured",
             "no-dashboard": "Auto-snapshot enabled — will capture once connected",
           };
           showToast(messages[data.result] || "Auto-snapshot enabled");
