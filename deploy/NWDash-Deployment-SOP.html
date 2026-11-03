@@ -162,8 +162,9 @@ check; the check is fail-soft either way). A connected host downloads a newer
 release only with <code>-Update</code>, and uses it only if its SHA-256 matches the release.</li>
 <li>The installer migrates any <strong>legacy scheduled-task install</strong>
 automatically (task removed, service registered, <code>data\</code> untouched),
-opens the firewall (rule group <code>NetWorkerDashboard</code>), starts the
-service, and <strong>health-gates</strong> it &mdash; it only reports OK once
+opens the firewall on Domain and Private networks (rule group
+<code>NetWorkerDashboard</code>; add <code>-FirewallProfile Any</code> for a network
+Windows classifies as Public), starts the service, and <strong>health-gates</strong> it &mdash; it only reports OK once
 <code>https://&lt;host&gt;:&lt;port&gt;/api/health</code> answers.</li>
 <li>Verify: browse <code>https://&lt;host&gt;:8443/</code>, log in with the dashboard
 password, connect to a NetWorker server.</li>
