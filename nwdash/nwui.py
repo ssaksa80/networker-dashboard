@@ -27,7 +27,7 @@ from .config import (
     debug_log,
     safe_log_text,
 )
-from .models import ApiConfig, RestApiError, generated_at
+from .models import JOB_HISTORY_UNAVAILABLE, ApiConfig, RestApiError, generated_at
 from .restapi import (
     add_sla_summary,
     api_base_url_for_version,
@@ -1173,46 +1173,48 @@ def build_dashboard_nwui(
     # historical runs, and it ignores the requested time window. Completed jobs
     # for the selected range live in the NetWorker jobs database, reachable via
     # nwrestapi /global/jobs. Merge that history in so finished backups show up.
-    # Best-effort: a failure here must never break the live dashboard.
+    # A failure here must never break the live dashboard, but it must show:
+    # without the history every completed count is zero, which reads as a quiet,
+    # healthy range (review C10). So it is a warning source, never diagnostic
+    # only, and a missing password (one that could not be decrypted) counts too.
     live_action_count = len(raw_actions)
     history_action_count = 0
     history_from_cache = False
-    if config.password:
-        try:
-            rest_history, history_path, history_from_cache = cached_nwui_job_history(config, context)
-            # Keep only completed/terminal runs (succeeded/failed/warning) from
-            # the jobs DB. This drops running/queued (the live monitor already
-            # provides those) and status-less records (empty completionStatus),
-            # which are not real completed backups and would otherwise inflate
-            # the totals as "unknown".
-            rest_history = [
-                item
-                for item in rest_history
-                if normalize_nwui_status(item.get("status")) in ("succeeded", "failed", "warning")
-            ]
-            history_action_count = len(rest_history)
-            raw_actions = merge_action_history(raw_actions, rest_history)
-            sources["monitoringActionsHistory"] = {
-                "ok": True,
-                "path": history_path,
-                "count": history_action_count,
-                "cached": history_from_cache,
-                "detail": (
-                    "Completed job history merged from the NetWorker jobs database"
-                    + (" (cached)." if history_from_cache else ".")
-                ),
-            }
-        except RestApiError as exc:
-            sources["monitoringActionsHistory"] = {
-                "ok": False,
-                "path": "/nwrestapi/global/jobs",
-                "status": exc.status_code,
-                "error": safe_log_text(exc.message, 300),
-                "userMessage": "Completed job history is unavailable; showing live backup activity only.",
-                "severity": "info",
-                "displayWarning": False,
-                "diagnosticOnly": True,
-            }
+    history_available = False
+    try:
+        rest_history, history_path, history_from_cache = cached_nwui_job_history(config, context)
+        # Keep only completed/terminal runs (succeeded/failed/warning) from
+        # the jobs DB. This drops running/queued (the live monitor already
+        # provides those) and status-less records (empty completionStatus),
+        # which are not real completed backups and would otherwise inflate
+        # the totals as "unknown".
+        rest_history = [
+            item
+            for item in rest_history
+            if normalize_nwui_status(item.get("status")) in ("succeeded", "failed", "warning")
+        ]
+        history_action_count = len(rest_history)
+        raw_actions = merge_action_history(raw_actions, rest_history)
+        history_available = True
+        sources["monitoringActionsHistory"] = {
+            "ok": True,
+            "path": history_path,
+            "count": history_action_count,
+            "cached": history_from_cache,
+            "detail": (
+                "Completed job history merged from the NetWorker jobs database"
+                + (" (cached)." if history_from_cache else ".")
+            ),
+        }
+    except RestApiError as exc:
+        sources["monitoringActionsHistory"] = {
+            "ok": False,
+            "path": "/nwrestapi/global/jobs",
+            "status": exc.status_code,
+            "error": safe_log_text(exc.message, 300),
+            "userMessage": f"{JOB_HISTORY_UNAVAILABLE} Live backup activity is still shown.",
+            "severity": "warning",
+        }
 
     jobs = [job for job in (project_nwui_job(item) for item in raw_actions) if job]
     jobs = sorted(jobs, key=lambda item: item.get("started") or "", reverse=True)
@@ -1361,6 +1363,7 @@ def build_dashboard_nwui(
             "range": config.report_range,
             "rangeLabel": range_label,
             "health": health,
+            "historyAvailable": history_available,
         }),
         "serverHealth": server_health,
         "serverProtectionJob": maintenance_backup,

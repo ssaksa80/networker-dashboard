@@ -29,7 +29,7 @@ from .config import (
     TABLE_LIMIT,
     debug_log,
 )
-from .models import ApiConfig, BadRequest, RestApiError, generated_at
+from .models import JOB_HISTORY_UNAVAILABLE, ApiConfig, BadRequest, RestApiError, generated_at
 from .wmi_health import load_server_health_wmi, server_health_from_payload, unavailable_server_health
 
 
@@ -132,6 +132,9 @@ def add_sla_summary(summary: dict[str, Any]) -> dict[str, Any]:
     summary["slaMetJobs"] = met
     summary["slaMissedJobs"] = missed
     summary["slaPercent"] = round((met / total) * 100, 2) if total else 0
+    # Nothing to measure, or no job history behind the counts: the SLA is N/A,
+    # not 0% and not met (review C10).
+    summary["slaAvailable"] = bool(total) and summary.get("historyAvailable") is not False
     return summary
 
 
@@ -1169,6 +1172,12 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
                     f"path={compact_path_for_log(path)} status={exc.status_code} error={exc.message}"
                 )
 
+    # Without the jobs list every total below is zero; say so rather than
+    # report an empty, healthy range (review C10).
+    history_available = bool(sources.get("jobs", {}).get("ok"))
+    if not history_available and "jobs" in sources:
+        sources["jobs"]["userMessage"] = JOB_HISTORY_UNAVAILABLE
+
     clients = collection_from(raw_results.get("clients"), "clients")
     _, _, range_label = report_window(config)
     jobs = [
@@ -1227,6 +1236,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "range": config.report_range,
         "rangeLabel": range_label,
         "health": health,
+        "historyAvailable": history_available,
     })
 
     tables = {

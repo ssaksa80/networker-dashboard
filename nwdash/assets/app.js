@@ -604,6 +604,14 @@
       const total = numberValue(summary.slaTotalJobs ?? summary.totalJobs);
       const met = numberValue(summary.slaMetJobs ?? summary.successfulJobs);
       const missed = Math.max(0, numberValue(summary.slaMissedJobs ?? (total - met)));
+      // Without the job history the counts are incomplete: "no jobs ran" or a
+      // percentage would both read as fact (review C10).
+      if (summary.historyAvailable === false) {
+        mgmtSlaPie.className = "chart-empty";
+        mgmtSlaPie.textContent = "Job history unavailable — SLA unknown";
+        mgmtSlaMeta.textContent = "Not measured";
+        return;
+      }
       if (!total) {
         mgmtSlaPie.className = "chart-empty";
         const running = numberValue(summary.activeJobs);

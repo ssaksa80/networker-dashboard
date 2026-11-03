@@ -161,8 +161,9 @@
       { label: "SLA met", value: met, color: "var(--green)" },
       { label: "Not met", value: missed, color: "var(--red)" },
     ];
-    $("slaMeta").textContent = total ? formatNumber(total) + " jobs" : "No jobs ran";
-    $("slaDonut").innerHTML = donutSvg(items, total, total ? formatNumber(percent) + "%" : "--", "SLA");
+    var measured = total && summary.slaAvailable !== false;  /* N/A without the job history (review C10) */
+    $("slaMeta").textContent = summary.historyAvailable === false ? "Job history unavailable" : (total ? formatNumber(total) + " jobs" : "No jobs ran");
+    $("slaDonut").innerHTML = donutSvg(items, total, measured ? formatNumber(percent) + "%" : "--", "SLA");
     $("slaLeg").innerHTML = legendHtml(items, total);
   }
 

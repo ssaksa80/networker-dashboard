@@ -437,16 +437,17 @@
         var ok = num(s.successfulJobs), failed = num(s.failedJobs), running = num(s.activeJobs);
         var slaTotal = num(s.slaTotalJobs !== undefined ? s.slaTotalJobs : s.totalJobs);
         var slaMet = num(s.slaMetJobs !== undefined ? s.slaMetJobs : s.successfulJobs);
-        var slaPct = slaTotal ? num(s.slaPercent !== undefined ? s.slaPercent : Math.round(slaMet / slaTotal * 100)) : null;
-        var rate = ok + failed ? ok / (ok + failed) * 100 : null;
+        var noHistory = s.historyAvailable === false;  // counts incomplete: no SLA, no rate (review C10)
+        var slaPct = slaTotal && !noHistory ? num(s.slaPercent !== undefined ? s.slaPercent : Math.round(slaMet / slaTotal * 100)) : null;
+        var rate = ok + failed && !noHistory ? ok / (ok + failed) * 100 : null;
         var backups = activity(ok + failed + running, failed, running);
         var clones = activity(s.cloneJobs, s.cloneFailed, s.cloneRunning);
         var restores = activity(s.recoveryJobs, s.recoveryFailed, s.recoveryRunning);
-        var slaState = slaPct === null ? "idle" : (slaPct >= 98 ? "ok" : (slaPct >= 90 ? "warn" : "bad"));
+        var slaState = noHistory ? "warn" : (slaPct === null ? "idle" : (slaPct >= 98 ? "ok" : (slaPct >= 90 ? "warn" : "bad")));
         return {
           summary: s,
           dial: slaPct !== null ? slaPct : (rate !== null ? rate : 0),
-          dialLabel: slaPct !== null ? "SLA met" : (rate !== null ? "Success rate" : "No jobs yet"),
+          dialLabel: noHistory ? "Job history unavailable" : (slaPct !== null ? "SLA met" : (rate !== null ? "Success rate" : "No jobs yet")),
           running: running + num(s.cloneRunning) + num(s.recoveryRunning),
           failed: failed + num(s.cloneFailed) + num(s.recoveryFailed),
           nodes: {
@@ -455,7 +456,7 @@
             backups: backups,
             clones: clones,
             restores: restores,
-            sla: {state: slaState, word: slaPct === null ? "No jobs" : slaPct + "%"},
+            sla: {state: slaState, word: noHistory ? "Unknown" : (slaPct === null ? "No jobs" : slaPct + "%")},
           },
           detail: {
             clients: [["Protected clients", num(s.totalClients), num(s.totalClients), "ok"]],
@@ -660,7 +661,7 @@
           "<div>Running now<b>" + (data ? fmt(num(s.activeJobs) + num(s.cloneRunning) + num(s.recoveryRunning)) : "—") + "</b></div>" +
           "<div>Clients<b>" + (s.totalClients === undefined ? "—" : fmt(s.totalClients)) + "</b></div>" +
           "<div>Alerts<b>" + (s.totalAlerts === undefined ? "—" : fmt(s.totalAlerts)) + "</b></div>" +
-          "<div>SLA<b>" + (s.slaPercent === undefined ? "—" : esc(s.slaPercent) + "%") + "</b></div>";
+          "<div>SLA<b>" + (s.slaPercent === undefined || s.slaAvailable === false ? "—" : esc(s.slaPercent) + "%") + "</b></div>";
       }
       buildPipe();
 

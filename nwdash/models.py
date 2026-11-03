@@ -562,6 +562,31 @@ def dashboard_backup_source_error(dashboard: dict[str, Any]) -> str:
     return f"{path} failed: {safe_log_text(detail, 500)}"
 
 
+# The sources that carry the completed-job history behind a dashboard's totals:
+# NWUI mode merges it in from the jobs database, REST mode reads that directly.
+JOB_HISTORY_SOURCES = ("monitoringActionsHistory", "jobs")
+JOB_HISTORY_UNAVAILABLE = (
+    "Completed job history could not be loaded from NetWorker, so the completed, "
+    "successful and failed job counts and the SLA are incomplete."
+)
+
+
+def job_history_notice(dashboard: dict[str, Any]) -> str:
+    """What a page or report must say when the completed-job history behind its
+    totals did not load (the collector sets summary.historyAvailable), or ""
+    when it did. Without it a failed fetch reads as no jobs and a healthy
+    estate (review C10)."""
+    summary = dashboard.get("summary") if isinstance(dashboard.get("summary"), dict) else {}
+    if summary.get("historyAvailable") is not False:
+        return ""
+    sources = dashboard.get("sources") if isinstance(dashboard.get("sources"), dict) else {}
+    for name in JOB_HISTORY_SOURCES:
+        item = sources.get(name)
+        if isinstance(item, dict) and not item.get("ok") and item.get("error"):
+            return f"{JOB_HISTORY_UNAVAILABLE} NetWorker error: {safe_log_text(item['error'], 300)}"
+    return JOB_HISTORY_UNAVAILABLE
+
+
 def dashboard_covers_range(dashboard: dict[str, Any], report_range: str | None) -> bool:
     """True when the dashboard was built for report_range; None accepts any."""
     if report_range is None:

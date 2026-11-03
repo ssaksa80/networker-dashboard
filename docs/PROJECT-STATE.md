@@ -220,6 +220,15 @@ view, interactive builds and alert schedules pass no range, so they still
 take any last good dashboard. A test email ignores the dashboard the page
 sends if that is another range and builds its own.
 
+When the completed-job history does not load (NWUI mode's merge from the jobs
+database, including a saved password that cannot be decrypted, or REST mode's
+`/global/jobs`), the collector sets `summary.historyAvailable` to false. That
+source is a warning, never `diagnosticOnly`, so health is at best `warning`;
+the dashboard, the TV view and the email say the counts are incomplete, and
+`summary.slaAvailable` is false, so the SLA shows as N/A rather than 0% (review
+C10). The live dashboard still loads. `slaAvailable` is also false when there
+was no job to measure.
+
 Saving email settings (the admin Email tab, the dialog's Save
 configuration) writes `email_config.json`, then runs
 `_reconcile_config_driven_automations`, the same pass as a restart, so
