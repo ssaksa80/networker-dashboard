@@ -35,6 +35,7 @@
   [switch]$Uninstall,
   [switch]$Purge,
   [switch]$NoFirewall,
+  [string]$FirewallProfile = '',     # networks the inbound rule opens: Domain, Private, Public or Any (empty = Domain,Private)
   [switch]$Elevated                  # internal: marks the post-UAC relaunch
 )
 Set-StrictMode -Version Latest
@@ -102,6 +103,9 @@ $authPlan = Get-NwdashAuthPlan -PasswordGiven ([bool]$AuthPassword) `
 # existing one, which keeps working as it is.
 $aclProblem = Get-NwdashAclTargetProblem -InstallDir $InstallDir
 
+# The networks the firewall rule opens the port on ('' = not a valid value).
+$fwProfile = if ($FirewallProfile) { Resolve-NwdashFirewallProfile -Value $FirewallProfile } else { $script:NwdashFirewallDefault }
+
 # ---- -Check: dry-run plan (no admin, no changes) ----
 if ($Check) {
   $svc = Get-Service -Name $SvcName -ErrorAction SilentlyContinue
@@ -125,7 +129,15 @@ if ($Check) {
   Write-NwdashLog "  logs           : $InstallDir\logs\service.out.log / service.err.log (rotate at 10 MB)"
   Write-NwdashLog "  port / bind    : $Port / $(if ($BindHost) { $BindHost } else { 'all interfaces (0.0.0.0)' })"
   Write-NwdashLog "  health probe   : https://${probeHost}:$Port/api/health (trust-all compiled delegate)"
-  Write-NwdashLog "  firewall       : $(if ($NoFirewall) { 'skipped (-NoFirewall)' } else { "inbound TCP $Port (group $SvcName)" })"
+  $fwLine = if ($NoFirewall) { 'skipped (-NoFirewall)' }
+            elseif (-not $fwProfile) { "-FirewallProfile '$FirewallProfile' is not valid - an install would be REFUSED" }
+            else { "inbound TCP $Port on $fwProfile networks (group $SvcName)" }
+  Write-NwdashLog "  firewall       : $fwLine"
+  if ($fwProfile -and -not $NoFirewall) {
+    foreach ($gap in @(Get-NwdashFirewallGap -NetworkProfile $fwProfile -Networks @(Get-NetConnectionProfile -ErrorAction SilentlyContinue))) {
+      Write-NwdashLog "  NOT reachable  : $(Format-NwdashFirewallGap -Gap $gap -Port $Port)"
+    }
+  }
   $authLine = switch ($authPlan) {
     'password'        { 'set on first boot (salted hash), then removed from the service env' }
     'stored'          { 'already set (data\auth.json is kept)' }
@@ -170,6 +182,11 @@ if ($authPlan -eq 'refused' -and -not ($Upgrade -or $Rollback -or $Uninstall)) {
 
 # A service account a reinstall cannot keep is refused before anything changes.
 if ($carry -and $carry.Problem) { Stop-Nwdash $carry.Problem }
+
+if (-not ($Upgrade -or $Rollback -or $Uninstall -or $NoFirewall) -and -not $fwProfile) {
+  Stop-Nwdash ("-FirewallProfile '$FirewallProfile' is not Any or a list of Domain, Private and Public. Nothing was changed. " +
+    "Leave it out for $($script:NwdashFirewallDefault), or pass -FirewallProfile Any to open the port on every network.")
+}
 
 # The same goes for the folder lock: a typo in -ServiceAccount or a folder that
 # must not be locked is refused here, not after the old install is gone.
@@ -500,7 +517,7 @@ if ($envExtra.Count) { & $nssm set $SvcName AppEnvironmentExtra $envExtra | Out-
 
 # 4/6 firewall
 if ($NoFirewall) { Write-NwdashLog '[4/6] firewall: skipped (-NoFirewall)' }
-else { Write-NwdashLog '[4/6] configuring firewall'; Set-NwdashFirewall -Port $Port }
+else { Write-NwdashLog '[4/6] configuring firewall'; Set-NwdashFirewall -Port $Port -NetworkProfile $fwProfile }
 
 # 5/6 start (verified) - warn first if a foreign process already owns the port.
 Write-NwdashLog '[5/6] starting service'

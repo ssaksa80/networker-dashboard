@@ -13,7 +13,8 @@ param(
   [string]$RunIn = '',
   [string]$LiveShape = 'network',   # the installed service the fakes describe; 'none' = no service
   [switch]$AsAdmin,
-  # install.ps1's own parameters, so a case passes exactly what an operator types
+  # install.ps1's own parameters, so a case passes exactly what an operator types.
+  # All of them: under StrictMode the real code fails on one that is missing here.
   [int]$Port = 8443,
   [string]$BindHost = '',
   [string]$ServiceAccount,
@@ -21,6 +22,7 @@ param(
   [string]$AuthPassword = '',
   [string]$AllowedHosts = '',
   [switch]$AllowUnauthenticated,
+  [string]$FirewallProfile = '',
   [switch]$Check
 )
 $ErrorActionPreference = 'Stop'
@@ -83,7 +85,7 @@ if ($RunIn) {
   }
   function Remove-NwdashService { param([string]$InstallDir) Write-Call 'REMOVE-SERVICE' }
   function Set-NwdashInstallAcl { param([string]$InstallDir, [string]$ServiceSid) Write-Call "LOCK $ServiceSid" }
-  function Set-NwdashFirewall { param([int]$Port) Write-Call "FIREWALL $Port" }
+  function Set-NwdashFirewall { param([int]$Port, [string]$NetworkProfile) Write-Call "FIREWALL $Port $NetworkProfile" }
   function Test-NwdashPortInUse { $null }
   function Start-NwdashServiceVerified { Write-Call 'START'; $true }
   function Test-NwdashHealth { $true }
@@ -209,7 +211,7 @@ try {
   Assert ((Get-Set $run 'AppParameters') -eq 'nssm set | NetWorkerDashboard | AppParameters | networker_dashboard.py --port 9443 --bind 192.0.2.10 --no-launch') "$case : the service keeps its port and bind"
   Assert ((Get-Set $run 'ObjectName') -eq 'nssm set | NetWorkerDashboard | ObjectName | NT AUTHORITY\NetworkService | ') "$case : and its account"
   Assert ((Get-Set $run 'AppEnvironmentExtra') -eq 'nssm set | NetWorkerDashboard | AppEnvironmentExtra | NWDASH_EXTRA=kept;DASHBOARD_ALLOWED_HOSTS=198.51.100.0/24;DASHBOARD_ALLOW_UNAUTHENTICATED=1') "$case : and its environment, without the leftover password"
-  Assert ($run.Calls -contains 'FIREWALL 9443') "$case : the firewall opens the kept port"
+  Assert ($run.Calls -contains 'FIREWALL 9443 Domain,Private') "$case : the firewall opens the kept port, on Domain and Private networks"
   Assert ($run.Calls -contains 'LOCK S-1-5-20') "$case : the folder lock is for the kept account"
   Assert ([array]::IndexOf($run.Calls, 'REMOVE-SERVICE') -gt [array]::IndexOf($run.Calls, 'nssm get | NetWorkerDashboard | AppEnvironmentExtra')) "$case : the settings are read before the old service is removed"
   Assert ($run.Out -match 'keeping the existing service settings: port 9443') "$case : says what it kept"

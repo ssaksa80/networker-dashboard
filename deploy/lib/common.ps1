@@ -943,13 +943,79 @@ function Set-NwdashInstallAcl {
 
 # ---- firewall ----
 
+# The inbound rule opens the port on Domain and Private networks only. A network
+# Windows classifies as Public (an unidentified one, a guest or hotel network) is
+# where an exposed admin port does the most harm (review S4); -FirewallProfile Any
+# opens it there too.
+$script:NwdashFirewallDefault = 'Domain,Private'
+
+# -FirewallProfile as New-NetFirewallRule takes it, or '' when it is not one:
+# Any, or any of Domain, Private and Public. Commas or spaces separate them,
+# because Setup-NWDash.cmd hands `Domain,Private` on as `Domain Private`. Pure +
+# testable.
+function Resolve-NwdashFirewallProfile {
+  param([string]$Value = '')
+  $known = @('Domain', 'Private', 'Public')
+  $names = @("$Value" -split '[,\s]+' | Where-Object { $_ })
+  if ($names.Count -eq 1 -and $names[0] -ieq 'Any') { return 'Any' }
+  if (-not $names.Count) { return '' }
+  foreach ($n in $names) { if ($n -notin $known) { return '' } }
+  return (@($known | Where-Object { $names -contains $_ }) -join ',')
+}
+
+# The connected networks a rule for $NetworkProfile leaves closed, from
+# Get-NetConnectionProfile (NetworkCategory Public, Private or DomainAuthenticated).
+# Pure + testable.
+function Get-NwdashFirewallGap {
+  param([string]$NetworkProfile = $script:NwdashFirewallDefault, [object[]]$Networks = @())
+  $covered = @($NetworkProfile -split ',')
+  if ($covered -contains 'Any') { return @() }
+  $gaps = @()
+  foreach ($n in @($Networks)) {
+    $category = "$($n.NetworkCategory)"
+    if ($category -eq 'DomainAuthenticated') { $category = 'Domain' }
+    if ($category -and $category -notin $covered) {
+      $gaps += [pscustomobject]@{ Name = "$($n.Name)"; InterfaceAlias = "$($n.InterfaceAlias)"; Category = $category }
+    }
+  }
+  return $gaps
+}
+
+# What each closed network means, for the install log and -Check.
+function Format-NwdashFirewallGap {
+  param([Parameter(Mandatory)]$Gap, [int]$Port)
+  return "network '$($Gap.Name)' on $($Gap.InterfaceAlias) is classified $($Gap.Category), so the firewall does not open " +
+    "port $Port there and the dashboard cannot be reached through it. Re-run with -FirewallProfile Any to open it there " +
+    'too, or have that network classified Private or Domain.'
+}
+
+# Replace the rule group with one inbound rule for $Port on $NetworkProfile, then
+# warn about each connected network it leaves closed. Never throws: a firewall
+# failure is a warning, as before. The cmdlets are injectable for tests.
 function Set-NwdashFirewall {
-  param([Parameter(Mandatory)][int]$Port)
+  param(
+    [Parameter(Mandatory)][int]$Port,
+    [string]$NetworkProfile = $script:NwdashFirewallDefault,
+    [scriptblock]$RemoveRules = $null,   # () -> remove the group
+    [scriptblock]$NewRule = $null,       # ($port, $profile) -> create the rule
+    [scriptblock]$GetNetworks = $null    # () -> Get-NetConnectionProfile rows
+  )
+  $removeRules = if ($RemoveRules) { $RemoveRules } else { { Remove-NetFirewallRule -Group $script:NwdashServiceName -ErrorAction SilentlyContinue } }
+  $newRule = if ($NewRule) { $NewRule } else { { param($p, $prof) New-NetFirewallRule -DisplayName "NetWorker Dashboard web ($p)" -Group $script:NwdashServiceName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $p -Profile $prof -ErrorAction Stop | Out-Null } }
+  $getNetworks = if ($GetNetworks) { $GetNetworks } else { { @(Get-NetConnectionProfile -ErrorAction SilentlyContinue) } }
   try {
-    Remove-NetFirewallRule -Group $script:NwdashServiceName -ErrorAction SilentlyContinue
-    New-NetFirewallRule -DisplayName "NetWorker Dashboard web ($Port)" -Group $script:NwdashServiceName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Any -ErrorAction Stop | Out-Null
-    Write-NwdashLog "firewall: opened inbound TCP $Port"
-  } catch { Write-NwdashWarn "could not configure the firewall ($($_.Exception.Message)). Open inbound TCP $Port manually." }
+    & $removeRules
+    & $newRule $Port $NetworkProfile
+    Write-NwdashLog "firewall: opened inbound TCP $Port on $NetworkProfile networks"
+  } catch {
+    Write-NwdashWarn "could not configure the firewall ($($_.Exception.Message)). Open inbound TCP $Port manually."
+    return
+  }
+  $networks = @()
+  try { $networks = @(& $getNetworks) } catch { $networks = @() }
+  foreach ($gap in @(Get-NwdashFirewallGap -NetworkProfile $NetworkProfile -Networks $networks)) {
+    Write-NwdashWarn (Format-NwdashFirewallGap -Gap $gap -Port $Port)
+  }
 }
 
 function Remove-NwdashFirewall {

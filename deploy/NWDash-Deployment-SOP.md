@@ -77,7 +77,9 @@ One Python process, standard library only (plus the bundled optional
 
 4. The installer migrates any **legacy scheduled-task install** automatically
    (task removed, service registered, `data\` untouched), opens the firewall
-   (rule group `NetWorkerDashboard`), starts the service, and **health-gates**
+   on Domain and Private networks (rule group `NetWorkerDashboard`; add
+   `-FirewallProfile Any` for a network Windows classifies as Public), starts
+   the service, and **health-gates**
    it — it only reports OK once `https://<host>:<port>/api/health` answers.
 
 5. Verify: browse `https://<host>:8443/`, log in with the dashboard password,
