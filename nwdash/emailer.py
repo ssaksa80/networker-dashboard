@@ -487,17 +487,21 @@ def _record_identity_send(automation: AlertAutomation, signature: str) -> None:
         _LAST_SENT_BY_IDENTITY[automation_identity_of(automation)] = (str(signature or ""), time.time())
 
 
+# Send times are found on the naive local wall clock (datetime.now()) and
+# turned into instants with .timestamp(), which takes the UTC offset of that
+# day (review C23). An aware now (datetime.now().astimezone()) carries today's
+# fixed offset, so a send time past a DST change came out an hour off.
 def _daily_report_time_today(report_time: str, now: datetime) -> datetime:
     hour, minute = (int(part) for part in report_time.split(":", 1))
     return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
 def seconds_until_daily_report(report_time: str, now: datetime | None = None) -> float:
-    now = now or datetime.now().astimezone()
+    now = now or datetime.now()
     target = _daily_report_time_today(report_time, now)
     if target <= now:
         target += timedelta(days=1)
-    return max(1.0, (target - now).total_seconds())
+    return max(1.0, target.timestamp() - now.timestamp())
 
 
 # A daily report whose run fails is tried again after these waits, the last one
@@ -510,7 +514,7 @@ def daily_report_owed(automation: AlertAutomation, now: datetime | None = None) 
     """True from today's send time until midnight while today's report has not
     gone out: after a failed run, or a restart over the send time. A schedule
     armed after today's send time owes nothing before tomorrow's."""
-    now = now or datetime.now().astimezone()
+    now = now or datetime.now()
     send_time = _daily_report_time_today(automation.report_time, now)
     if now < send_time or send_time.timestamp() < automation.created_at:
         return False
@@ -518,14 +522,14 @@ def daily_report_owed(automation: AlertAutomation, now: datetime | None = None) 
 
 
 def _daily_report_delay(automation: AlertAutomation, failed: bool) -> float:
-    now = datetime.now().astimezone()
+    now = datetime.now()
     regular = seconds_until_daily_report(automation.report_time, now)
     if not failed or not daily_report_owed(automation, now):
         return regular
     wait = DAILY_REPORT_RETRY_SECONDS[min(max(automation.failures, 1), len(DAILY_REPORT_RETRY_SECONDS)) - 1]
     midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     # A retry after midnight would send the new day's report early, under its date.
-    return wait if wait < (midnight - now).total_seconds() else regular
+    return wait if wait < midnight.timestamp() - now.timestamp() else regular
 
 
 def schedule_alert_automation(automation: AlertAutomation, failed: bool = False) -> None:
@@ -542,7 +546,7 @@ def schedule_alert_automation(automation: AlertAutomation, failed: bool = False)
         else automation.interval_minutes * 60
     )
     automation.next_run_at = time.time() + delay
-    target = datetime.now().astimezone() + timedelta(seconds=delay)
+    target = datetime.fromtimestamp(automation.next_run_at).astimezone()
     debug_log(
         f"automation scheduled id={automation.automation_id} "
         f"type={automation.schedule_type} delaySeconds={int(delay)} "

@@ -271,6 +271,12 @@ has not gone out, and the schedule was armed before that time. An alert check
 keeps its saved time, and runs at once when that passed while the service was
 down.
 
+A send time is found on the naive local wall clock (`datetime.now()`), and
+turned into an instant with `.timestamp()`, which uses that day's UTC offset
+(review C23, the next-run half). Never schedule from
+`datetime.now().astimezone()`: its offset is fixed at the moment it is read,
+so the morning after a DST change the report went out an hour early or late.
+
 The scheduler tick starts a schedule's run only when none of that schedule's
 is still going (`_claim_run`, released when the run's thread ends; review
 C20). A run slower than its interval, such as a large jobs database or a
