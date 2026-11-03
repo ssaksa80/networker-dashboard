@@ -59,17 +59,20 @@ from .models import (
     SHARED_REFRESH_STOP,
     SSE_CLIENTS,
     SSE_CLIENTS_LOCK,
+    SSE_HEARTBEAT_SECONDS,
     BadRequest,
     _automation_keys_snapshot,
     _session_exists,
     _session_ids_snapshot,
     _sse_register,
+    _sse_unregister,
     cached_reliable_dashboard_for_session,
     create_share_token,
     json_clone,
     revoke_share_token,
     set_shared_dashboard,
     shared_dashboard_payload,
+    sse_frame,
     validate_share_token,
 )
 from .profiles import (
@@ -586,6 +589,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
             {"ok": True, "dashboard": json_clone(dashboard), "updatedAt": dashboard.get("generatedAt", "")},
         )
 
+    def _serve_stream(self) -> None:
+        """/api/stream. This thread is the only writer to the viewer's socket:
+        broadcasts land in its queue (models.sse_broadcast), so a slow viewer
+        delays no one else and frames never interleave (review F3)."""
+        client = _sse_register()
+        if client is None:
+            self._send_error_json(HTTPStatus.SERVICE_UNAVAILABLE, "Too many live viewers connected. Try again shortly.")
+            return
+        # The stream has no length, so it ends only when the connection does:
+        # close it when we leave here, and a dropped viewer's page reconnects.
+        self.close_connection = True
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+            self.end_headers()
+            payload = shared_dashboard_payload()
+            dash = payload.get("dashboard")
+            if isinstance(dash, dict):
+                self.wfile.write(sse_frame("dashboard", json.dumps(dash, separators=(",", ":"))))
+            frame = b""  # a heartbeat at once, then one whenever the queue stays empty
+            while not SHARED_REFRESH_STOP.is_set():
+                self.wfile.write(frame or b": heartbeat\n\n")
+                self.wfile.flush()
+                frame = client.next_frame(SSE_HEARTBEAT_SECONDS)
+                if frame is None:  # dropped by a broadcast: it fell too far behind
+                    break
+        except (OSError, ValueError):  # the viewer went away; ValueError: stream already closed
+            pass
+        finally:
+            _sse_unregister(client)
+
     def do_GET(self) -> None:
         if not self._require_https():
             return
@@ -728,36 +765,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._handle_admin_get(path, dict(parse_qsl(urlparse(self.path).query, keep_blank_values=True)))
                 return
             if path == "/api/stream":
-                wfile = self.wfile
-                if not _sse_register(wfile):
-                    self._send_error_json(HTTPStatus.SERVICE_UNAVAILABLE, "Too many live viewers connected. Try again shortly.")
-                    return
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Accel-Buffering", "no")
-                self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-                self.end_headers()
-                payload = shared_dashboard_payload()
-                dash = payload.get("dashboard")
-                if isinstance(dash, dict):
-                    try:
-                        wfile.write(f"event: dashboard\ndata: {json.dumps(dash, separators=(',', ':'))}\n\n".encode())
-                        wfile.flush()
-                    except OSError:
-                        pass
-                while not SHARED_REFRESH_STOP.is_set():
-                    try:
-                        wfile.write(b": heartbeat\n\n")
-                        wfile.flush()
-                        SHARED_REFRESH_STOP.wait(25)
-                    except OSError:
-                        break
-                with SSE_CLIENTS_LOCK:
-                    try:
-                        SSE_CLIENTS.remove(wfile)
-                    except ValueError:
-                        pass
+                self._serve_stream()
                 return
             if path == "/api/snapshots":
                 query = dict(parse_qsl(urlparse(self.path).query, keep_blank_values=True))

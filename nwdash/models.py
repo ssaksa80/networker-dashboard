@@ -8,6 +8,7 @@ import json
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from http.cookiejar import CookieJar
@@ -178,37 +179,96 @@ def _automation_keys_snapshot() -> list[str]:
 
 
 # ── SSE clients ──────────────────────────────────────────────────────────────
-SSE_CLIENTS: list[Any] = []
+# A broadcast runs in whichever request built the dashboard (a Connect, a
+# refresh). It used to write every viewer's socket itself, so one stalled viewer
+# held that request up to the socket timeout, and two broadcasts (or a broadcast
+# and a heartbeat) could interleave their bytes on one stream (review F3). Now a
+# broadcast only queues; each viewer's own /api/stream thread is the only writer
+# to its socket.
+SSE_QUEUE_FRAMES = 8  # frames a viewer may fall behind before it is dropped
+SSE_HEARTBEAT_SECONDS = 25
+
+
+class SseClient:
+    """One /api/stream viewer's frames, queued until its handler writes them."""
+
+    def __init__(self, limit: int = SSE_QUEUE_FRAMES) -> None:
+        self._cond = threading.Condition()
+        self._frames: deque[bytes] = deque()
+        self._limit = limit
+        self.closed = False
+
+    def offer(self, frame: bytes) -> bool:
+        """Queue a frame without waiting. A viewer already `limit` frames behind
+        is closed instead; False means this viewer is gone."""
+        with self._cond:
+            if not self.closed and len(self._frames) >= self._limit:
+                debug_log(f"SSE viewer dropped: {self._limit} frames behind")
+                self._close_locked()
+            if self.closed:
+                return False
+            self._frames.append(frame)
+            self._cond.notify()
+            return True
+
+    def close(self) -> None:
+        with self._cond:
+            self._close_locked()
+
+    def _close_locked(self) -> None:
+        self.closed = True
+        self._frames.clear()
+        self._cond.notify_all()
+
+    def next_frame(self, timeout: float) -> bytes | None:
+        """The next frame to write; b"" when none came within `timeout` (time for
+        a heartbeat); None once the viewer is closed."""
+        with self._cond:
+            self._cond.wait_for(lambda: self._frames or self.closed, timeout)
+            if self.closed:
+                return None
+            return self._frames.popleft() if self._frames else b""
+
+
+SSE_CLIENTS: list[SseClient] = []
 SSE_CLIENTS_LOCK = threading.Lock()
 
 
-def _sse_register(wfile: Any) -> bool:
-    """Register an SSE client if under cap. Returns False when full."""
+def sse_frame(event: str, data: str) -> bytes:
+    return f"event: {event}\ndata: {data}\n\n".encode()
+
+
+def _sse_register() -> SseClient | None:
+    """Register an SSE client if under cap. Returns None when full."""
     with SSE_CLIENTS_LOCK:
         if len(SSE_CLIENTS) >= _cfg.MAX_SSE_CLIENTS:
-            return False
-        SSE_CLIENTS.append(wfile)
-        return True
+            return None
+        client = SseClient()
+        SSE_CLIENTS.append(client)
+        return client
+
+
+def _sse_unregister(client: SseClient) -> None:
+    client.close()
+    with SSE_CLIENTS_LOCK:
+        try:
+            SSE_CLIENTS.remove(client)
+        except ValueError:
+            pass
 
 
 def sse_broadcast(event: str, data: str) -> None:
-    payload = f"event: {event}\ndata: {data}\n\n".encode()
+    """Queue one frame for every viewer. Never touches a socket, so it never
+    waits on a viewer; one SSE_QUEUE_FRAMES behind is dropped, and its handler
+    ends that stream once its stalled write returns or times out. Every viewer
+    gets every frame: the page applies only its own session's (isOwnPush in
+    app.js), and the TV follows whichever dashboard is shared."""
+    frame = sse_frame(event, data)
     with SSE_CLIENTS_LOCK:
         clients = list(SSE_CLIENTS)
-    dead = []
-    for wfile in clients:
-        try:
-            wfile.write(payload)
-            wfile.flush()
-        except (OSError, ValueError):  # ValueError: the client's stream is already closed
-            dead.append(wfile)
-    if dead:
-        with SSE_CLIENTS_LOCK:
-            for wfile in dead:
-                try:
-                    SSE_CLIENTS.remove(wfile)
-                except ValueError:
-                    pass
+    for client in clients:
+        if not client.offer(frame):
+            _sse_unregister(client)
 
 
 

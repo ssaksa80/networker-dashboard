@@ -40,6 +40,15 @@ extraction (SHA-256 against the prior revision).
   each is commented at the import site. Don't "clean them up" into
   top-level imports. (The sessions→emailer edge was removed when session
   cleanup stopped cancelling automations.)
+- **Live push (`/api/stream`)**: every `/api/dashboard` answer goes to every
+  viewer, each push carrying its `sessionId`. A page applies only its own
+  session's (`isOwnPush` in app.js, review F1); the TV follows whichever is
+  shared. A broadcast only queues (`models.SseClient`, at most
+  `SSE_QUEUE_FRAMES` behind): the viewer's own handler thread is the only
+  writer to its socket, and a viewer that falls that far behind is dropped and
+  its connection closed, so its page reconnects (review F3). Never write a
+  viewer's socket from anywhere else: a slow viewer would hold up the request
+  that broadcast, and two writers tear each other's frames.
 
 ## Security model
 
