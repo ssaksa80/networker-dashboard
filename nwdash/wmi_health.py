@@ -33,10 +33,19 @@ def unavailable_server_health(detail: str = "CPU/RAM metrics were not exposed by
     }
 
 
-def percent_from_any(value: Any) -> int | None:
+def percent_from_any(value: Any, *, may_be_fraction: bool = False) -> int | None:
+    """A 0-100 percentage from a metric value.
+
+    The value is a percentage unless the field may carry a 0-1 ratio
+    (`may_be_fraction`), and even then only a value strictly between 0 and 1
+    is scaled. The old rule scaled anything <= 1, so a 1% CPU sample (WMI
+    sends whole numbers) showed as 100% and Critical (review C16).
+    """
     if value in (None, ""):
         return None
     if isinstance(value, str):
+        if "%" in value:
+            may_be_fraction = False
         match = re.search(r"(\d+(?:\.\d+)?)", value)
         if not match:
             return None
@@ -45,55 +54,58 @@ def percent_from_any(value: Any) -> int | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    if number <= 1:
+    if may_be_fraction and 0 < number < 1:
         number *= 100
     return max(0, min(100, round(number)))
 
 
-def find_metric_value(data: Any, names: tuple[str, ...]) -> Any:
+def find_metric(data: Any, names: tuple[str, ...]) -> tuple[str, Any]:
+    """The first of `names` found in `data`, and its value: a level's own keys before its nested values."""
     if isinstance(data, dict):
         lowered = {str(key).lower(): value for key, value in data.items()}
         for name in names:
             if name.lower() in lowered:
-                return lowered[name.lower()]
+                return name, lowered[name.lower()]
         for value in data.values():
-            found = find_metric_value(value, names)
-            if found not in (None, ""):
+            found = find_metric(value, names)
+            if found[1] not in (None, ""):
                 return found
     elif isinstance(data, list):
         for item in data:
-            found = find_metric_value(item, names)
-            if found not in (None, ""):
+            found = find_metric(item, names)
+            if found[1] not in (None, ""):
                 return found
-    return None
+    return "", None
+
+
+def metric_percent(data: Any, names: tuple[str, ...]) -> int | None:
+    # A field named "...Percent" is a percentage; the others may be a ratio.
+    name, value = find_metric(data, names)
+    return percent_from_any(value, may_be_fraction="percent" not in name.lower())
 
 
 def server_health_from_payload(data: Any, source: str) -> dict[str, Any] | None:
-    cpu = percent_from_any(
-        find_metric_value(
-            data,
-            (
-                "cpuUsagePercent",
-                "cpuPercent",
-                "cpuUsage",
-                "processorUsage",
-                "systemCpuUsage",
-                "cpu",
-            ),
-        )
+    cpu = metric_percent(
+        data,
+        (
+            "cpuUsagePercent",
+            "cpuPercent",
+            "cpuUsage",
+            "processorUsage",
+            "systemCpuUsage",
+            "cpu",
+        ),
     )
-    ram = percent_from_any(
-        find_metric_value(
-            data,
-            (
-                "ramUsagePercent",
-                "memoryUsagePercent",
-                "memoryPercent",
-                "memoryUsage",
-                "usedMemoryPercent",
-                "ram",
-            ),
-        )
+    ram = metric_percent(
+        data,
+        (
+            "ramUsagePercent",
+            "memoryUsagePercent",
+            "memoryPercent",
+            "memoryUsage",
+            "usedMemoryPercent",
+            "ram",
+        ),
     )
     if cpu is None and ram is None:
         return None
