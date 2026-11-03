@@ -19,6 +19,168 @@ under which bump) is [`../RELEASING.md`](../RELEASING.md).
 
 ---
 
+## v3.3.0 — passwords off command lines, checked updates, and reports that say what they cover
+
+Minor tier: fixes from the October review, several of which change what an
+operator sees on the next install or upgrade. Nothing under `data\` changes
+format. The installer now writes `data\auth.json` itself, in the form the app
+always used, and saved dashboards gain a few fields that v3.2.0 ignores. URLs
+and the service command line are the same. [`RELEASING.md`](../RELEASING.md)
+lists a changed default that alters existing installs under MAJOR. The closest
+change here is Verify TLS on older profiles, and Verify TLS has always been
+documented as on by default, so the old behaviour was a fault.
+`Setup-NWDash.cmd -Rollback` restores v3.2.0, with the effects listed under
+Rollback.
+
+### Before you upgrade: what operators will notice
+
+Take the new `Setup-NWDash.cmd` from this release along with the zip, and
+replace the old copy. The v3.2.0 one still runs this bundle, but it puts
+passwords on command lines and installs updates it downloads without checking
+them.
+
+- **The firewall rule opens Domain and Private networks only.** It used to open
+  the port on every network, Public included, which is how Windows marks a
+  guest network or one it can't identify. `-Upgrade` and `-Rollback` never
+  touch the rule, so an upgraded host keeps the one it has. The next install
+  without `-Upgrade` makes the rule again, for Domain and Private only. **If the
+  dashboard's network is classified Public, browsers lose the dashboard after
+  that install**, unless you pass `-FirewallProfile Any` or reclassify the
+  network as Private. `-Check` and the install log name each connected network
+  the rule leaves closed. See [`INSTALL.md`](INSTALL.md), Firewall.
+- **A plain reinstall keeps the service's settings.** Running
+  `Setup-NWDash.cmd` without `-Upgrade` over an installed service used to
+  rebuild it from that command line alone, dropping the port, bind address,
+  allow-list, service account and `-AllowUnauthenticated` it ran with. Anything
+  left off the command line is now kept from the installed service, along with
+  environment variables added by hand, and what you pass wins. `-Check` lists
+  what would be kept. **A service that logs on as a named account needs
+  `-ServicePassword`**, because Windows never gives that password back. Without
+  it the reinstall stops before it changes anything and says what to pass.
+  `-Upgrade` needs none of this. See [`INSTALL.md`](INSTALL.md), Re-running the
+  install.
+- **`Setup-NWDash.cmd` downloads an update only with `-Update`, and checks
+  it.** On a host with `gh` or a `GITHUB_TOKEN` it used to download a newer
+  release by itself and install it unchecked. Now it says that a newer release
+  exists and installs the bundle beside it. With `-Update` it downloads the
+  newer zip to a temporary folder and uses it only if its SHA-256 matches both
+  GitHub's digest for the file and the **Bundle SHA-256** line of the release
+  notes. Otherwise it says why and carries on with the local bundle. This
+  catches a damaged or altered download, not a forged release. A script that
+  relied on the automatic download needs `-Update`. `-NoUpdate` still skips
+  the check.
+- **Older connection profiles are held to Verify TLS.** A profile saved without
+  the Verify TLS setting connected from the dashboard with certificate checks
+  off, and showed the box unticked. It now counts as ticked, as the admin
+  console already showed it. **If the dashboard host doesn't trust that
+  NetWorker server's certificate, Connect now fails with a certificate error**
+  where it used to succeed. Either make the host trust it (add the issuing CA
+  to the computer's Trusted Root Certification Authorities store), or untick
+  Verify TLS, enter the password again and save the profile, which records the
+  choice. Profiles that already have the setting don't change.
+- **The dashboard password stays off command lines and out of the registry.**
+  The installer now stores its hash in `data\auth.json` before the first start,
+  so the service environment, which local users can read, never holds the
+  password. `-Upgrade` removes one an earlier install left there.
+  - A first install with no `-AuthPassword` asks for the password after UAC
+    (hidden, typed twice) instead of refusing. A run that can't ask, such as an
+    unattended one, is still refused.
+  - A password given at a prompt that isn't elevated is asked for again in the
+    elevated window, because UAC can't hand it over safely. The same goes for
+    `-ServicePassword`. For an unattended install, run from an elevated prompt.
+  - `Setup-NWDash.cmd` shows passwords as `********`.
+  - A password changed in the admin console no longer goes back to the install
+    password at the next restart. That happened wherever an install had left
+    the password in the service environment.
+  - Still on a command line: a password typed on `Setup-NWDash.cmd`'s own, and
+    `-ServicePassword` on nssm's, which sets the service logon.
+
+### Fixes
+
+- **Reports say what they really cover.** NetWorker keeps job history only for
+  its retention period, often a few days, so "Last Week" and "Last Month"
+  covered those days while the label, the totals and the SLA claimed the whole
+  range. Every daily email now has a "Data covers" row, and a "Shorter than
+  requested" banner when the range is short. The dashboard says the same in its
+  notice bar, with "(data from …)" after the range in the Updated line.
+- **A missing job history shows as incomplete, not healthy.** When the
+  jobs-database fetch failed (too large, a timeout, a saved password that
+  couldn't be decrypted), the dashboard and the daily email showed zero
+  completed jobs, a 0% SLA and health OK. They now show a warning and the SLA
+  as N/A, and the email has a "Data incomplete" banner with NetWorker's error.
+- **Every save set counts, and the latest job is the latest.** On servers read
+  through NWUI, save sets of one client that started in the same second were
+  merged into one, so a failure could vanish. Jobs were also ordered by day of
+  the month, so the "latest" in Server Protection status, the job tables and a
+  policy's last run could be an older one.
+- **A 1% CPU or memory reading shows as 1%**, not 100% and Critical.
+- **Live updates never wait on a slow viewer.** One browser that stopped
+  reading could hold up a refresh for about 30 seconds, and two updates could
+  garble each other. A viewer that falls behind is now disconnected, and its
+  page reconnects by itself.
+- **An expired share link says so.** It showed a dashboard of zeros, fetched
+  again every minute, with the link's token printed at the bottom. It now says
+  "This share link has expired or is invalid" and stops.
+- **Regenerate revokes the share link it replaces**, even after a reconnect or
+  an automatic re-login in between. The old link used to stay valid for its 24
+  hours.
+- **Pages load faster.** The dashboard page was about 1.4 MB on every load; it
+  is now about 40 KB, and its scripts, styles and logo are files the browser
+  keeps. Each release gives them new URLs, so no hard refresh is needed.
+- **A save no longer fails silently on a held file.** Antivirus or a backup
+  agent holding a file under `data\` could make a save of sessions, schedules
+  or email settings fail without a word. Saves now retry for about 1.5 seconds,
+  and one that still fails is logged as "could not save <file>".
+- **A second `-Rollback` goes one backup further back.** It used to move the
+  running app aside and restore nothing. A backup that lacks the app or its
+  runtime is now refused before the service stops, and `-Check -Rollback` says
+  so.
+- **Security.** With `-AllowedHosts` set, the dashboard now connects to the
+  address the allow-list approved: a DNS answer that changed between the check
+  and the connection could send the NetWorker credential elsewhere. Refusals
+  are logged with event `allowlist_connect_refused`. A request through a proxy
+  and the WMI health check aren't covered. A malformed CSRF header gets a 403
+  instead of a dropped connection. A zip entry that would unpack outside the
+  bootstrap's staging folder stops the install before anything is unpacked.
+
+### Support notes
+
+- **"Connected with warnings" that doesn't clear**, on a server whose
+  `/nwrestapi` can't be reached, is intended: without the job history the
+  dashboard can't tell that the range was healthy. Alert schedules are
+  unchanged.
+- **"Shorter than requested" on a 7- or 30-day report** means NetWorker no
+  longer holds the older jobs. The report covers what the server still keeps.
+- **More jobs or failures than before the upgrade**, on a server read through
+  NWUI: those are save sets the old merge folded together.
+- **Dashboard unreachable after a reinstall:** check how Windows classifies the
+  network (the firewall item above).
+- **Connect fails with a certificate error on an older profile:** see the
+  Verify TLS item above.
+- Reload any dashboard, admin console or TV tab that was open during the
+  upgrade, so it picks up the new page.
+
+### Rollback
+
+Run `Setup-NWDash.cmd -Rollback` from an elevated prompt. It restores v3.2.0,
+with its faults. These stay as v3.3.0 left them:
+
+- the firewall rule, which `-Rollback` never touches;
+- the dashboard password: it is in `data\auth.json`, which v3.2.0 reads the
+  same way, and it doesn't go back into the service environment;
+- a Verify TLS choice saved on a profile. A profile still without one goes back
+  to connecting from the dashboard with certificate checks off.
+
+Keep the v3.3.0 `Setup-NWDash.cmd`: it runs older bundles too.
+
+**Gates:** ruff 0.17.2 and the full 585-test suite run **locally** on Windows, on
+Python 3.13, 3.14 and this bundle's embedded Python 3.12.10, and the installer
+tests under Windows PowerShell 5.1: all green. The bundle was booted in the
+installed layout on its own runtime. Not yet run on a real install or against a
+real NetWorker server.
+
+---
+
 ## v3.2.0 — choose a daily report's range, a locked install folder, and safer upgrades
 
 Minor tier: a new range control for daily reports, the install folder locked
