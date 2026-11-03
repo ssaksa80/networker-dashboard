@@ -309,6 +309,24 @@ requested start. The email always lists "Data covers"; a short range gets a
 "Shorter than requested" banner there, in the snapshot and on the dashboard
 (review C13). The periodic-reports design is the real fix for long ranges.
 
+Both collectors classify a job with `nwdash/job_status.py` (review C5):
+succeeded, failed, warning, running, queued or unknown. Cancelled and
+abandoned jobs are failures; a job with no completion status yet goes by its
+`state`. The SLA is succeeded ÷ (succeeded + failed) in both modes. Restores
+are split out before any total, so they are never also backups (C4); NWUI
+mode merges the jobs database's restores with its recoveries monitor, once
+per (client, start second). A finished job belongs to the window it ended
+in (`restapi.job_report_time`, C7); windows are half-open and a time with no
+UTC offset is local (C23). An NWUI monitoring list is paged to its
+`totalCount`; one that stops short is flagged `truncated` on its source (C8).
+Failure text in both modes comes from the completionStatus:"Failed" query,
+joined by job id (C9). Server Protection is detected on every backup job of
+the range, and `tableTotals` holds each table's full row count, which the
+Excel export prints as "80 of N" (C17). NWUI mode's Clients figure is
+`/global/clients` from the REST API behind it, or the client hosts that ran
+a job when that is out of reach (C21). The collector tests run on
+hand-written, scrubbed answers in `tests/collector_fixtures.py`.
+
 Saving email settings (the admin Email tab, the dialog's Save
 configuration) writes `email_config.json`, then runs
 `_reconcile_config_driven_automations`, the same pass as a restart, so

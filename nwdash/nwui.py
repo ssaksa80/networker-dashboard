@@ -18,6 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request
 
 from . import config as _cfg
+from . import job_status
 from .config import (
     API_VERSION_CANDIDATES,
     APP_VERSION,
@@ -44,13 +45,16 @@ from .restapi import (
     fetch_json,
     first_value,
     format_duration_seconds,
-    in_report_window,
     invalid_rest_query_field,
-    is_active_job,
     is_clone_job,
     is_failed_job,
+    is_queued_job,
+    is_recovery_job,
+    is_running_job,
     is_success_job,
     job_history_endpoint,
+    job_in_report_window,
+    job_report_time,
     load_server_health_nwui,
     maintenance_backup_status,
     networker_log_category,
@@ -58,6 +62,7 @@ from .restapi import (
     nwui_api_base_url,
     oldest_job_start,
     origin_url,
+    project_client,
     read_limited,
     remove_rest_field_from_path,
     report_coverage,
@@ -68,6 +73,7 @@ from .restapi import (
     stringify,
     strip_query_param,
     timestamp,
+    with_failure_messages,
 )
 from .wmi_health import unavailable_server_health
 
@@ -263,21 +269,38 @@ def monitoring_payload(
 
 
 def item_in_report_window(item: Any, start_ts: float | None, end_ts: float | None) -> bool:
+    """Whether an NWUI item falls in [start_ts, end_ts): a finished job by
+    when it ended (review C7), anything else by its own time."""
     if start_ts is None and end_ts is None:
         return True
     if not isinstance(item, dict):
         return True
-    value = first_value(item, "startTime", "started", "start", "timestamp", "time", "createdTime", "lastRunTime")
-    item_ts = timestamp(value)
+    item_ts = job_report_time(item) or timestamp(
+        first_value(item, "timestamp", "time", "createdTime", "lastRunTime")
+    )
     if not item_ts:
         return True
     if start_ts is not None and item_ts < start_ts:
         return False
-    return not (end_ts is not None and item_ts > end_ts)
+    return not (end_ts is not None and item_ts >= end_ts)
 
 
 def filter_items_to_report_window(items: list[Any], start_ts: float | None, end_ts: float | None) -> list[Any]:
     return [item for item in items if item_in_report_window(item, start_ts, end_ts)]
+
+
+# A safety stop for one NWUI list: a list that would need more pages than this
+# is returned as far as it got, flagged as truncated.
+NWUI_MAX_PAGES = 50
+# HTTP errors that another page size or window cannot fix.
+NWUI_FINAL_STATUSES = (401, 403, 404)
+
+
+def _count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def nwui_monitoring_pages_with_strategy(
@@ -289,10 +312,25 @@ def nwui_monitoring_pages_with_strategy(
     end_ts: float | None = None,
     page_limit: int = 200,
     include_window: bool = True,
+    paging: dict[str, Any] | None = None,
 ) -> list[Any]:
+    """Every page of one NWUI monitoring list (review C8). When an answer
+    gives its `totalCount`, pages are asked for until that many items are in;
+    without one, a short page is the last. A first page shorter than asked,
+    with more to come, is the server's own page size, and paging carries on
+    at that size so the next page starts where this one ended.
+
+    `paging`, when given, receives "totalCount" (0 when NWUI gave none) and
+    "truncated": whether the list stopped before its end (an empty page
+    before totalCount, or the NWUI_MAX_PAGES stop)."""
     all_items: list[Any] = []
+    total = 0
+    stopped_at_cap = False
     page = 1
-    while page <= 50:
+    while True:
+        if page > NWUI_MAX_PAGES:
+            stopped_at_cap = True
+            break
         data = nwui_post_json(
             config,
             opener,
@@ -314,17 +352,28 @@ def nwui_monitoring_pages_with_strategy(
             "rows",
             "content",
         )
+        if isinstance(data, dict):
+            total = _count(data.get("totalCount") or data.get("total") or data.get("totalItems")) or total
         if not items:
             break
         all_items.extend(items)
-        total = 0
-        if isinstance(data, dict):
-            total = int(data.get("totalCount") or data.get("total") or data.get("totalItems") or 0)
-        if total and len(all_items) >= total:
-            break
-        if len(items) < page_limit:
+        if total:
+            if len(all_items) >= total:
+                break
+            if page == 1 and len(items) < page_limit:
+                page_limit = len(items)
+        elif len(items) < page_limit:
             break
         page += 1
+    truncated = len(all_items) < total if total else stopped_at_cap
+    if truncated:
+        debug_log(
+            f"NWUI monitoring list truncated endpoint={endpoint_name} "
+            f"items={len(all_items)} totalCount={total or 'unknown'} pages={page - 1}"
+        )
+    if paging is not None:
+        paging["totalCount"] = total
+        paging["truncated"] = truncated
     return all_items
 
 
@@ -335,7 +384,12 @@ def nwui_monitoring_all_pages(
     endpoint_name: str,
     start_ts: float | None = None,
     end_ts: float | None = None,
+    paging: dict[str, Any] | None = None,
 ) -> list[Any]:
+    """One NWUI monitoring list, trying smaller pages and then no window
+    when NWUI refuses a request. Only an error no other request can fix
+    (NWUI_FINAL_STATUSES) stops the retries (review C8). `paging` is as for
+    nwui_monitoring_pages_with_strategy."""
     attempts: list[str] = []
     strategies = [
         (200, True),
@@ -357,6 +411,7 @@ def nwui_monitoring_all_pages(
                 end_ts=end_ts,
                 page_limit=page_limit,
                 include_window=include_window,
+                paging=paging,
             )
             if not include_window:
                 items = filter_items_to_report_window(items, start_ts, end_ts)
@@ -370,7 +425,7 @@ def nwui_monitoring_all_pages(
         except RestApiError as exc:
             last_error = exc
             attempts.append(f"{strategy_name}: {exc.message}")
-            if exc.status_code < 500:
+            if exc.status_code in NWUI_FINAL_STATUSES:
                 break
             debug_log(f"NWUI monitoring retry endpoint={endpoint_name} strategy={strategy_name} error={exc.message}")
     if last_error:
@@ -427,6 +482,35 @@ def cached_nwui_job_history(
     return items, path, False, oldest_start
 
 
+# The REST API's client list, for NWUI mode's Clients figure (review C21). It
+# does not depend on the report range, so it is cached per server.
+_CLIENTS_CACHE: dict[tuple[Any, ...], tuple[float, list[Any], str]] = {}
+
+
+def cached_nwui_clients(config: ApiConfig, context: ssl.SSLContext) -> tuple[list[Any], str, bool]:
+    """Return (clients, path, from_cache): /global/clients from the REST API
+    behind NWUI, cached like the job history."""
+    key = (
+        str(config.backup_server_host or "").lower(),
+        int(config.backup_server_port or 0),
+        str(config.rest_api_host or "").lower(),
+        int(config.rest_api_port or 0),
+        str(config.username or ""),
+    )
+    now = time.time()
+    with _JOBS_HISTORY_LOCK:
+        entry = _CLIENTS_CACHE.get(key)
+        if entry and now - entry[0] < JOBS_HISTORY_TTL_SECONDS:
+            return entry[1], entry[2], True
+    items, path = nwui_rest_fallback_items(config, "clients", context)
+    with _JOBS_HISTORY_LOCK:
+        _CLIENTS_CACHE[key] = (now, items, path)
+        if len(_CLIENTS_CACHE) > JOBS_HISTORY_CACHE_MAX:
+            for old_key in sorted(_CLIENTS_CACHE, key=lambda k: _CLIENTS_CACHE[k][0])[:-JOBS_HISTORY_CACHE_MAX]:
+                _CLIENTS_CACHE.pop(old_key, None)
+    return items, path, False
+
+
 def cmd_flag_value(command: str, flag: str) -> str:
     if not command:
         return ""
@@ -448,48 +532,11 @@ def parse_nwui_time(value: Any) -> str:
 
 
 def normalize_nwui_status(value: Any, failed_sessions: int = 0) -> str:
-    raw = str(value or "unknown").strip().lower().replace(" ", "_")
-    mapping = {
-        "completed": "succeeded",
-        "success": "succeeded",
-        "successful": "succeeded",
-        "ok": "succeeded",
-        "done": "succeeded",
-        "finished": "succeeded",
-        "in_progress": "running",
-        "active": "running",
-        "started": "running",
-        "waiting": "queued",
-        "pending": "queued",
-        "scheduled": "queued",
-        "error": "failed",
-        "aborted": "failed",
-        "failure": "failed",
-        "warnings": "warning",
-        "interrupted": "warning",
-        "missed": "warning",
-        "missedtheschedule": "warning",
-        "missed_the_schedule": "warning",
-        "skipped": "warning",
-        "never_started": "warning",
-        "notstarted": "warning",
-    }
-    status = mapping.get(raw, raw)
-    if status not in ("succeeded", "failed", "warning", "running", "queued"):
-        if "succ" in raw or "complet" in raw:
-            status = "succeeded"
-        elif "fail" in raw or "error" in raw or "abort" in raw:
-            status = "failed"
-        elif "warn" in raw or "miss" in raw or "skip" in raw or "interrupt" in raw:
-            status = "warning"
-        elif "run" in raw or "progress" in raw:
-            status = "running"
-        elif "wait" in raw or "pend" in raw or "queue" in raw:
-            status = "queued"
-        else:
-            status = raw or "unknown"
-    if status == "succeeded" and failed_sessions > 0:
-        return "warning"
+    """The job_status outcome of an NWUI status, the classifier REST mode uses
+    too (review C5). A success with failed sessions is a warning."""
+    status = job_status.classify_status(value)
+    if status == job_status.SUCCEEDED and failed_sessions > 0:
+        return job_status.WARNING
     return status
 
 
@@ -539,6 +586,9 @@ def project_nwui_job(item: Any) -> dict[str, Any]:
         "_group": str(item.get("groupName") or group_from_cmd or ""),
         "_pool": pool_from_cmd,
         "_server": server_from_cmd,
+        # The client host of a jobs-database record; NWUI's own actions are
+        # per workflow and name none.
+        "_client_host": str(item.get("clientHostname") or ""),
         "_sessions": {
             "success": success,
             "failed": failed,
@@ -599,15 +649,15 @@ def project_nwui_recovery(item: Any) -> dict[str, str]:
 
 def rest_job_as_nwui_action(job: Any) -> dict[str, Any]:
     status = status_text(job)
-    status_lower = status.lower()
     success = 1 if is_success_job(job) else 0
     failed = 1 if is_failed_job(job) else 0
-    running = 1 if is_active_job(job) and "queue" not in status_lower else 0
-    waiting = 1 if "queue" in status_lower or "wait" in status_lower or "pending" in status_lower else 0
+    running = 1 if is_running_job(job) else 0
+    waiting = 1 if is_queued_job(job) else 0
     return {
         # The NetWorker job id, under a name the NWUI feed never uses: the
         # history merge keys on it (review C1).
         "restJobId": first_value(job, "id"),
+        "clientHostname": first_value(job, "clientHostname", "client", "hostname"),
         "startTime": first_value(job, "startTime", "started", "start"),
         "duration": first_value(job, "elapsedTime", "duration", "elapsed"),
         "status": status,
@@ -714,6 +764,35 @@ def nwui_rest_fallback_configs(config: ApiConfig) -> list[ApiConfig]:
     return candidates
 
 
+def nwui_failure_records(
+    config: ApiConfig,
+    version: str,
+    headers: dict[str, str],
+    context: ssl.SSLContext,
+    removed_fields: set[str],
+) -> list[Any]:
+    """The jobs database's completionStatus:"Failed" records with their
+    `message`, the failure text the bulk history query leaves out (review
+    C9). Optional: on any error the history goes without it."""
+    path = dashboard_endpoints(config)["failedJobs"]
+    for field in removed_fields:
+        path = remove_rest_field_from_path(path, field)
+    endpoint_host = authc_header_value(config.rest_api_host, config.rest_api_port)
+    try:
+        data = fetch_json(
+            api_base_url_for_version(config, version) + path,
+            headers,
+            max(config.timeout_seconds, 120),
+            context,
+            f"nwuiFallback:failedJobs:{endpoint_host}:{version}",
+            max_bytes=MAX_JOBS_RESPONSE_BYTES,
+        )
+    except RestApiError as exc:
+        debug_log(f"NWUI failed-job text unavailable host={endpoint_host} version={version} error={exc.message}")
+        return []
+    return collection_from(data, "jobs")
+
+
 def nwui_rest_fallback_items(
     config: ApiConfig,
     target: str,
@@ -726,8 +805,8 @@ def nwui_rest_fallback_items(
     if not config.password:
         raise RestApiError(502, "Direct REST fallback needs the current login password; reconnect to refresh this source.")
     paths = dashboard_endpoints(config)
-    source_name = "jobs" if target == "actions" else "policies"
-    original_path = job_history_endpoint() if target == "actions" else paths["policies"]
+    source_name = {"actions": "jobs", "clients": "clients"}.get(target, "policies")
+    original_path = job_history_endpoint() if target == "actions" else paths[source_name]
     last_error: RestApiError | None = None
     attempts: list[str] = []
     for fallback_config in nwui_rest_fallback_configs(config):
@@ -754,7 +833,7 @@ def nwui_rest_fallback_items(
                         f"nwuiFallback:{source_name}:{endpoint_host}:{version}",
                         max_bytes=fetch_max_bytes,
                     )
-                    preferred_key = "jobs" if target == "actions" else "policies"
+                    preferred_key = source_name
                     items = collection_from(data, preferred_key)
                     if target == "actions":
                         if _cfg.APP_DEBUG:
@@ -781,17 +860,18 @@ def nwui_rest_fallback_items(
                         # and converting the whole set wastes CPU on a busy server.
                         if retained is not None:
                             retained["oldestStart"] = oldest_job_start(items)
-                        in_window = [
-                            job
-                            for job in items
-                            if in_report_window(first_value(job, "startTime", "started", "start"), config)
-                        ]
+                        in_window = [job for job in items if job_in_report_window(job, config)]
+                        if any(is_failed_job(job) for job in in_window):
+                            in_window = with_failure_messages(
+                                in_window,
+                                nwui_failure_records(fallback_config, version, headers, context, removed_fields),
+                            )
                         items = [rest_job_as_nwui_action(job) for job in sort_jobs(in_window)]
                     return items, f"https://{endpoint_host}/nwrestapi/{version}{compact_path_for_log(path)}"
                 except RestApiError as exc:
                     invalid_field = invalid_rest_query_field(exc.message, exc.body)
                     if (
-                        target == "actions"
+                        target in ("actions", "clients")
                         and exc.status_code == 400
                         and invalid_field
                         and invalid_field not in removed_fields
@@ -911,12 +991,15 @@ def project_nwui_alert(item: Any) -> dict[str, str]:
 
 
 def build_nwui_clients(jobs: list[dict[str, Any]]) -> list[dict[str, str]]:
-    by_workflow: dict[str, dict[str, Any]] = {}
+    """Client rows from the jobs of the range, for when the REST API's client
+    list is out of reach: one per client host that ran a job. Not per
+    workflow: a workflow name is not a client (review C21)."""
+    by_host: dict[str, dict[str, Any]] = {}
     for job in jobs:
-        name = job.get("_workflow") or job.get("client") or ""
+        name = job.get("_client_host") or ""
         if not name:
             continue
-        row = by_workflow.setdefault(
+        row = by_host.setdefault(
             name,
             {
                 "hostname": name,
@@ -933,7 +1016,7 @@ def build_nwui_clients(jobs: list[dict[str, Any]]) -> list[dict[str, str]]:
         if job.get("_group"):
             row["protectionGroups"].add(job["_group"])
     output = []
-    for row in by_workflow.values():
+    for row in by_host.values():
         groups = ", ".join(sorted(row["protectionGroups"]))
         output.append(
             {
@@ -945,6 +1028,32 @@ def build_nwui_clients(jobs: list[dict[str, Any]]) -> list[dict[str, str]]:
             }
         )
     return sorted(output, key=lambda item: item["hostname"])
+
+
+def merge_recoveries(monitored: list[Any], restores: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Recovery rows, newest first, from NWUI's recoveries monitor and the
+    restores the jobs database holds, each restore once (review C4). A
+    restore both list (same client, same start second) keeps the jobs
+    database's record, which has its final status."""
+    by_run: dict[tuple[str, int], tuple[float, dict[str, str]]] = {}
+    unkeyed: list[tuple[float, dict[str, str]]] = []
+    for item in monitored:
+        started = timestamp(item.get("startTime") or item.get("start"))
+        client = str(item.get("clientName") or item.get("client") or item.get("hostname") or "").strip().lower()
+        row = (started, project_nwui_recovery(item))
+        if started:
+            by_run[(client, int(started))] = row
+        else:
+            unkeyed.append(row)
+    for job in restores:
+        started = float(job.get("_started_ts") or 0)
+        row = (started, nwui_job_table_row(job))
+        if started:
+            by_run[(str(job.get("client") or "").strip().lower(), int(started))] = row
+        else:
+            unkeyed.append(row)
+    rows = sorted([*by_run.values(), *unkeyed], key=lambda pair: pair[0], reverse=True)
+    return [row for _, row in rows]
 
 
 def newest_first(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1138,6 +1247,7 @@ def build_dashboard_nwui(
         ("monitoringRecoveries", "monitoringrecoveries", "recoveries"),
     ):
         try:
+            paging: dict[str, Any] = {}
             items = nwui_monitoring_all_pages(
                 config,
                 opener,
@@ -1145,8 +1255,16 @@ def build_dashboard_nwui(
                 endpoint_name,
                 start_ts=start_ts,
                 end_ts=end_ts,
+                paging=paging,
             )
             sources[source_name] = {"ok": True, "path": f"/nwui/api/{endpoint_name}", "count": len(items)}
+            if paging.get("truncated"):
+                listed = f"{paging['totalCount']}" if paging.get("totalCount") else "more"
+                sources[source_name].update({
+                    "truncated": True,
+                    "totalCount": paging.get("totalCount") or None,
+                    "detail": f"NWUI returned {len(items)} of {listed} items; the list is incomplete.",
+                })
             if target == "actions":
                 raw_actions = items
             elif target == "policies":
@@ -1248,10 +1366,38 @@ def build_dashboard_nwui(
             "severity": "warning",
         }
 
+    # The Clients figure counts NetWorker's clients (review C21). It asks the
+    # REST API that just answered for the history; without it, the client
+    # hosts that ran a job stand in.
+    rest_clients: list[Any] | None = None
+    if history_available:
+        try:
+            rest_clients, clients_path, clients_from_cache = cached_nwui_clients(config, context)
+            sources["clients"] = {
+                "ok": True,
+                "path": clients_path,
+                "count": len(rest_clients),
+                "cached": clients_from_cache,
+            }
+        except RestApiError as exc:
+            sources["clients"] = {
+                "ok": False,
+                "path": "/nwrestapi/global/clients",
+                "status": exc.status_code,
+                "error": safe_log_text(exc.message, 300),
+                "detail": "Clients are the client hosts that ran a job in this range.",
+                "severity": "info",
+                "diagnosticOnly": True,
+            }
+
     jobs = [job for job in (project_nwui_job(item) for item in raw_actions) if job]
     jobs = newest_first(jobs)
     clone_jobs = [job for job in jobs if is_clone_job(job)]
-    backup_jobs = [job for job in jobs if not is_clone_job(job)]
+    other_jobs = [job for job in jobs if not is_clone_job(job)]
+    # The jobs database lists restores too. They are counted once, as
+    # restores: not also as backups in the totals and the SLA (review C4).
+    history_restores = [job for job in other_jobs if is_recovery_job(job)]
+    backup_jobs = [job for job in other_jobs if not is_recovery_job(job)]
     if _cfg.APP_DEBUG:
         debug_log(
             "NWUI action merge: "
@@ -1282,7 +1428,10 @@ def build_dashboard_nwui(
                     f"workflowName={sample.get('workflowName')!r}"
                 )
     failed_jobs = [job for job in backup_jobs if str(job.get("status", "")).lower() in ("failed", "warning")]
-    clients = build_nwui_clients(backup_jobs)
+    if rest_clients is None:
+        clients = build_nwui_clients(backup_jobs)
+    else:
+        clients = [project_client(client) for client in rest_clients]
     alerts = [project_nwui_alert(item) for item in raw_alerts if isinstance(item, dict)]
     if not alerts:
         alerts = [
@@ -1297,7 +1446,7 @@ def build_dashboard_nwui(
     policy_alert_rows = build_nwui_policies(raw_policies, backup_jobs)
     recovery_jobs = [item for item in raw_recoveries if isinstance(item, dict) and not is_clone_job(item)]
     clone_recoveries = [item for item in raw_recoveries if isinstance(item, dict) and is_clone_job(item)]
-    recovery_rows = [project_nwui_recovery(item) for item in recovery_jobs]
+    recovery_rows = merge_recoveries(recovery_jobs, history_restores)
     clone_recovery_rows = [project_nwui_recovery(item) for item in clone_recoveries]
 
     clone_session_counts = session_counts_for_jobs(clone_jobs)
@@ -1339,6 +1488,7 @@ def build_dashboard_nwui(
                 "client": job.get("client", ""),
                 "name": job.get("name", ""),
                 "policy": job.get("policy", ""),
+                "status": job.get("status", ""),
                 "started": job.get("started", ""),
                 "message": job.get("message") or job.get("_save_set", ""),
             }
@@ -1348,14 +1498,25 @@ def build_dashboard_nwui(
         "cloneJobs": ([nwui_job_table_row(job) for job in clone_jobs] + clone_recovery_rows)[:TABLE_LIMIT],
         "logs": [
             row
-            for row in (nwui_job_log_row(job) for job in (backup_jobs + clone_jobs)[:TABLE_LIMIT])
+            for row in (nwui_job_log_row(job) for job in (other_jobs + clone_jobs)[:TABLE_LIMIT])
             if row.get("message")
         ],
         "alerts": (alerts + policy_alert_rows)[:TABLE_LIMIT],
         "clients": clients[:TABLE_LIMIT],
     }
+    # Every row behind each table, which keeps only its first TABLE_LIMIT
+    # (review C17); exports say "80 of N".
+    table_totals = {
+        "jobs": len(backup_jobs),
+        "failedJobs": len(failed_jobs),
+        "recovery": len(recovery_rows),
+        "cloneJobs": len(clone_jobs) + len(clone_recovery_rows),
+        "alerts": len(alerts) + len(policy_alert_rows),
+        "clients": len(clients),
+    }
     server_health = load_server_health_nwui(config, opener, auth_headers)
-    maintenance_backup = maintenance_backup_status(tables["jobs"] + backup_jobs)
+    # Detected on every backup job of the range, not the 80-row table.
+    maintenance_backup = maintenance_backup_status(backup_jobs)
 
     any_success = sources.get("nwuiLogin", {}).get("ok") and any(
         item.get("ok") for key, item in sources.items() if key != "nwuiLogin"
@@ -1379,7 +1540,7 @@ def build_dashboard_nwui(
             "successfulJobs": successful_jobs,
             "failedJobs": failed_count,
             "activeJobs": active_jobs,
-            "recoveryJobs": len(recovery_jobs),
+            "recoveryJobs": len(recovery_rows),
             "recoveryFailed": recovery_failed,
             "recoveryRunning": recovery_running,
             "cloneJobs": len(clone_jobs) + len(clone_recoveries),
@@ -1403,6 +1564,7 @@ def build_dashboard_nwui(
         "maintenanceBackup": maintenance_backup,
         "sources": sources,
         "tables": tables,
+        "tableTotals": table_totals,
     }
     if not any_success:
         first_error = next((item.get("error") for item in sources.values() if item.get("error")), "")

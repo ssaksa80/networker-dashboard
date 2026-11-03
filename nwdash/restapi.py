@@ -14,7 +14,7 @@ import re
 import socket
 import ssl
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -30,6 +30,7 @@ from .config import (
     TABLE_LIMIT,
     debug_log,
 )
+from .job_status import ACTIVE, FAILED, QUEUED, RUNNING, SUCCEEDED, UNKNOWN, classify_status, job_outcome
 from .models import JOB_HISTORY_UNAVAILABLE, ApiConfig, BadRequest, RestApiError, generated_at
 from .profiles import connect_allowed
 from .wmi_health import load_server_health_wmi, server_health_from_payload, unavailable_server_health
@@ -93,16 +94,35 @@ def report_window(config: ApiConfig) -> tuple[float, float, str]:
 
 
 def in_report_window(value: Any, config: ApiConfig) -> bool:
+    """Whether a time falls in the report window. Windows are half-open,
+    [start, end), so a job that ends at midnight is in one daily report, not
+    two (review C23)."""
     ts = timestamp(value)
     start_ts, end_ts, _ = report_window(config)
-    return bool(ts and start_ts <= ts <= end_ts)
+    return bool(ts and start_ts <= ts < end_ts)
 
 
 def in_report_range(value: Any, report_range: str) -> bool:
     ts = timestamp(value)
     end_ts = time.time()
     start_ts = end_ts - (report_range_days(report_range) * 24 * 60 * 60)
-    return bool(ts and start_ts <= ts <= end_ts)
+    return bool(ts and start_ts <= ts < end_ts)
+
+
+def job_report_time(job: Any) -> float:
+    """When a job counts for a report window, as epoch seconds (review C7): a
+    finished job when it ended, so a backup that starts in one daily window
+    and fails in the next is in the next one's report; a job still running,
+    or one with no end time, when it started."""
+    started = timestamp(first_value(job, "startTime", "started", "start"))
+    ended = timestamp(first_value(job, "endTime", "completionTime"))
+    if ended and classify_job(job) not in ACTIVE:
+        return ended
+    return started
+
+
+def job_in_report_window(job: Any, config: ApiConfig) -> bool:
+    return in_report_window(job_report_time(job), config)
 
 
 # A retained job set whose oldest job starts more than this after the requested
@@ -180,6 +200,9 @@ def add_sla_summary(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def maintenance_backup_status(jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """The newest Server Protection run among `jobs`, newest first: /global/jobs
+    records or projected rows. Give it every job of the range, not a table's
+    first TABLE_LIMIT rows (review C17)."""
     housekeeping_keywords = ("expiration", "expire", "retention cleanup", "cleanup", "staging", "recycle")
     server_backup_names = {
         "server backup",
@@ -233,26 +256,14 @@ def maintenance_backup_status(jobs: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     latest = matches[0]
-    raw_status = str(latest.get("status") or "unknown").lower()
-    if any(word in raw_status for word in ("success", "succeed", "complete", "ok")):
-        status = "succeeded"
-    elif any(word in raw_status for word in ("fail", "error", "critical")):
-        status = "failed"
-    elif any(word in raw_status for word in ("run", "active", "start")):
-        status = "running"
-    elif any(word in raw_status for word in ("queue", "wait", "pending")):
-        status = "queued"
-    elif "warn" in raw_status:
-        status = "warning"
-    else:
-        status = raw_status
-    label = status.title() if status else "Unknown"
+    status = classify_job(latest)
+    started = latest.get("started") or display_datetime(first_value(latest, "startTime", "start"))
     return {
         "status": status,
-        "label": label,
+        "label": status.title(),
         "detail": (
-            f"{latest.get('name') or 'Maintenance job'} on {latest.get('client') or 'server'}"
-            f" at {latest.get('started') or 'unknown time'}"
+            f"{latest.get('name') or 'Maintenance job'} on {first_value(latest, 'client', 'clientHostname') or 'server'}"
+            f" at {started or 'unknown time'}"
         ),
         "count": len(matches),
     }
@@ -300,10 +311,16 @@ def endpoint(path: str, query: dict[str, str] | None = None) -> str:
 # text). Dropping it cuts the response by ~10x and removes the per-record log
 # cleaning that was making each refresh time out. Failure detail still comes
 # from the small, completionStatus:"Failed"-filtered failedJobs query below.
+#
+# `state` tells a running job from a finished one: a job that is still running
+# has no completion status yet (review C5). A finished job belongs to the
+# report window it ended in, so `endTime` too (review C7).
 JOB_QUERY_FIELDS = (
     "clientHostname",
     "startTime",
+    "endTime",
     "completionStatus",
+    "state",
     "name",
     "policyActionName",
     "workflowName",
@@ -317,11 +334,13 @@ def dashboard_endpoints(config: ApiConfig | None = None) -> dict[str, str]:
     # CANNOT be applied server-side (a startTime>=... query is rejected with
     # HTTP 400). The jobs database is naturally bounded by NetWorker's completed-
     # job retention, and the exact report window is enforced client-side by
-    # in_report_window(). `config` is accepted for signature stability.
-    job_fields = ",".join(JOB_QUERY_FIELDS)
+    # job_in_report_window(). `config` is accepted for signature stability.
+    # The job id joins a failure's text from the failed query below to its
+    # job in the full list.
+    job_fields = ",".join((*JOB_QUERY_FIELDS, "id"))
     # The failed set is small (filtered to completionStatus:"Failed"), so it can
     # afford to include the verbose `message` field for failure detail.
-    failed_fields = ",".join((*JOB_QUERY_FIELDS, "message"))
+    failed_fields = ",".join((*JOB_QUERY_FIELDS, "id", "message"))
     return {
         "clients": endpoint(
             "/global/clients",
@@ -344,9 +363,36 @@ def dashboard_endpoints(config: ApiConfig | None = None) -> dict[str, str]:
 
 def job_history_endpoint() -> str:
     """/global/jobs for the NWUI history merge, which tells jobs apart by their
-    NetWorker job id (review C1). REST mode merges nothing, so its jobs query
-    above stays as it is."""
-    return endpoint("/global/jobs", {"fl": ",".join((*JOB_QUERY_FIELDS, "id"))})
+    NetWorker job id (review C1)."""
+    return dashboard_endpoints()["jobs"]
+
+
+def _failure_key(job: Any) -> tuple[str, ...]:
+    job_id = first_value(job, "id")
+    if job_id not in (None, ""):
+        return ("id", str(job_id))
+    return (
+        "run",
+        str(first_value(job, "clientHostname", "client")),
+        str(first_value(job, "name")),
+        str(timestamp(first_value(job, "startTime", "started", "start"))),
+    )
+
+
+def with_failure_messages(jobs: list[Any], failed_records: list[Any]) -> list[Any]:
+    """`jobs`, each given the `message` of its record in the failed query
+    (completionStatus:"Failed", the one query that carries job text), matched
+    by job id, or by client, name and start when a record has no id."""
+    messages = {
+        _failure_key(record): record["message"]
+        for record in failed_records
+        if isinstance(record, dict) and record.get("message")
+    }
+    joined = []
+    for job in jobs:
+        message = messages.get(_failure_key(job)) if isinstance(job, dict) and not job.get("message") else None
+        joined.append({**job, "message": message} if message else job)
+    return joined
 
 
 def build_headers(config: ApiConfig) -> dict[str, str]:
@@ -860,27 +906,25 @@ def timestamp(value: Any) -> float:
         numeric = float(text)
         return numeric / 1000 if numeric > 100000000000 else numeric
 
+    # A time with no UTC offset is local wall-clock time, as the custom date
+    # window is, not UTC (review C23). datetime.timestamp() reads a naive
+    # time as local.
     normalized = text.replace("Z", "+00:00")
     try:
-        dt = datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.timestamp()
-    except ValueError:
+        return datetime.fromisoformat(normalized).timestamp()
+    except (ValueError, OSError, OverflowError):
         pass
 
+    # Also accepts a ctime-style "Thu Oct 15 13:00:00 2026", which has no zone.
     try:
-        dt = email.utils.parsedate_to_datetime(text)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.timestamp()
-    except (TypeError, ValueError, IndexError):
+        return email.utils.parsedate_to_datetime(text).timestamp()
+    except (TypeError, ValueError, IndexError, OSError, OverflowError):
         pass
 
     for fmt in ("%a %b %d %H:%M:%S %Y", "%Y-%m-%d %H:%M:%S"):
         try:
-            return datetime.strptime(text, fmt).replace(tzinfo=UTC).timestamp()
-        except ValueError:
+            return datetime.strptime(text, fmt).timestamp()
+        except (ValueError, OSError, OverflowError):
             continue
     return 0.0
 
@@ -942,23 +986,40 @@ def format_duration_value(value: Any) -> str:
     return text
 
 
+def classify_job(job: Any) -> str:
+    """The job_status outcome of a /global/jobs record, or of a projected row
+    (which carries `status`)."""
+    return job_outcome(first_value(job, "completionStatus", "status"), first_value(job, "state"))
+
+
 def status_text(job: Any) -> str:
-    return stringify(first_value(job, "completionStatus", "state", "status"), 80)
+    """The status to show: the completion status, or the state of a job that
+    has none yet."""
+    completion = first_value(job, "completionStatus", "status")
+    state = first_value(job, "state")
+    if state and classify_status(completion) == UNKNOWN:
+        return stringify(state, 80)
+    return stringify(completion or state, 80)
 
 
 def is_failed_job(job: Any) -> bool:
-    status = status_text(job).lower()
-    return any(word in status for word in ("fail", "error", "critical"))
+    return classify_job(job) == FAILED
 
 
 def is_success_job(job: Any) -> bool:
-    status = status_text(job).lower()
-    return any(word in status for word in ("success", "succeed", "completed"))
+    return classify_job(job) == SUCCEEDED
+
+
+def is_running_job(job: Any) -> bool:
+    return classify_job(job) == RUNNING
+
+
+def is_queued_job(job: Any) -> bool:
+    return classify_job(job) == QUEUED
 
 
 def is_active_job(job: Any) -> bool:
-    status = status_text(job).lower()
-    return any(word in status for word in ("run", "active", "start", "queued"))
+    return classify_job(job) in ACTIVE
 
 
 def is_clone_job(job: Any) -> bool:
@@ -985,6 +1046,8 @@ def is_clone_job(job: Any) -> bool:
 
 
 def is_recovery_job(job: Any) -> bool:
+    """A restore, by its name or action. Not by its text: a failed backup's
+    message can mention a recover, and it must stay a backup (review C4)."""
     if is_clone_job(job):
         return False
     fields = [
@@ -992,7 +1055,6 @@ def is_recovery_job(job: Any) -> bool:
         first_value(job, "policyActionName"),
         first_value(job, "actionName"),
         first_value(job, "workflowName"),
-        first_value(job, "message"),
     ]
     text = " ".join(stringify(field, 120).lower() for field in fields)
     return any(word in text for word in ("recover", "recovery", "restore"))
@@ -1083,6 +1145,7 @@ def project_failed_job(job: Any) -> dict[str, str]:
         "client": projected["client"],
         "name": projected["name"],
         "policy": projected["policy"],
+        "status": projected["status"],
         "started": projected["started"],
         "message": projected["message"],
     }
@@ -1213,9 +1276,21 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         is_jobs = name in ("jobs", "failedJobs")
         load_timeout = max(config.timeout_seconds, 120) if is_jobs else config.timeout_seconds
         load_max_bytes = MAX_JOBS_RESPONSE_BYTES if is_jobs else MAX_RESPONSE_BYTES
-        return name, fetch_json(
-            base_url + path, headers, load_timeout, context, name, max_bytes=load_max_bytes
-        )
+        while True:
+            try:
+                return name, fetch_json(
+                    base_url + path, headers, load_timeout, context, name, max_bytes=load_max_bytes
+                )
+            except RestApiError as exc:
+                # A NetWorker that does not know one of the jobs fields (an
+                # older one and `state`, say) answers HTTP 400 naming it. Ask
+                # again without it, as the NWUI fallback does.
+                invalid_field = invalid_rest_query_field(exc.message, exc.body) if is_jobs and exc.status_code == 400 else ""
+                next_path = remove_rest_field_from_path(path, invalid_field)
+                if next_path == path:
+                    raise
+                debug_log(f"Dashboard source retry source={name} removedField={invalid_field}")
+                path = next_path
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(paths))) as executor:
         futures = {
@@ -1261,34 +1336,42 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
     # far back the report can see.
     retained_jobs = collection_from(raw_results.get("jobs"), "jobs")
     coverage = report_coverage(start_ts, end_ts, oldest_job_start(retained_jobs))
-    jobs = [
-        job for job in sort_jobs(retained_jobs)
-        if in_report_window(first_value(job, "startTime", "started", "start"), config)
-    ]
-    failed_jobs_from_query = [
-        job for job in sort_jobs(collection_from(raw_results.get("failedJobs"), "jobs"))
-        if in_report_window(first_value(job, "startTime", "started", "start"), config)
-    ]
+    jobs = [job for job in sort_jobs(retained_jobs) if job_in_report_window(job, config)]
+    failed_records = collection_from(raw_results.get("failedJobs"), "jobs")
     clone_jobs = [job for job in jobs if is_clone_job(job)]
-    backup_jobs = [job for job in jobs if not is_clone_job(job)]
-    failed_jobs_from_query = [job for job in failed_jobs_from_query if not is_clone_job(job)]
-    failed_jobs = failed_jobs_from_query or [job for job in backup_jobs if is_failed_job(job)]
+    other_jobs = [job for job in jobs if not is_clone_job(job)]
+    # Restores are counted once, as restores: not also as backups in the
+    # totals and the SLA (review C4).
+    recovery_jobs = [job for job in other_jobs if is_recovery_job(job)]
+    backup_jobs = [job for job in other_jobs if not is_recovery_job(job)]
+    if history_available:
+        # The failures are the jobs the shared classifier calls failed, which
+        # include the cancelled and abandoned jobs the failed query leaves
+        # out (review C5). That query still supplies their text.
+        failed_jobs = with_failure_messages([job for job in backup_jobs if is_failed_job(job)], failed_records)
+    else:
+        failed_jobs = [
+            job for job in sort_jobs(failed_records)
+            if job_in_report_window(job, config)
+            and not is_clone_job(job)
+            and not is_recovery_job(job)
+        ]
     alerts = [
         alert for alert in collection_from(raw_results.get("alerts"), "alerts")
         if not first_value(alert, "time", "timestamp", "date", "createdTime")
         or in_report_window(first_value(alert, "time", "timestamp", "date", "createdTime"), config)
     ]
     policies = collection_from(raw_results.get("policies"), "policies")
-    recovery_jobs = [job for job in backup_jobs if is_recovery_job(job)]
 
     critical_alerts = sum(1 for alert in alerts if is_critical_alert(alert))
     warning_alerts = sum(1 for alert in alerts if is_warning_alert(alert))
     failed_count = len(failed_jobs)
+    recovery_failed = sum(1 for job in recovery_jobs if is_failed_job(job))
     clone_failed = sum(1 for job in clone_jobs if is_failed_job(job))
     clone_running = sum(1 for job in clone_jobs if is_active_job(job))
     source_errors = sum(1 for item in sources.values() if not item.get("ok"))
 
-    if failed_count or clone_failed or critical_alerts:
+    if failed_count or recovery_failed or clone_failed or critical_alerts:
         health = "critical"
     elif warning_alerts or source_errors:
         health = "warning"
@@ -1302,7 +1385,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "failedJobs": failed_count,
         "activeJobs": sum(1 for job in backup_jobs if is_active_job(job)),
         "recoveryJobs": len(recovery_jobs),
-        "recoveryFailed": sum(1 for job in recovery_jobs if is_failed_job(job)),
+        "recoveryFailed": recovery_failed,
         "recoveryRunning": sum(1 for job in recovery_jobs if is_active_job(job)),
         "cloneJobs": len(clone_jobs),
         "cloneFailed": clone_failed,
@@ -1328,14 +1411,24 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "cloneJobs": [project_job(job) for job in clone_jobs[:TABLE_LIMIT]],
         "logs": [
             row
-            for row in (project_job_log(job) for job in (backup_jobs + clone_jobs)[:TABLE_LIMIT])
+            for row in (project_job_log(job) for job in (other_jobs + clone_jobs)[:TABLE_LIMIT])
             if row.get("message")
         ],
         "alerts": [project_alert(alert) for alert in alerts[:TABLE_LIMIT]],
         "clients": [project_client(client) for client in clients[:TABLE_LIMIT]],
     }
+    # Every row behind each table, which keeps only its first TABLE_LIMIT
+    # (review C17); exports say "80 of N".
+    table_totals = {
+        "jobs": len(backup_jobs),
+        "failedJobs": len(failed_jobs),
+        "recovery": len(recovery_jobs),
+        "cloneJobs": len(clone_jobs),
+        "alerts": len(alerts),
+        "clients": len(clients),
+    }
     server_health = load_server_health_rest(config, base_url, headers, context)
-    maintenance_backup = maintenance_backup_status(tables["jobs"] + tables["failedJobs"])
+    maintenance_backup = maintenance_backup_status(backup_jobs if history_available else failed_jobs)
 
     any_success = any(item.get("ok") for item in sources.values())
     statuses = {item.get("status") for item in sources.values() if not item.get("ok")}
@@ -1363,6 +1456,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "maintenanceBackup": maintenance_backup,
         "sources": sources,
         "tables": tables,
+        "tableTotals": table_totals,
     }
     if not any_success:
         first_error = next((item.get("error") for item in sources.values() if item.get("error")), "")

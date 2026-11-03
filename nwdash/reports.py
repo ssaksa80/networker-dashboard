@@ -1150,10 +1150,32 @@ def rows_from_table(items: list[dict[str, Any]], columns: list[tuple[str, str]])
     return rows
 
 
+# Table sheets of the export, by the dashboard table they hold.
+EXCEL_TABLE_SHEETS = (
+    ("jobs", "Backup Jobs"),
+    ("failedJobs", "Failed Jobs"),
+    ("recovery", "Restores"),
+    ("cloneJobs", "Clone Jobs"),
+    ("alerts", "Alerts"),
+    ("clients", "Clients"),
+)
+
+
 def build_excel_report(dashboard: dict[str, Any]) -> bytes:
     summary = dashboard.get("summary", {}) if isinstance(dashboard.get("summary"), dict) else {}
     tables = dashboard.get("tables", {}) if isinstance(dashboard.get("tables"), dict) else {}
     target = dashboard.get("target", {}) if isinstance(dashboard.get("target"), dict) else {}
+    # How many rows each table had before the dashboard kept its first
+    # TABLE_LIMIT (review C17). A dashboard from before tableTotals has none.
+    totals = dashboard.get("tableTotals", {}) if isinstance(dashboard.get("tableTotals"), dict) else {}
+
+    def table_rows(name: str, columns: list[tuple[str, str]]) -> list[list[Any]]:
+        items = tables.get(name, [])
+        rows = rows_from_table(items, columns)
+        total = report_int(totals.get(name))
+        if total > len(items):
+            rows += [[], [f"Showing {len(items):,} of {total:,} rows."]]
+        return rows
     status_rows = [
         ["Succeeded", int(summary.get("successfulJobs") or 0)],
         ["Failed", int(summary.get("failedJobs") or 0)],
@@ -1177,6 +1199,17 @@ def build_excel_report(dashboard: dict[str, Any]) -> bytes:
         ["Status", "Count"],
         *status_rows,
     ]
+    if totals:
+        # Below the status rows, so the chart's fixed range does not move.
+        dashboard_rows += [
+            [],
+            ["Table", "Rows in this export"],
+            *(
+                [sheet, f"{len(tables.get(name, [])):,} of {report_int(totals.get(name)):,}"]
+                for name, sheet in EXCEL_TABLE_SHEETS
+                if name in totals
+            ),
+        ]
     jobs_cols = [
         ("client", "Client"),
         ("name", "Job"),
@@ -1190,6 +1223,7 @@ def build_excel_report(dashboard: dict[str, Any]) -> bytes:
         ("client", "Client"),
         ("name", "Job"),
         ("policy", "Policy"),
+        ("status", "Status"),
         ("started", "Started"),
         ("message", "Message"),
     ]
@@ -1210,13 +1244,13 @@ def build_excel_report(dashboard: dict[str, Any]) -> bytes:
     ]
     sheets = [
         ("Dashboard", dashboard_rows, [28, 18, 18, 18, 18, 18, 18, 18, 18]),
-        ("Backup Jobs", rows_from_table(tables.get("jobs", []), jobs_cols), [22, 24, 24, 16, 24, 14, 48]),
-        ("Failed Jobs", rows_from_table(tables.get("failedJobs", []), failed_cols), [22, 24, 24, 24, 58]),
-        ("Restores", rows_from_table(tables.get("recovery", []), jobs_cols), [22, 24, 24, 16, 24, 14, 48]),
-        ("Clone Jobs", rows_from_table(tables.get("cloneJobs", []), jobs_cols), [22, 24, 24, 16, 24, 14, 48]),
+        ("Backup Jobs", table_rows("jobs", jobs_cols), [22, 24, 24, 16, 24, 14, 48]),
+        ("Failed Jobs", table_rows("failedJobs", failed_cols), [22, 24, 24, 16, 24, 58]),
+        ("Restores", table_rows("recovery", jobs_cols), [22, 24, 24, 16, 24, 14, 48]),
+        ("Clone Jobs", table_rows("cloneJobs", jobs_cols), [22, 24, 24, 16, 24, 14, 48]),
         ("Logs", rows_from_table(tables.get("logs", []), log_cols), [14, 24, 16, 18, 80]),
-        ("Alerts", rows_from_table(tables.get("alerts", []), alert_cols), [16, 24, 64, 28]),
-        ("Clients", rows_from_table(tables.get("clients", []), client_cols), [28, 16, 20, 24, 40]),
+        ("Alerts", table_rows("alerts", alert_cols), [16, 24, 64, 28]),
+        ("Clients", table_rows("clients", client_cols), [28, 16, 20, 24, 40]),
     ]
     sheet_names = [name for name, _, _ in sheets]
     output = BytesIO()
