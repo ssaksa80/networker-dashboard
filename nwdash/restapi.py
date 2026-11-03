@@ -200,6 +200,9 @@ def add_sla_summary(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def maintenance_backup_status(jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """The newest Server Protection run among `jobs`, newest first: /global/jobs
+    records or projected rows. Give it every job of the range, not a table's
+    first TABLE_LIMIT rows (review C17)."""
     housekeeping_keywords = ("expiration", "expire", "retention cleanup", "cleanup", "staging", "recycle")
     server_backup_names = {
         "server backup",
@@ -253,14 +256,14 @@ def maintenance_backup_status(jobs: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     latest = matches[0]
-    status = classify_status(latest.get("status"))
-    label = status.title()
+    status = classify_job(latest)
+    started = latest.get("started") or display_datetime(first_value(latest, "startTime", "start"))
     return {
         "status": status,
-        "label": label,
+        "label": status.title(),
         "detail": (
-            f"{latest.get('name') or 'Maintenance job'} on {latest.get('client') or 'server'}"
-            f" at {latest.get('started') or 'unknown time'}"
+            f"{latest.get('name') or 'Maintenance job'} on {first_value(latest, 'client', 'clientHostname') or 'server'}"
+            f" at {started or 'unknown time'}"
         ),
         "count": len(matches),
     }
@@ -1142,6 +1145,7 @@ def project_failed_job(job: Any) -> dict[str, str]:
         "client": projected["client"],
         "name": projected["name"],
         "policy": projected["policy"],
+        "status": projected["status"],
         "started": projected["started"],
         "message": projected["message"],
     }
@@ -1413,8 +1417,18 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "alerts": [project_alert(alert) for alert in alerts[:TABLE_LIMIT]],
         "clients": [project_client(client) for client in clients[:TABLE_LIMIT]],
     }
+    # Every row behind each table, which keeps only its first TABLE_LIMIT
+    # (review C17); exports say "80 of N".
+    table_totals = {
+        "jobs": len(backup_jobs),
+        "failedJobs": len(failed_jobs),
+        "recovery": len(recovery_jobs),
+        "cloneJobs": len(clone_jobs),
+        "alerts": len(alerts),
+        "clients": len(clients),
+    }
     server_health = load_server_health_rest(config, base_url, headers, context)
-    maintenance_backup = maintenance_backup_status(tables["jobs"] + tables["failedJobs"])
+    maintenance_backup = maintenance_backup_status(backup_jobs if history_available else failed_jobs)
 
     any_success = any(item.get("ok") for item in sources.values())
     statuses = {item.get("status") for item in sources.values() if not item.get("ok")}
@@ -1442,6 +1456,7 @@ def build_dashboard_rest(config: ApiConfig) -> tuple[int, dict[str, Any]]:
         "maintenanceBackup": maintenance_backup,
         "sources": sources,
         "tables": tables,
+        "tableTotals": table_totals,
     }
     if not any_success:
         first_error = next((item.get("error") for item in sources.values() if item.get("error")), "")

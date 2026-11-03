@@ -1424,6 +1424,7 @@ def build_dashboard_nwui(
                 "client": job.get("client", ""),
                 "name": job.get("name", ""),
                 "policy": job.get("policy", ""),
+                "status": job.get("status", ""),
                 "started": job.get("started", ""),
                 "message": job.get("message") or job.get("_save_set", ""),
             }
@@ -1439,8 +1440,19 @@ def build_dashboard_nwui(
         "alerts": (alerts + policy_alert_rows)[:TABLE_LIMIT],
         "clients": clients[:TABLE_LIMIT],
     }
+    # Every row behind each table, which keeps only its first TABLE_LIMIT
+    # (review C17); exports say "80 of N".
+    table_totals = {
+        "jobs": len(backup_jobs),
+        "failedJobs": len(failed_jobs),
+        "recovery": len(recovery_rows),
+        "cloneJobs": len(clone_jobs) + len(clone_recovery_rows),
+        "alerts": len(alerts) + len(policy_alert_rows),
+        "clients": len(clients),
+    }
     server_health = load_server_health_nwui(config, opener, auth_headers)
-    maintenance_backup = maintenance_backup_status(tables["jobs"] + backup_jobs)
+    # Detected on every backup job of the range, not the 80-row table.
+    maintenance_backup = maintenance_backup_status(backup_jobs)
 
     any_success = sources.get("nwuiLogin", {}).get("ok") and any(
         item.get("ok") for key, item in sources.items() if key != "nwuiLogin"
@@ -1488,6 +1500,7 @@ def build_dashboard_nwui(
         "maintenanceBackup": maintenance_backup,
         "sources": sources,
         "tables": tables,
+        "tableTotals": table_totals,
     }
     if not any_success:
         first_error = next((item.get("error") for item in sources.values() if item.get("error")), "")
