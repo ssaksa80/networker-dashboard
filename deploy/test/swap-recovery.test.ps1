@@ -1,5 +1,7 @@
 # Regression test for review O1: an -Upgrade/-Rollback that fails partway must
-# put the previous version back, start the service and exit non-zero.
+# put the previous version back, start the service and exit non-zero. And for
+# review O3: the backup a -Rollback restores is used up, so the next -Rollback
+# goes one further back, and a backup without the app is refused before the stop.
 #
 # Most of what can go wrong lives in install.ps1's control flow, not in a helper,
 # so this runs the REAL upgrade/rollback block of install.ps1 against a temp
@@ -113,6 +115,16 @@ function New-Fixture {
   return $d
 }
 $script:Target = '1.0.0-20260101-010101'
+$script:Older = '0.9.0-20251201-010101'
+$script:Newer = '1.5.0-20260201-010101'
+
+function Add-Backup([string]$Dir, [string]$Name, [string]$Version) {
+  New-Payload "$Dir\install\backups\$Name\app" "$Dir\install\backups\$Name\runtime\python" $Version
+}
+# What a -Rollback from before review O3 left: the folders, not one file.
+function Add-SpentBackup([string]$Dir, [string]$Name) {
+  New-Item -ItemType Directory -Force "$Dir\install\backups\$Name\app", "$Dir\install\backups\$Name\runtime" | Out-Null
+}
 
 # Every file under $Root with its content, apart from backups\ and data\.
 function Get-Tree([string]$Root, [switch]$All) {
@@ -262,6 +274,53 @@ try {
   Assert ((Get-ServiceState $d) -eq 'Stopped') "$case : a half-restored app is left stopped, not started"
   Assert ($run.Flat -match [regex]::Escape("backups\$(Get-NewestBackup $d)")) "$case : names the folder holding the previous files"
   Assert-WholeBackup $d $case
+
+  # ---- review O3: a rollback uses its backup up, so the next goes one further back ----
+  $case = 'rollback, twice in a row'
+  $d = New-Fixture
+  Add-Backup $d $script:Older '0.9.0'
+  $want1 = (Get-Tree "$d\install") -replace '2\.0\.0', '1.0.0'
+  $want2 = (Get-Tree "$d\install") -replace '2\.0\.0', '0.9.0'
+  $run = Invoke-Deploy $d 'Rollback'
+  Assert ($run.Code -eq 0) "$case : the first exits 0"
+  Assert ((Get-Tree "$d\install") -ceq $want1) "$case : the first puts the newest backup in place, whole"
+  Assert (-not (Test-Path "$d\install\backups\$script:Target")) "$case : the first leaves no emptied folder behind"
+  $run = Invoke-Deploy $d 'Rollback'
+  Assert ($run.Code -eq 0) "$case : the second exits 0"
+  Assert ((Get-Tree "$d\install") -ceq $want2) "$case : the second puts the backup before it in place, whole"
+  Assert (-not @(Get-NwdashBackups -InstallDir "$d\install").Count) "$case : nothing is left to roll back to"
+  $run = Invoke-Deploy $d 'Rollback'
+  Assert ($run.Flat -match 'nobackupunderbackups') "$case : a third says there is no backup"
+  Assert ((Get-Tree "$d\install") -ceq $want2) "$case : and changes nothing"
+
+  $case = 'rollback, an earlier rollback left its emptied backup newest'
+  $d = New-Fixture
+  Add-SpentBackup $d $script:Newer
+  $want = (Get-Tree "$d\install") -replace '2\.0\.0', '1.0.0'
+  $run = Invoke-Deploy $d 'Rollback'
+  Assert ($run.Code -eq 0) "$case : exits 0"
+  Assert ((Get-Tree "$d\install") -ceq $want) "$case : the real backup is in place, whole"
+
+  $case = 'upgrade, an earlier rollback left its emptied backup'
+  $d = New-Fixture
+  Add-SpentBackup $d $script:Newer
+  $run = Invoke-Deploy $d 'Upgrade'
+  Assert ($run.Code -eq 0) "$case : exits 0"
+  Assert (-not (Test-Path "$d\install\backups\$script:Newer")) "$case : the prune removes the emptied folder"
+  Assert (Test-Path "$d\install\backups\$script:Target\app\networker_dashboard.py") "$case : and keeps the real backup"
+
+  # ---- review O3: a backup without the app is refused before anything stops ----
+  $case = 'rollback, the newest backup has no runtime'
+  $d = New-Fixture
+  Add-Backup $d $script:Newer '1.5.0'
+  Remove-Item -Recurse -Force "$d\install\backups\$script:Newer\runtime"
+  $old = Get-Tree "$d\install" -All
+  $run = Invoke-Deploy $d 'Rollback'
+  Assert ($run.Code -notin @(0, 99)) "$case : exits non-zero"
+  Assert ($run.Flat -match [regex]::Escape("backups\$($script:Newer)isincomplete(noruntime\python\python.exe)")) "$case : says which backup lacks what"
+  Assert ($run.Flat -match [regex]::Escape("rollbackto$($script:Target)instead")) "$case : names the backup it would reach with that one moved out"
+  Assert (-not (Get-NssmLog $d | Where-Object { $_ -match '^(stop|start)' })) "$case : the service is not touched"
+  Assert ((Get-Tree "$d\install" -All) -ceq $old) "$case : no file changed"
 } finally {
   foreach ($d in $script:scratch) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
 }

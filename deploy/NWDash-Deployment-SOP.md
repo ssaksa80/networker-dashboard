@@ -140,9 +140,14 @@ Setup-NWDash.cmd -Rollback
 ```
 
 Restores the newest backup; the rolled-away state is kept as an `undone-*`
-backup that can never be re-selected by a second `-Rollback`.
+backup that can never be re-selected by a second `-Rollback`. The restored
+backup is used up and its emptied folder removed, so a second `-Rollback`
+goes one backup further back. A backup missing the app or its runtime is
+refused before the service is stopped and before any file moves: move the
+folder the error names out of `backups\` to roll back to the one before it.
 
-**Never touched by either path:** `data\`, `.certs\`, `logs\`, `backups\`.
+**Never touched by either path:** `data\`, `.certs\`, `logs\`. In `backups\`
+only the installer's own copies change, as described above.
 
 ---
 

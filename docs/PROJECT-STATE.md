@@ -266,6 +266,16 @@ send cannot pair the old password with the new server.
   `$ErrorActionPreference='Stop'`, so a wider one also catches the refusals
   and the final failure, and undoes a deploy twice (review O1,
   `deploy/test/swap-recovery.test.ps1`).
+- A `-Rollback` uses up the backup it restores: its files move into the
+  install and `Remove-NwdashSpentBackup` removes the emptied folder, so the
+  next `-Rollback` goes one further back (review O3). It moves rather than
+  copies: a rename per item is quick and either happens or not, a copy of the
+  runtime is thousands of files for EDR to hold, and a copied backup would stay
+  newest, so a second `-Rollback` would restore the same build again.
+  `Get-NwdashBackups` skips any backup with no file left (an earlier release's
+  rollbacks left those), and a backup missing the launcher, `nwdash\config.py`
+  or `runtime\python\python.exe` is refused before the service is stopped
+  (`Get-NwdashBackupProblem`).
 
 ## Deferred work (in priority order)
 

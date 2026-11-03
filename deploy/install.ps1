@@ -119,6 +119,10 @@ if ($Check) {
   Write-NwdashLog '  never touched  : data\, .certs\, logs\, backups\'
   $names = @(Get-NwdashBackups -InstallDir $InstallDir)
   if ($names.Count) { Write-NwdashLog "  backups found  : $($names -join ', ')" }
+  if ($Rollback -and $names.Count) {
+    $missing = Get-NwdashBackupProblem -InstallDir $InstallDir -Name $names[0]
+    Write-NwdashLog "  rollback to    : $($names[0])$(if ($missing) { " - REFUSED, it has no $missing" })"
+  }
   exit 0
 }
 
@@ -275,6 +279,14 @@ if ($Upgrade -or $Rollback) {
       $names = @(Get-NwdashBackups -InstallDir $InstallDir)
       if (-not $names.Count) { Stop-Nwdash 'no backup under backups\ to roll back to' }
       $target = $names[0]
+      # The live app goes out before the backup comes in, so a backup without
+      # the app would leave the service nothing to run (review O3).
+      $missing = Get-NwdashBackupProblem -InstallDir $InstallDir -Name $target
+      if ($missing) {
+        Stop-Nwdash ("backups\$target is incomplete (no $missing), so it cannot be rolled back to. The service " +
+          "was not stopped and no file was moved. Move that folder out of backups\ to roll back to " +
+          "$(if ($names.Count -gt 1) { $names[1] } else { 'the backup before it, if any' }) instead.")
+      }
     } elseif (-not (Test-Path "$InstallDir\networker_dashboard.py")) {
       Stop-Nwdash "no existing app at $InstallDir - run a normal install first"
     }
@@ -295,6 +307,9 @@ if ($Upgrade -or $Rollback) {
         Backup-NwdashApp -InstallDir $InstallDir -Name $restoreOnFail
         $returnOnFail = $target
         Restore-NwdashApp -InstallDir $InstallDir -Name $target
+        # Its files are the install now, so the next -Rollback goes one further
+        # back. Should this run fail, the undo makes the folder again for them.
+        Remove-NwdashSpentBackup -InstallDir $InstallDir -Name $target
         $toVer = Get-NwdashInstalledVersion -InstallDir $InstallDir
         Write-NwdashLog "restored $toVer (was $oldVer)"
       } else {
