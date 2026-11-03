@@ -27,16 +27,19 @@ review's Medium security findings are fixed. Nothing under `data\` changes
 format, and URLs and the service command line are the same.
 [`RELEASING.md`](../RELEASING.md) lists a changed default that alters existing
 installs under MAJOR. One change here can stop something working: a connection
-profile saved by an older version now checks the NetWorker certificate. It is
-fixed in the dashboard in a minute, with nothing lost, so it ships as a minor
-with the notes below. `Setup-NWDash.cmd -Rollback` restores v3.2.0.
+profile with no Verify TLS setting now checks the NetWorker certificate. Only a
+profile added by hand or through the API can lack the setting, and it is fixed
+in the dashboard in a minute, with nothing lost, so it ships as a minor with the
+notes below. `Setup-NWDash.cmd -Rollback` restores v3.2.0.
 
 ### Before you upgrade
 
-- **Older connection profiles now check the NetWorker certificate.** A profile
-  saved by an older version had no Verify TLS setting, and connected with its
-  saved password and the certificate check off. It now counts as Verify TLS
-  on. If the dashboard host doesn't trust that NetWorker server's certificate,
+- **A connection profile with no Verify TLS setting now checks the NetWorker
+  certificate.** The dashboard and the admin console always save the setting,
+  so this concerns only a profile added to `data\profiles.json` by hand or
+  saved through the API without it. Such a profile connected with its saved
+  password and the certificate check off; it now counts as Verify TLS on. If
+  the dashboard host doesn't trust that NetWorker server's certificate,
   Connect with the profile fails verification. Select the profile, untick
   **Verify TLS**, type the password and save it: the profile then keeps that
   choice.
@@ -46,10 +49,13 @@ with the notes below. `Setup-NWDash.cmd -Rollback` restores v3.2.0.
   the release's **Bundle SHA-256** line. Older copies of the script still
   download unasked and unchecked. A bundle zip with an entry outside its folder
   is refused before anything is unpacked.
-- **Installing asks for the dashboard password.** Run `Setup-NWDash.cmd`
-  without `-AuthPassword` and type the password when the installer asks, after
-  UAC (hidden, typed twice). Double-clicking `Setup-NWDash.cmd` now works
-  instead of being refused. `-AuthPassword` still works for an unattended
+- **A new install asks for the dashboard password.** When no password is
+  stored yet, run `Setup-NWDash.cmd` without `-AuthPassword` and type the
+  password when the installer asks, after UAC (hidden, typed twice).
+  Double-clicking `Setup-NWDash.cmd` now works instead of being refused.
+  `-Upgrade`, and an install over one that already has a password
+  (`data\auth.json`), keep that password and don't ask. `-AuthPassword` still
+  works for an unattended
   install from an elevated prompt. Given in a non-elevated prompt, it is asked
   for again in the elevated window, because passwords no longer cross UAC.
   `-ServicePassword` works the same way.
@@ -136,6 +142,11 @@ with the notes below. `Setup-NWDash.cmd -Rollback` restores v3.2.0.
   `Setup-NWDash.cmd`'s command line. Let the installer ask for it instead.
 - `-ServicePassword` still reaches `nssm.exe`'s command line once, when the
   installer sets the service account.
+- With an allow-list (`--allowed-hosts`), a request through a proxy and the WMI
+  health check still look the NetWorker name up on their own: the proxy and
+  PowerShell resolve it.
+- The pages' CSS, JS and logo under `/assets/` are served without sign-in. They
+  are the shipped code, the same on every install, and hold no data.
 - Reload any dashboard, admin console or TV tab that was open during the
   upgrade, so it picks up the new page.
 
@@ -143,16 +154,14 @@ with the notes below. `Setup-NWDash.cmd -Rollback` restores v3.2.0.
 
 Run `Setup-NWDash.cmd -Rollback` from an elevated prompt. It restores v3.2.0,
 with its faults. Saved data stays as it is. A profile saved with Verify TLS
-unticked keeps that setting; an older profile without one goes back to
-connecting with the certificate check off. The firewall rule stays as the last
+unticked keeps that setting; a profile without one goes back to connecting
+with the certificate check off. The firewall rule stays as the last
 install set it.
 
 **Gates:** GitHub Actions (lint, unit tests on 3.12.10 and 3.14, installer
 tests, secret scan) run on the release PR. ruff 0.17.2 and the full 585-test
-suite run **locally** on Windows: green on Python 3.13 and on this bundle's
-embedded Python 3.12.10. On 3.14 the tests pass, and one test class's
-temporary folder can't be removed afterwards on this machine, as on `main`.
-The installer tests pass under Windows PowerShell 5.1. The bundle was booted
+suite run **locally** on Windows: green on Python 3.13, 3.14 and this
+bundle's embedded Python 3.12.10. The installer tests pass under Windows PowerShell 5.1. The bundle was booted
 in the installed layout on its own runtime and served the dashboard, admin
 console, TV page and their files. `-Upgrade` has not yet run on a test host.
 The automated gates use no real NetWorker server.
