@@ -287,6 +287,20 @@ def filter_items_to_report_window(items: list[Any], start_ts: float | None, end_
     return [item for item in items if item_in_report_window(item, start_ts, end_ts)]
 
 
+# A safety stop for one NWUI list: a list that would need more pages than this
+# is returned as far as it got, flagged as truncated.
+NWUI_MAX_PAGES = 50
+# HTTP errors that another page size or window cannot fix.
+NWUI_FINAL_STATUSES = (401, 403, 404)
+
+
+def _count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def nwui_monitoring_pages_with_strategy(
     config: ApiConfig,
     opener: Any,
@@ -296,10 +310,25 @@ def nwui_monitoring_pages_with_strategy(
     end_ts: float | None = None,
     page_limit: int = 200,
     include_window: bool = True,
+    paging: dict[str, Any] | None = None,
 ) -> list[Any]:
+    """Every page of one NWUI monitoring list (review C8). When an answer
+    gives its `totalCount`, pages are asked for until that many items are in;
+    without one, a short page is the last. A first page shorter than asked,
+    with more to come, is the server's own page size, and paging carries on
+    at that size so the next page starts where this one ended.
+
+    `paging`, when given, receives "totalCount" (0 when NWUI gave none) and
+    "truncated": whether the list stopped before its end (an empty page
+    before totalCount, or the NWUI_MAX_PAGES stop)."""
     all_items: list[Any] = []
+    total = 0
+    stopped_at_cap = False
     page = 1
-    while page <= 50:
+    while True:
+        if page > NWUI_MAX_PAGES:
+            stopped_at_cap = True
+            break
         data = nwui_post_json(
             config,
             opener,
@@ -321,17 +350,28 @@ def nwui_monitoring_pages_with_strategy(
             "rows",
             "content",
         )
+        if isinstance(data, dict):
+            total = _count(data.get("totalCount") or data.get("total") or data.get("totalItems")) or total
         if not items:
             break
         all_items.extend(items)
-        total = 0
-        if isinstance(data, dict):
-            total = int(data.get("totalCount") or data.get("total") or data.get("totalItems") or 0)
-        if total and len(all_items) >= total:
-            break
-        if len(items) < page_limit:
+        if total:
+            if len(all_items) >= total:
+                break
+            if page == 1 and len(items) < page_limit:
+                page_limit = len(items)
+        elif len(items) < page_limit:
             break
         page += 1
+    truncated = len(all_items) < total if total else stopped_at_cap
+    if truncated:
+        debug_log(
+            f"NWUI monitoring list truncated endpoint={endpoint_name} "
+            f"items={len(all_items)} totalCount={total or 'unknown'} pages={page - 1}"
+        )
+    if paging is not None:
+        paging["totalCount"] = total
+        paging["truncated"] = truncated
     return all_items
 
 
@@ -342,7 +382,12 @@ def nwui_monitoring_all_pages(
     endpoint_name: str,
     start_ts: float | None = None,
     end_ts: float | None = None,
+    paging: dict[str, Any] | None = None,
 ) -> list[Any]:
+    """One NWUI monitoring list, trying smaller pages and then no window
+    when NWUI refuses a request. Only an error no other request can fix
+    (NWUI_FINAL_STATUSES) stops the retries (review C8). `paging` is as for
+    nwui_monitoring_pages_with_strategy."""
     attempts: list[str] = []
     strategies = [
         (200, True),
@@ -364,6 +409,7 @@ def nwui_monitoring_all_pages(
                 end_ts=end_ts,
                 page_limit=page_limit,
                 include_window=include_window,
+                paging=paging,
             )
             if not include_window:
                 items = filter_items_to_report_window(items, start_ts, end_ts)
@@ -377,7 +423,7 @@ def nwui_monitoring_all_pages(
         except RestApiError as exc:
             last_error = exc
             attempts.append(f"{strategy_name}: {exc.message}")
-            if exc.status_code < 500:
+            if exc.status_code in NWUI_FINAL_STATUSES:
                 break
             debug_log(f"NWUI monitoring retry endpoint={endpoint_name} strategy={strategy_name} error={exc.message}")
     if last_error:
@@ -1129,6 +1175,7 @@ def build_dashboard_nwui(
         ("monitoringRecoveries", "monitoringrecoveries", "recoveries"),
     ):
         try:
+            paging: dict[str, Any] = {}
             items = nwui_monitoring_all_pages(
                 config,
                 opener,
@@ -1136,8 +1183,16 @@ def build_dashboard_nwui(
                 endpoint_name,
                 start_ts=start_ts,
                 end_ts=end_ts,
+                paging=paging,
             )
             sources[source_name] = {"ok": True, "path": f"/nwui/api/{endpoint_name}", "count": len(items)}
+            if paging.get("truncated"):
+                listed = f"{paging['totalCount']}" if paging.get("totalCount") else "more"
+                sources[source_name].update({
+                    "truncated": True,
+                    "totalCount": paging.get("totalCount") or None,
+                    "detail": f"NWUI returned {len(items)} of {listed} items; the list is incomplete.",
+                })
             if target == "actions":
                 raw_actions = items
             elif target == "policies":

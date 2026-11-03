@@ -97,7 +97,7 @@ class _CollectorCase(unittest.TestCase):
         self.history = _jobs_answer([])
         self.history_urls = []
 
-        def _pages(_config, _opener, _headers, endpoint_name, start_ts=None, end_ts=None):
+        def _pages(_config, _opener, _headers, endpoint_name, start_ts=None, end_ts=None, paging=None):
             return list(self.live) if endpoint_name == "monitoringactions" else []
 
         def _fetch(url, _headers, _timeout, _context, _label, max_bytes=0):
