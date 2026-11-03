@@ -36,6 +36,13 @@ extraction (SHA-256 against the prior revision).
   `__SHARE_TOKEN__`, `__NETWORKER_LOGO_SRC__`). Edit the assets, not
   Python strings. `.gitattributes` pins them to LF; the loader uses
   universal-newline decoding so served bytes are checkout-invariant.
+- A projected job's `started` is a `dd-mm-YYYY` display string: order jobs
+  by `_started_ts` (`nwui.newest_first`), never by `started`, or "latest"
+  becomes the highest day of the month (review C2). The NWUI history merge
+  tells jobs-database records apart by their NetWorker job id (`restJobId`,
+  the `id` field `restapi.job_history_endpoint` asks for), not by client,
+  action and start second, which collapsed save sets started together
+  (review C1).
 - Five deliberate function-level imports break circular module edges;
   each is commented at the import site. Don't "clean them up" into
   top-level imports. (The sessions→emailer edge was removed when session

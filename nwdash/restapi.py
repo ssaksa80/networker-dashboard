@@ -300,6 +300,13 @@ def dashboard_endpoints(config: ApiConfig | None = None) -> dict[str, str]:
     }
 
 
+def job_history_endpoint() -> str:
+    """/global/jobs for the NWUI history merge, which tells jobs apart by their
+    NetWorker job id (review C1). REST mode merges nothing, so its jobs query
+    above stays as it is."""
+    return endpoint("/global/jobs", {"fl": ",".join((*JOB_QUERY_FIELDS, "id"))})
+
+
 def build_headers(config: ApiConfig) -> dict[str, str]:
     token = base64.b64encode(f"{config.username}:{config.password}".encode()).decode(
         "ascii"
