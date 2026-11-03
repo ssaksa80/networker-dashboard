@@ -28,6 +28,7 @@ from .config import (
     debug_log,
     safe_log_text,
 )
+from .fileio import atomic_write_text
 from .models import (
     SHARED_REFRESH_STOP,
     AlertAutomation,
@@ -588,11 +589,11 @@ def persist_automations() -> None:
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         records = {key: _automation_to_dict(a) for key, a in _automation_items_snapshot()}
-        tmp = AUTOMATIONS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(records, separators=(",", ":")), encoding="utf-8")
-        tmp.replace(AUTOMATIONS_FILE)
-    except (OSError, TypeError, ValueError):
-        pass
+        atomic_write_text(AUTOMATIONS_FILE, json.dumps(records, separators=(",", ":")))
+    except OSError:
+        pass  # logged by atomic_write_text; the schedules stay armed until a restart
+    except (TypeError, ValueError) as exc:
+        LOG.warning(f"could not save {AUTOMATIONS_FILE.name}: {exc}", extra={"event": "file_write_failed"})
 
 
 # A saved config re-aims a live schedule (_sync_automation_from_email_config)

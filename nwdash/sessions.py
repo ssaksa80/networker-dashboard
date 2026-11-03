@@ -27,6 +27,7 @@ from .config import (
     SESSION_TTL_SECONDS,
     debug_log,
 )
+from .fileio import atomic_write_text
 from .models import (
     ApiConfig,
     DashboardSession,
@@ -166,11 +167,9 @@ def persist_sessions() -> None:
             sid: _session_to_dict(sid, s)
             for sid, s in _session_items_snapshot()
         }
-        tmp = SESSION_PERSISTENCE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(records, separators=(",", ":")), encoding="utf-8")
-        tmp.replace(SESSION_PERSISTENCE_FILE)
+        atomic_write_text(SESSION_PERSISTENCE_FILE, json.dumps(records, separators=(",", ":")))
     except OSError:
-        pass
+        pass  # logged by atomic_write_text; the sessions stay live until a restart
 
 
 def _restore_session_record(session_id: str, rec: dict[str, Any], now: float) -> bool:

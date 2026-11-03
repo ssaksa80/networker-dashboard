@@ -111,6 +111,10 @@ class TestInstall(Keys, TempDataMixin, unittest.TestCase):
             patcher = mock.patch.object(_cfg, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # A replace these tests refuse stays refused: no waiting through the retries.
+        patcher = mock.patch("nwdash.fileio.REPLACE_RETRY_DELAYS", ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.applied = []
 
     def apply(self, context):

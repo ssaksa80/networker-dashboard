@@ -200,6 +200,17 @@ a restart/update/crash:
 | `data/last_good_dashboard.json` | Last successful dashboard (stale fallback) | Read on demand |
 | `data/.session_key`, `data/.auth_key` | DPAPI-wrapped (machine scope) encryption/HMAC keys | Loaded at import in `secrets.py`. An unusable key stops the start; it is never replaced |
 
+Every file above except the audit log, which is appended to, is saved through
+`nwdash/fileio.py` (review O5). Each save writes a temporary file of its own,
+then `os.replace`s the live file. The replace is retried for about 1.5 s
+while another process holds the target, because on Windows antivirus or an open
+reader refuses it. A final failure is logged as `could not save <file>` and
+raised. Sessions, schedules, email settings, the last good dashboard and gateway
+logins carry on from memory when their save fails, so that log line is the only
+sign a restart would lose the change. The audit log's rotation and the
+certificate swap retry their replaces the same way. Save new files in `data/`
+through it too.
+
 Email automations are deliberately **decoupled from dashboard sessions**
 (v2.5.x fix for "schedules vanish after restart"): a missing session
 never cancels a schedule. At fire time the automation reuses the live

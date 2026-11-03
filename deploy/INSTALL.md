@@ -147,7 +147,7 @@ It ends with a **health gate**: the install only reports OK once
 `https://<host>:<port>/api/health` answers.
 
 ```
-Setup-NWDash.cmd                              fresh install / migrate legacy
+Setup-NWDash.cmd                              fresh install / migrate legacy / reinstall
 Setup-NWDash.cmd -Check                       dry-run: print the plan only
 Setup-NWDash.cmd -Upgrade                     upgrade (config + data kept)
 Setup-NWDash.cmd -Rollback                    restore the newest backup
@@ -158,6 +158,7 @@ Setup-NWDash.cmd -BindHost 192.0.2.10         pin ONE interface (co-tenancy)
 Setup-NWDash.cmd -AuthPassword <pw>           set the dashboard password
 Setup-NWDash.cmd -AllowUnauthenticated        run with NO password (isolated networks only)
 Setup-NWDash.cmd -AllowedHosts 198.51.100.0/24  NetWorker host allow-list
+Setup-NWDash.cmd -FirewallProfile Any         open the port on Public networks too
 Setup-NWDash.cmd -NoUpdate ...                skip the release check
 ```
 
@@ -216,7 +217,8 @@ What this means day to day:
   up readable by users. A folder outside the install keeps whatever permissions
   you gave it: restrict it yourself, and let the service account write there.
 - **Changing the service account** is safe: re-run the install with
-  `-ServiceAccount <account>` (and `-ServicePassword`). The keys are bound to
+  `-ServiceAccount <account>` (and `-ServicePassword`; see
+  [Re-running the install](#re-running-the-install)). The keys are bound to
   this machine, not to an account, and the new account gets the row above.
 - **`-InstallDir`** must be a folder of its own: a drive root, or a system folder
   such as `C:\Windows`, is refused before anything changes. An existing install
@@ -258,6 +260,55 @@ password on an isolated network anyway, pass `-AllowUnauthenticated`: the
 installer then sets `DASHBOARD_ALLOW_UNAUTHENTICATED=1` in the service
 environment, and anyone who can reach the port can read backup data and change
 the configuration.
+
+### Re-running the install
+
+Running `Setup-NWDash.cmd` without `-Upgrade` on a host where the
+`NetWorkerDashboard` service already exists reinstalls the service. Anything the
+command line leaves out is taken from the installed service, read the way
+`-Upgrade` reads it:
+
+- the port and the `-BindHost` pin;
+- the service environment, including the `-AllowedHosts` allow-list, the
+  `-AllowUnauthenticated` setting and any variable added by hand. A
+  `DASHBOARD_AUTH_PASSWORD` left there by an earlier install is dropped, because
+  the app would reset the password from it at every start;
+- the account the service logs on as.
+
+What you pass wins, so a re-run changes only what you name. The firewall rule
+is made again for `-FirewallProfile`, which is Domain and Private networks
+unless you pass it (see [Firewall](#firewall)), so a rule an older version opened
+on every network is narrowed. For example,
+`Setup-NWDash.cmd -AuthPassword <password>` adds a password and keeps the rest.
+To un-pin the bind, pass `-BindHost 0.0.0.0`. `-Check` lists what would be kept.
+The install log names it too, before the old service is removed.
+
+Windows never gives a service account's password back. A service that logs on
+as a named account (not LocalSystem, LocalService or NetworkService) is
+reinstalled only with `-ServicePassword <its password>`, or with
+`-ServiceAccount` and `-ServicePassword` for another account. Without them the
+installer stops before it changes anything. It also stops if the service's
+settings cannot be read. To update the app and keep the service exactly as it
+is, use [`-Upgrade`](#7-upgrade).
+
+### Firewall
+
+The installer opens the port inbound in the rule group `NetWorkerDashboard`, on
+networks Windows classifies as **Domain** or **Private** only. A network
+classified **Public** is how Windows marks one it does not trust, such as an
+unidentified network or a guest network, and a dashboard that controls backup
+reporting should not answer there. When a connected network is Public the
+install log and `-Check` say so, with the network and adapter name.
+
+- `-FirewallProfile Any` opens the port on every network, as versions before
+  this did. Any of `Domain`, `Private` and `Public` can also be listed, for
+  example `-FirewallProfile Domain`.
+- A server on a trusted network that Windows still shows as Public (common on
+  a fresh install or a network with no domain controller) can be reclassified
+  instead: `Set-NetConnectionProfile -InterfaceAlias <adapter> -NetworkCategory Private`.
+- `-NoFirewall` leaves the firewall alone. `-Upgrade` and `-Rollback` never
+  touch the rule, so an existing rule stays as it is until the next install
+  without `-Upgrade`.
 
 ### Legacy scheduled-task migration
 
@@ -441,7 +492,7 @@ The dashboard has a purpose-built wall-display mode at **`/tv`**:
 | Install or `-Upgrade` stops with `could not restrict the install folder` | The volume may not support permissions (FAT/exFAT), or security software may be holding the folder. On `-Upgrade` the service was left running. Fix the cause and re-run. |
 | Health self-test fails **Folder permissions** | Other local users can reach what the step names, usually after restoring from a backup or copying files in. `Setup-NWDash.cmd -Upgrade` restores the lock. |
 | Port already in use / service flapping | The installer warns at install time if a foreign process owns the port (name + PID). Stop it or re-run with `-Port <other>`. On co-tenant hosts, check `-BindHost` is set (see §5). |
-| Install reports OK but browser can't reach the dashboard | Firewall: the installer opens inbound TCP on the chosen port (rule group `NetWorkerDashboard`) unless `-NoFirewall` was passed. Also confirm you're browsing the bound IP when `-BindHost` is pinned. |
+| Install reports OK but browser can't reach the dashboard | Firewall: the installer opens inbound TCP on the chosen port (rule group `NetWorkerDashboard`) on Domain and Private networks, unless `-NoFirewall` was passed. If the install log warned that a network is classified Public, see [Firewall](#firewall). Also confirm you're browsing the bound IP when `-BindHost` is pinned. |
 | Browser TLS warning | Expected with the default self-signed cert — see §6. |
 | Dashboard up but NetWorker data empty | Outbound problem, not an install problem: check the NetWorker server address/credentials in the connection dialog, the per-profile "Verify REST API TLS certificate" setting, and any `-AllowedHosts` allow-list you set at install. |
 | UI looks broken right after an upgrade | Hard refresh once (Ctrl+F5) — the browser cached the previous release's page. |

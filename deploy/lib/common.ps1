@@ -667,6 +667,101 @@ function Get-NwdashAuthPlan {
   return 'refused'
 }
 
+# ---- reinstall over an existing service (review O2) ----
+
+# The settings the installed service runs with, read through nssm as -Upgrade
+# reads them: its launcher command line, its extra environment (one variable per
+# line) and the account it logs on as. Any nssm.exe can read the service, so the
+# caller may pass the bundle's own; -Nssm may also be a scriptblock. $null when
+# the command line cannot be read (no nssm, not this app, or a run that may not
+# query the service): a reinstall must not guess what it would drop. Never throws.
+function Read-NwdashLiveService {
+  param(
+    $Nssm = '',
+    [string]$Name = $script:NwdashServiceName,
+    [scriptblock]$NssmGet = $null,     # ($setting) -> raw `nssm get` output
+    [scriptblock]$GetService = $null   # passed to Read-NwdashServiceAccount
+  )
+  $nssmGet = if ($NssmGet) { $NssmGet } else { { param($setting) & $Nssm get $Name $setting 2>$null } }
+  $params = ''
+  try { $params = ConvertFrom-NwdashNssmOutput -Raw (& $nssmGet 'AppParameters') } catch { $params = '' }
+  if ($params -notmatch 'networker_dashboard\.py') { return $null }
+  $envText = ''
+  try { $envText = ConvertFrom-NwdashNssmOutput -Raw (& $nssmGet 'AppEnvironmentExtra') } catch { $envText = '' }
+  return [pscustomobject]@{
+    Parameters = $params.Trim()
+    Env        = @($envText -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    Account    = (Read-NwdashServiceAccount -Name $Name -GetService $GetService)
+  }
+}
+
+# What a plain install over the installed service runs with. It used to rebuild
+# the service from its own command line alone, so re-running it to change one
+# thing dropped the port, bind, allow-list, account and -AllowUnauthenticated the
+# service had (review O2). Now whatever $Given (the names in $PSBoundParameters)
+# leaves out comes from $Live (Read-NwdashLiveService).
+#
+# The environment is kept whole, with two exceptions: -AllowedHosts replaces the
+# allow-list, and a DASHBOARD_AUTH_PASSWORD that an install failed to clear is
+# dropped, because the app would set the password from it at every start and
+# undo a change made in the admin console. Env holds the lines the installer does
+# not manage itself; AllowedHosts and AllowUnauthenticated carry the other two.
+#
+# Windows never gives a service account's password back, so an account that
+# needs one is kept only with -ServicePassword. Otherwise Problem says why the
+# install must stop, before it changes anything. Kept lists what was carried, for
+# the log. Pure + testable.
+function Get-NwdashCarryOver {
+  param(
+    [Parameter(Mandatory)]$Live,
+    [string[]]$Given = @(),
+    [int]$Port = 8443,
+    [string]$BindHost = '',
+    [string]$ServiceAccount = '',
+    [string]$AllowedHosts = ''
+  )
+  $out = [pscustomobject]@{
+    Port = $Port; BindHost = $BindHost; ServiceAccount = $ServiceAccount; AllowedHosts = $AllowedHosts
+    AllowUnauthenticated = $false; Env = @(); Kept = @(); Problem = ''
+  }
+  $liveArgs = Get-NwdashServiceArgs -Parameters $Live.Parameters -DefaultPort $Port
+  if ('Port' -notin $Given) { $out.Port = $liveArgs.Port; $out.Kept += "port $($liveArgs.Port)" }
+  if ('BindHost' -notin $Given) {
+    $out.BindHost = $liveArgs.Bind
+    if ($liveArgs.Bind) { $out.Kept += "bind $($liveArgs.Bind)" }
+  }
+  foreach ($line in @($Live.Env)) {
+    $value = $line.Substring($line.IndexOf('=') + 1)
+    if ($line -like 'DASHBOARD_ALLOWED_HOSTS=*') {
+      if ('AllowedHosts' -notin $Given -and $value) { $out.AllowedHosts = $value; $out.Kept += "allowed hosts $value" }
+    } elseif ($line -like 'DASHBOARD_ALLOW_UNAUTHENTICATED=*') {
+      # The app honours exactly 1 (nwdash/main.py); anything else meant no.
+      if ($value.Trim() -eq '1') { $out.AllowUnauthenticated = $true; $out.Kept += '-AllowUnauthenticated' }
+    } elseif ($line -notlike 'DASHBOARD_AUTH_PASSWORD=*') {
+      $out.Env += $line
+    }
+  }
+  if ($out.Env.Count) { $out.Kept += "$($out.Env.Count) other environment variable(s)" }
+  if ('ServiceAccount' -notin $Given) {
+    $account = "$($Live.Account)".Trim()
+    if (-not $account) {
+      $out.Problem = 'could not read the account the installed service logs on as, so a reinstall cannot keep it. ' +
+        'Nothing was changed. Re-run with -ServiceAccount <account> (and -ServicePassword), or use -Upgrade, which keeps the service as it is.'
+    } elseif ($account -in @('LocalSystem', '.\LocalSystem', 'NT AUTHORITY\SYSTEM')) {
+      $out.ServiceAccount = ''   # nssm's default, nothing to set
+      $out.Kept += 'account LocalSystem'
+    } elseif ($account -like 'NT AUTHORITY\*' -or 'ServicePassword' -in $Given) {
+      $out.ServiceAccount = $account
+      $out.Kept += "account $account"
+    } else {
+      $out.Problem = "the installed service logs on as $account, and Windows does not give a service account's password back, " +
+        'so a reinstall cannot keep that account by itself. Nothing was changed. Re-run with -ServicePassword <its password> to keep it, ' +
+        'or -ServiceAccount <account> -ServicePassword <password> to change it, or use -Upgrade, which keeps the service as it is.'
+    }
+  }
+  return $out
+}
+
 # ---- folder permissions ----
 
 # An install folder must not inherit from C:\: Users can read there on every
@@ -848,13 +943,79 @@ function Set-NwdashInstallAcl {
 
 # ---- firewall ----
 
+# The inbound rule opens the port on Domain and Private networks only. A network
+# Windows classifies as Public (an unidentified one, a guest or hotel network) is
+# where an exposed admin port does the most harm (review S4); -FirewallProfile Any
+# opens it there too.
+$script:NwdashFirewallDefault = 'Domain,Private'
+
+# -FirewallProfile as New-NetFirewallRule takes it, or '' when it is not one:
+# Any, or any of Domain, Private and Public. Commas or spaces separate them,
+# because Setup-NWDash.cmd hands `Domain,Private` on as `Domain Private`. Pure +
+# testable.
+function Resolve-NwdashFirewallProfile {
+  param([string]$Value = '')
+  $known = @('Domain', 'Private', 'Public')
+  $names = @("$Value" -split '[,\s]+' | Where-Object { $_ })
+  if ($names.Count -eq 1 -and $names[0] -ieq 'Any') { return 'Any' }
+  if (-not $names.Count) { return '' }
+  foreach ($n in $names) { if ($n -notin $known) { return '' } }
+  return (@($known | Where-Object { $names -contains $_ }) -join ',')
+}
+
+# The connected networks a rule for $NetworkProfile leaves closed, from
+# Get-NetConnectionProfile (NetworkCategory Public, Private or DomainAuthenticated).
+# Pure + testable.
+function Get-NwdashFirewallGap {
+  param([string]$NetworkProfile = $script:NwdashFirewallDefault, [object[]]$Networks = @())
+  $covered = @($NetworkProfile -split ',')
+  if ($covered -contains 'Any') { return @() }
+  $gaps = @()
+  foreach ($n in @($Networks)) {
+    $category = "$($n.NetworkCategory)"
+    if ($category -eq 'DomainAuthenticated') { $category = 'Domain' }
+    if ($category -and $category -notin $covered) {
+      $gaps += [pscustomobject]@{ Name = "$($n.Name)"; InterfaceAlias = "$($n.InterfaceAlias)"; Category = $category }
+    }
+  }
+  return $gaps
+}
+
+# What each closed network means, for the install log and -Check.
+function Format-NwdashFirewallGap {
+  param([Parameter(Mandatory)]$Gap, [int]$Port)
+  return "network '$($Gap.Name)' on $($Gap.InterfaceAlias) is classified $($Gap.Category), so the firewall does not open " +
+    "port $Port there and the dashboard cannot be reached through it. Re-run with -FirewallProfile Any to open it there " +
+    'too, or have that network classified Private or Domain.'
+}
+
+# Replace the rule group with one inbound rule for $Port on $NetworkProfile, then
+# warn about each connected network it leaves closed. Never throws: a firewall
+# failure is a warning, as before. The cmdlets are injectable for tests.
 function Set-NwdashFirewall {
-  param([Parameter(Mandatory)][int]$Port)
+  param(
+    [Parameter(Mandatory)][int]$Port,
+    [string]$NetworkProfile = $script:NwdashFirewallDefault,
+    [scriptblock]$RemoveRules = $null,   # () -> remove the group
+    [scriptblock]$NewRule = $null,       # ($port, $profile) -> create the rule
+    [scriptblock]$GetNetworks = $null    # () -> Get-NetConnectionProfile rows
+  )
+  $removeRules = if ($RemoveRules) { $RemoveRules } else { { Remove-NetFirewallRule -Group $script:NwdashServiceName -ErrorAction SilentlyContinue } }
+  $newRule = if ($NewRule) { $NewRule } else { { param($p, $prof) New-NetFirewallRule -DisplayName "NetWorker Dashboard web ($p)" -Group $script:NwdashServiceName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $p -Profile $prof -ErrorAction Stop | Out-Null } }
+  $getNetworks = if ($GetNetworks) { $GetNetworks } else { { @(Get-NetConnectionProfile -ErrorAction SilentlyContinue) } }
   try {
-    Remove-NetFirewallRule -Group $script:NwdashServiceName -ErrorAction SilentlyContinue
-    New-NetFirewallRule -DisplayName "NetWorker Dashboard web ($Port)" -Group $script:NwdashServiceName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Any -ErrorAction Stop | Out-Null
-    Write-NwdashLog "firewall: opened inbound TCP $Port"
-  } catch { Write-NwdashWarn "could not configure the firewall ($($_.Exception.Message)). Open inbound TCP $Port manually." }
+    & $removeRules
+    & $newRule $Port $NetworkProfile
+    Write-NwdashLog "firewall: opened inbound TCP $Port on $NetworkProfile networks"
+  } catch {
+    Write-NwdashWarn "could not configure the firewall ($($_.Exception.Message)). Open inbound TCP $Port manually."
+    return
+  }
+  $networks = @()
+  try { $networks = @(& $getNetworks) } catch { $networks = @() }
+  foreach ($gap in @(Get-NwdashFirewallGap -NetworkProfile $NetworkProfile -Networks $networks)) {
+    Write-NwdashWarn (Format-NwdashFirewallGap -Gap $gap -Port $Port)
+  }
 }
 
 function Remove-NwdashFirewall {

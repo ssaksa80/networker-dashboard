@@ -19,6 +19,7 @@ except ImportError:  # pragma: no cover - dashboard still runs without WMI crede
     InvalidTag = Exception
 
 from .config import AUTH_KEY_FILE, DATA_DIR, LOG, SESSION_KEY_FILE
+from .fileio import atomic_write_bytes
 
 DPAPI_MARKER = b"DPAPI1\n"
 _CRYPTPROTECT_LOCAL_MACHINE = 0x4
@@ -127,9 +128,7 @@ def _write_protected_key(path: Path, key: bytes, *, required: bool = True) -> No
         )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.parent / (path.name + ".tmp")
-        tmp.write_bytes(payload)
-        tmp.replace(path)
+        atomic_write_bytes(path, payload)
         path.chmod(0o600)
     except OSError as exc:
         # A key that never lands on disk means a fresh random key every restart

@@ -18,10 +18,12 @@ from .config import (
     DAILY_REPORT_RANGE,
     DATA_DIR,
     LAST_GOOD_DASHBOARD_FILE,
+    LOG,
     SHARED_REFRESH_SECONDS,
     debug_log,
     safe_log_text,
 )
+from .fileio import atomic_write_text
 
 
 @dataclass(frozen=True)
@@ -307,11 +309,11 @@ def persist_last_good_dashboard(session_id: str, dashboard: dict[str, Any]) -> N
             "updatedAt": time.time(),
             "lastRefresh": generated_at(),
         }
-        tmp = LAST_GOOD_DASHBOARD_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(record, separators=(",", ":"), ensure_ascii=True), encoding="utf-8")
-        tmp.replace(LAST_GOOD_DASHBOARD_FILE)
-    except (OSError, TypeError, ValueError):
-        pass
+        atomic_write_text(LAST_GOOD_DASHBOARD_FILE, json.dumps(record, separators=(",", ":"), ensure_ascii=True))
+    except OSError:
+        pass  # logged by atomic_write_text
+    except (TypeError, ValueError) as exc:
+        LOG.warning(f"could not save {LAST_GOOD_DASHBOARD_FILE.name}: {exc}", extra={"event": "file_write_failed"})
 
 
 def load_last_good_dashboard_record() -> dict[str, Any] | None:

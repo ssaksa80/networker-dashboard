@@ -27,6 +27,7 @@ from .config import (
     REPORT_RANGES,
     safe_log_text,
 )
+from .fileio import atomic_write_text
 from .models import ApiConfig, BadRequest
 from .secrets import (
     SecretEncryptionError,
@@ -54,9 +55,7 @@ def save_profiles(profiles: dict[str, Any]) -> None:
     UI report "Profile saved" for a save that never reached disk."""
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = PROFILES_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(profiles, separators=(",", ":")), encoding="utf-8")
-        tmp.replace(PROFILES_FILE)
+        atomic_write_text(PROFILES_FILE, json.dumps(profiles, separators=(",", ":")))
     except OSError as exc:
         LOG.error(f"could not write {PROFILES_FILE.name}: {exc}", extra={"event": "profiles_write_failed"})
         raise

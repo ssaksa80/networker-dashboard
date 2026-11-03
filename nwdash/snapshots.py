@@ -35,6 +35,7 @@ from .config import (
     debug_log,
     safe_log_text,
 )
+from .fileio import atomic_write_text
 from .models import SHARED_DASHBOARD_LOCK, SHARED_DASHBOARD_STATE, SHARED_REFRESH_STOP, BadRequest
 from .profiles import SNAPSHOTS_LOCK, parse_port
 from .secrets import (
@@ -118,12 +119,7 @@ def load_dashboard_snapshots() -> dict[str, Any]:
 
 def write_dashboard_snapshots(snapshots: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = DASHBOARD_SNAPSHOT_FILE.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps(snapshots, ensure_ascii=True, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    tmp.replace(DASHBOARD_SNAPSHOT_FILE)
+    atomic_write_text(DASHBOARD_SNAPSHOT_FILE, json.dumps(snapshots, ensure_ascii=True, indent=2, sort_keys=True))
     try:
         DASHBOARD_SNAPSHOT_FILE.chmod(0o600)
     except OSError:
@@ -227,7 +223,7 @@ def load_auto_snapshot_config() -> bool:
 
 def save_auto_snapshot_config(enabled: bool) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    AUTO_SNAPSHOT_FILE.write_text(json.dumps({"enabled": enabled}), encoding="utf-8")
+    atomic_write_text(AUTO_SNAPSHOT_FILE, json.dumps({"enabled": enabled}))
 
 
 # Current dashboard theme, persisted server-side so background-scheduled report
@@ -283,7 +279,7 @@ def save_ui_prefs(changes: dict[str, Any]) -> dict[str, str]:
                     raise BadRequest(f"{key} must be one of: {', '.join(allowed[key])}.")
                 data[key] = text
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        UI_PREFS_FILE.write_text(json.dumps(data), encoding="utf-8")
+        atomic_write_text(UI_PREFS_FILE, json.dumps(data))
     return load_ui_prefs()
 
 
@@ -479,11 +475,9 @@ def load_email_config() -> dict[str, Any]:
 def write_email_config(cfg: dict[str, Any]) -> None:
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = EMAIL_CONFIG_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(cfg, separators=(",", ":")), encoding="utf-8")
-        tmp.replace(EMAIL_CONFIG_FILE)
+        atomic_write_text(EMAIL_CONFIG_FILE, json.dumps(cfg, separators=(",", ":")))
     except OSError:
-        pass
+        pass  # logged by atomic_write_text
 
 
 def email_config_public() -> dict[str, Any]:
@@ -631,11 +625,9 @@ def load_email_profiles() -> dict[str, Any]:
 def write_email_profiles(profiles: dict[str, Any]) -> None:
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = EMAIL_PROFILES_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(profiles, separators=(",", ":")), encoding="utf-8")
-        tmp.replace(EMAIL_PROFILES_FILE)
+        atomic_write_text(EMAIL_PROFILES_FILE, json.dumps(profiles, separators=(",", ":")))
     except OSError:
-        pass
+        pass  # logged by atomic_write_text
 
 
 def _mask_email_profile(profile: dict[str, Any]) -> dict[str, Any]:
