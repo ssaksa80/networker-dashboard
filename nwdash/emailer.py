@@ -126,20 +126,25 @@ def smtp_debug_snapshot(settings: AlertAutomation, smtp_password: str, stage: st
     }
 
 
+def smtp_reply_text(reply: bytes | str) -> str:
+    """The server's reply as smtplib hands it over (usually bytes), as text."""
+    return reply.decode("utf-8", errors="replace") if isinstance(reply, bytes) else reply
+
+
 def smtp_exception_detail(exc: BaseException) -> str:
     if isinstance(exc, smtplib.SMTPAuthenticationError):
-        smtp_error = exc.smtp_error.decode("utf-8", errors="replace") if isinstance(exc.smtp_error, bytes) else exc.smtp_error
-        return f"authentication rejected by SMTP server: code={exc.smtp_code} response={smtp_error}"
+        return f"authentication rejected by SMTP server: code={exc.smtp_code} response={smtp_reply_text(exc.smtp_error)}"
     if isinstance(exc, smtplib.SMTPRecipientsRefused):
         return f"all recipients were refused by SMTP server: {exc.recipients}"
     if isinstance(exc, smtplib.SMTPSenderRefused):
-        return f"sender was refused by SMTP server: code={exc.smtp_code} sender={exc.sender} response={exc.smtp_error}"
+        return (
+            f"sender was refused by SMTP server: code={exc.smtp_code} sender={exc.sender} "
+            f"response={smtp_reply_text(exc.smtp_error)}"
+        )
     if isinstance(exc, smtplib.SMTPDataError):
-        smtp_error = exc.smtp_error.decode("utf-8", errors="replace") if isinstance(exc.smtp_error, bytes) else exc.smtp_error
-        return f"SMTP data command failed: code={exc.smtp_code} response={smtp_error}"
+        return f"SMTP data command failed: code={exc.smtp_code} response={smtp_reply_text(exc.smtp_error)}"
     if isinstance(exc, smtplib.SMTPConnectError):
-        smtp_error = exc.smtp_error.decode("utf-8", errors="replace") if isinstance(exc.smtp_error, bytes) else exc.smtp_error
-        return f"SMTP connection rejected: code={exc.smtp_code} response={smtp_error}"
+        return f"SMTP connection rejected: code={exc.smtp_code} response={smtp_reply_text(exc.smtp_error)}"
     if isinstance(exc, smtplib.SMTPServerDisconnected):
         return f"SMTP server disconnected: {exc}"
     if isinstance(exc, TimeoutError):
